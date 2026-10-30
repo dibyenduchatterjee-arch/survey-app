@@ -1,0 +1,33 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+service-account*.json
+credentials*.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# data — never commit field data
+*.db
+*.sqlite
+*.sqlite3
+server/media/
+server/exports/
+*.xlsx
+!server/tests/fixtures/*.xlsx
+
+# os / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
