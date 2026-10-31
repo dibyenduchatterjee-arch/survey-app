@@ -75,3 +75,20 @@ def test_rejects_nonsense_configuration():
         RateLimiter(0, 60)
     with pytest.raises(ValueError):
         RateLimiter(5, 0)
+
+
+def test_refund_gives_back_one_attempt_and_never_goes_negative():
+    rl = RateLimiter(2, 60, clock=Clock())
+    rl.check("k")
+    rl.check("k")
+    rl.refund("k")
+    rl.check("k")
+    with pytest.raises(RateLimited):
+        rl.check("k")
+    rl.refund("unknown")  # no-op
+    rl.clear()
+    rl.refund("k")
+    rl.check("k")
+    rl.check("k")
+    with pytest.raises(RateLimited):
+        rl.check("k")

@@ -28,7 +28,10 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # In-process counters (see app.core.ratelimit: not shared between worker processes).
 # Every attempt is counted on entry (so parallel guesses cannot slip past a check-then-
-# count gap); a successful login clears both counters, so only failures accumulate.
+# count gap). A successful login clears the username counter and takes back its own one
+# count on the IP counter, so only failures accumulate. The IP counter is the anti-spray
+# control and is never reset: someone holding one valid account must not be able to wipe
+# the failures they have piled up from that address.
 _settings = get_settings()
 username_limiter = RateLimiter(
     _settings.login_rate_limit_per_username, _settings.login_rate_limit_window_seconds
@@ -172,7 +175,7 @@ def login(
     )
     db.commit()
     username_limiter.reset(f"login:{body.username}")
-    ip_limiter.reset(f"login:ip:{ip}")
+    ip_limiter.refund(f"login:ip:{ip}")
     return LoginResponse(
         access_token=create_access_token(user.id, user.role, now=now),
         refresh_token=refresh_plain,

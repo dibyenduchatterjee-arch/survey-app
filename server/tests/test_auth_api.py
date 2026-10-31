@@ -196,16 +196,16 @@ def test_successful_logins_do_not_count_toward_either_limit(client, user_factory
         assert login(client, password="bad").status_code == 401
 
 
-def test_successful_login_clears_the_ip_counter_too(client, user_factory):
+def test_successful_login_does_not_reset_the_ip_counter(client, user_factory):
     from app.api import auth
 
     user_factory()
     limit = auth.ip_limiter.limit
-    for i in range(limit - 1):
+    for i in range(limit - 1):  # failures from one source, spread over usernames
         assert login(client, f"user{i}", "x").status_code == 401
-    assert login(client).status_code == 200
-    for i in range(limit - 1):  # would be refused if the IP counter had not been cleared
-        assert login(client, f"other{i}", "x").status_code == 401
+    assert login(client).status_code == 200  # one valid account must not wipe them
+    assert login(client, "last", "x").status_code == 401  # the limit-th failure
+    assert login(client, "one-too-many", "x").status_code == 429
 
 
 # --- client IP behind a proxy ------------------------------------------------------

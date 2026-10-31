@@ -56,6 +56,16 @@ class RateLimiter:
                 raise RateLimited(retry_after=max(1, int(start + self.window_seconds - now) + 1))
             self._windows[key] = (start, count + 1)
 
+    def refund(self, key: str) -> None:
+        """Take back one counted attempt (never below zero); the window is unchanged.
+
+        For attempts that turn out not to count, e.g. a login that succeeds.
+        """
+        with self._lock:
+            entry = self._windows.get(key)
+            if entry is not None and entry[1] > 0:
+                self._windows[key] = (entry[0], entry[1] - 1)
+
     def reset(self, key: str) -> None:
         with self._lock:
             self._windows.pop(key, None)
