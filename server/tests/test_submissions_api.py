@@ -724,3 +724,79 @@ def test_a_duplicate_is_found_even_though_gps_and_photo_differ_every_time(db, fo
         {"household_photo": MediaPart("b.jpg", JPEG + b"different")}, str(uuidlib.uuid4()), fake_request(),
     )
     assert [s.id for s in likely_duplicates(db, b)] == [a.id]
+
+
+# ---- a replay that carries new media attaches it ---------------------------------------
+
+
+def _first_without_photo(client, form, enum):
+    uid, files = payload(form, media={})
+    first = post(client, enum, files)
+    assert first.status_code == 201
+    return uid, first
+
+
+def test_a_replay_with_a_file_for_an_empty_slot_attaches_it(client, db, form, enum, media_root):
+    uid, first = _first_without_photo(client, form, enum)
+    assert _count(db, MediaFile) == 0 and disk(media_root) == []
+    _, again = payload(form, uuid=uid, media={"household_photo": ("p.jpg", JPEG)})
+    second = post(client, enum, again)
+    assert second.status_code == 200 and second.json() == first.json()  # same receipt
+    assert _count(db, Submission) == 1 and _count(db, RepeatRow) == 1  # no second row, no re-validation
+    m = db.scalars(select(MediaFile)).one()
+    assert (m.question_name, m.content_type, m.size) == ("household_photo", "image/jpeg", len(JPEG))
+    assert m.storage_path == f"{uid}/1.jpg" and decrypt_bytes((media_root / m.storage_path).read_bytes()) == JPEG
+    assert _creates(db) == 1
+    assert db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "submission.media_attach")) == 1
+
+
+def test_a_replay_never_overwrites_an_existing_media_row(client, db, form, enum, media_root):
+    uid, files = payload(form)
+    assert post(client, enum, files).status_code == 201
+    before = disk(media_root)
+    row = db.scalars(select(MediaFile)).one()
+    sha = row.sha256
+    for other in (JPEG, PNG):  # the same payload, and a different valid file for the same slot
+        _, again = payload(form, uuid=uid, media={"household_photo": ("p.jpg", other)})
+        assert post(client, enum, again).status_code == 200
+    assert disk(media_root) == before
+    row = db.scalars(select(MediaFile)).one()
+    assert row.sha256 == sha and _count(db, MediaFile) == 1
+    assert decrypt_bytes(before[0].read_bytes()) == JPEG
+
+
+def test_a_replay_with_no_media_changes_nothing(client, db, form, enum, media_root):
+    uid, files = payload(form, media={})
+    post(client, enum, files)
+    _, again = payload(form, uuid=uid, media={})
+    assert post(client, enum, again).status_code == 200
+    assert _count(db, MediaFile) == 0 and disk(media_root) == []
+
+
+def test_a_bad_file_on_a_replay_is_refused_and_leaves_nothing(client, db, form, enum, media_root):
+    uid, _ = _first_without_photo(client, form, enum)
+    _, again = payload(form, uuid=uid, media={"household_photo": ("p.jpg", b"MZ not an image")})
+    r = post(client, enum, again)
+    assert r.status_code == 415 and r.json()["detail"]["retain_on_device"] is True
+    assert _count(db, MediaFile) == 0 and disk(media_root) == []
+
+
+def test_a_failure_while_attaching_rolls_back_the_row_and_removes_only_its_own_files(
+    db, form, enum, media_root, monkeypatch
+):
+    uid = str(uuidlib.uuid4())
+    base = dict(db=db, form_version=form["fv"], user=enum, data=GOOD, repeats={"children": [CHILD]},
+                uuid=uid, request=fake_request())
+    store_submission(media={}, **base)
+    (media_root / uid).mkdir()
+    bystander = media_root / uid / "9.jpg"
+    bystander.write_bytes(b"someone else's")
+
+    def boom(_):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(submissions, "encrypt_bytes", boom)
+    with pytest.raises(RuntimeError):
+        store_submission(media={"household_photo": MediaPart("a.jpg", JPEG)}, **base)
+    assert _count(db, MediaFile) == 0 and _count(db, Submission) == 1
+    assert disk(media_root) == [bystander]

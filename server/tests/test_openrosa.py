@@ -57,7 +57,7 @@ SUP = ("sup", PW)
 ENUM = ("enum1", PW)
 
 
-def instance(form, uid=None, *, children=2, kids=None, prefix="uuid:", photo="p.jpg", extra=""):
+def instance(form, uid=None, *, children=2, kids=None, prefix="uuid:", photo="p.jpg", extra="", location="25.6 85.1 0 5"):
     uid = uid or str(uuidlib.uuid4())
     kids = kids if kids is not None else (
         "<children><child_name>Ravi</child_name><child_age_months>48</child_age_months>"
@@ -72,7 +72,7 @@ def instance(form, uid=None, *, children=2, kids=None, prefix="uuid:", photo="p.
         'xmlns:jr="http://openrosa.org/javarosa" xmlns:orx="http://openrosa.org/xforms">'
         "<start>2026-10-31T10:00:00.000+05:30</start><end>2026-10-31T10:20:00.000+05:30</end>"
         "<district>patna</district><block>danapur</block><asha_name>Sunita</asha_name>"
-        f"<visit_location>25.6 85.1 0 5</visit_location><household_photo>{photo}</household_photo>"
+        f"<visit_location>{location}</visit_location><household_photo>{photo}</household_photo>"
         f"<household_children>{children}</household_children>{kids}<children_count>2</children_count>"
         f"{extra}<meta><instanceID>{prefix}{uid}</instanceID></meta></data>"
     )
@@ -334,6 +334,51 @@ def test_an_unknown_form_is_masked_like_an_unassigned_one(client, db, form, enum
     r = post(client, xml.replace(form["form_id"].encode(), b"ghost_form"))
     assert r.status_code == 403 and "not_assigned" in msg(r).text
     nothing_stored(db, media_root)
+
+
+def test_a_submission_split_across_posts_keeps_every_file(client, db, form, enum, media_root):
+    """Collect sends the same instance again with the attachments it did not fit in the first POST."""
+    uid, xml = instance(form)
+    first = post(client, xml, media={})
+    assert first.status_code == 201 and _count(db, MediaFile) == 0
+    second = post(client, xml, media={"p.jpg": JPEG})
+    assert second.status_code == 201
+    assert _count(db, Submission) == 1 and _count(db, MediaFile) == 1
+    third = post(client, xml, media={"p.jpg": JPEG})  # the same again changes nothing
+    assert third.status_code == 201 and _count(db, MediaFile) == 1
+    (m,) = db.scalars(select(MediaFile)).all()
+    assert m.question_name == "household_photo" and len([p for p in media_root.rglob("*") if p.is_file()]) == 1
+    meta = [ET.fromstring(r.text).find(RESP_NS + "submissionMetadata").get("submissionDate") for r in (first, second, third)]
+    assert len(set(meta)) == 1
+
+
+def test_the_geopoint_string_fills_the_gps_columns(client, db, form, enum):
+    _, xml = instance(form, location="25.6123 85.1456 52.5 4.5")
+    assert post(client, xml).status_code == 201
+    s = db.scalars(select(Submission)).one()
+    assert (s.gps_lat, s.gps_lon, s.gps_accuracy) == (25.6123, 85.1456, 4.5)
+    assert s.data_json["visit_location"] == "25.6123 85.1456 52.5 4.5"
+
+
+def test_a_geopoint_without_accuracy_still_gives_coordinates(client, db, form, enum):
+    _, xml = instance(form, location="25.6 85.1")
+    assert post(client, xml).status_code == 201
+    s = db.scalars(select(Submission)).one()
+    assert (s.gps_lat, s.gps_lon, s.gps_accuracy) == (25.6, 85.1, None)
+
+
+@pytest.mark.parametrize("bad", ["north east", "25.6", "95 85 0 5", "25 200 0 5", "nan 85 0 1", "1 2 3 4 5"])
+def test_an_unparseable_geopoint_is_an_error_not_blank_columns(client, db, form, enum, media_root, bad):
+    _, xml = instance(form, location=bad)
+    r = post(client, xml)
+    assert r.status_code == 422 and "bad_geopoint" in msg(r).text
+    nothing_stored(db, media_root)
+
+
+def test_a_blank_geopoint_means_no_gps_was_captured(client, db, form, enum):
+    _, xml = instance(form, location="")
+    assert post(client, xml).status_code == 201
+    assert db.scalars(select(Submission)).one().gps_lat is None
 
 
 # ---- XML -> {data, repeats}, unit level -----------------------------------------------

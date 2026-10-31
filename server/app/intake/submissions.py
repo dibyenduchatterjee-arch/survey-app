@@ -49,6 +49,28 @@ from app.db.models import Assignment, Form, FormVersion, MediaFile, RepeatRow, S
 from app.forms.validate import Failure, validate_submission
 
 
+# Request-size limits shared by every route that accepts a submission.
+MAX_MEDIA_PARTS = 20
+MAX_SUBMISSION_JSON_BYTES = 1024 * 1024
+
+
+def lenient_dt(v: Any) -> datetime | None:
+    """A device clock or timezone setting can be wrong; that must never cost the visit."""
+    if isinstance(v, str):
+        try:
+            v = datetime.fromisoformat(v.strip())
+        except ValueError:
+            return None
+    if not isinstance(v, datetime):
+        return None
+    try:
+        if not 1970 <= v.astimezone(UTC).year <= 2200:
+            return None
+    except (OverflowError, ValueError, OSError):
+        return None
+    return v
+
+
 class IntakeRefused(Exception):
     """A submission that must not be stored. Raised before anything is written."""
 
@@ -249,6 +271,91 @@ def resolve_form_version(
     return fv
 
 
+def _check_media(media: dict[str, MediaPart], spec: dict) -> dict[str, tuple[str, str]]:
+    """Size, slot and magic-byte checks for media parts; (extension, content type) by name."""
+    settings = get_settings()
+    for part in media.values():
+        if len(part.data) > settings.max_media_bytes:
+            raise IntakeRefused(413, "file_too_large", "A file is larger than the media size limit")
+    slots = _media_questions(spec)
+    sniffed: dict[str, tuple[str, str]] = {}
+    for name, part in media.items():
+        if name not in slots:
+            raise IntakeRefused(422, "media_slot_unknown", "A file was sent for a question that takes no upload")
+        kind = _sniff(part.data, slots[name])
+        if kind is None:
+            raise IntakeRefused(415, "file_type_mismatch", f"A file's contents are not an accepted {slots[name]} format")
+        sniffed[name] = kind
+    return sniffed
+
+
+def _attach_new_media(
+    db: Session, existing: Submission, user: User, media: dict[str, MediaPart], request: Request
+) -> Submission:
+    """A same-user replay may carry files for slots the stored submission has no file for.
+
+    ODK Collect splits a submission with several attachments across POSTs that share one
+    instance id; a retry after a partly uploaded batch does the same. Files for slots with
+    NO existing MediaFile row are stored and attached. An existing row is NEVER replaced, so
+    the same payload twice changes nothing. The submission row, its data and its receipt are
+    untouched (no re-validation). Refusals (size, slot, bytes) happen before anything is
+    written; a later failure rolls the rows back and removes only the files written here.
+    """
+    media = {name: part for name, part in media.items() if part.data}
+    if not media:
+        return existing
+    held = {
+        row.question_name: row.filename
+        for row in db.scalars(select(MediaFile).where(MediaFile.submission_id == existing.id))
+    }
+    new = {name: part for name, part in media.items() if name not in held}
+    if not new:
+        return existing
+    fv = db.get(FormVersion, existing.form_version_id)
+    sniffed = _check_media(new, fv.json_spec)
+
+    def position(filename: str) -> int:
+        stem = filename.split(".")[0]
+        return int(stem) if stem.isdigit() else 0
+
+    next_index = max([len(held), *(position(f) for f in held.values())]) + 1
+    stored = {name: f"{next_index + i}.{sniffed[name][0]}" for i, name in enumerate(sorted(new))}
+    folder = Path(get_settings().media_root) / existing.uuid
+    written: list[Path] = []
+    try:
+        for name in sorted(new):
+            ext, content_type = sniffed[name]
+            db.add(
+                MediaFile(
+                    submission_id=existing.id,
+                    question_name=name,
+                    filename=stored[name],
+                    content_type=content_type,
+                    size=len(new[name].data),
+                    storage_path=f"{existing.uuid}/{stored[name]}",
+                    sha256=hashlib.sha256(new[name].data).hexdigest(),
+                )
+            )
+        db.flush()
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in sorted(new):
+            path = folder / stored[name]
+            with path.open("xb") as fh:  # exclusive: never overwrite a file someone else wrote
+                written.append(path)
+                fh.write(encrypt_bytes(new[name].data))
+        audit.record(
+            db, user.id, "submission.media_attach", "submission", existing.uuid, request,
+            {"media": len(new)},
+        )
+        db.commit()
+    except BaseException:
+        db.rollback()
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
+    return existing
+
+
 def store_submission(
     db: Session,
     form_version: FormVersion,
@@ -278,7 +385,7 @@ def store_submission(
     # assignment was removed since. (Fast path only; the unique constraint is the real guard.)
     existing = _existing(db, uid)
     if existing is not None and existing.submitted_by == user.id:
-        return existing, False
+        return _attach_new_media(db, existing, user, media, request), False
     if user.role == "enumerator" and db.scalar(
         select(Assignment.id).where(
             Assignment.user_id == user.id, Assignment.form_id == form_version.form_id
@@ -290,18 +397,7 @@ def store_submission(
 
     # A zero-byte part is how a browser says "no file chosen": absent, not an error.
     media = {name: part for name, part in media.items() if part.data}
-    for part in media.values():
-        if len(part.data) > settings.max_media_bytes:
-            raise IntakeRefused(413, "file_too_large", "A file is larger than the media size limit")
-    slots = _media_questions(form_version.json_spec)
-    sniffed: dict[str, tuple[str, str]] = {}
-    for name, part in media.items():
-        if name not in slots:
-            raise IntakeRefused(422, "media_slot_unknown", "A file was sent for a question that takes no upload")
-        kind = _sniff(part.data, slots[name])
-        if kind is None:
-            raise IntakeRefused(415, "file_type_mismatch", f"A file's contents are not an accepted {slots[name]} format")
-        sniffed[name] = kind
+    sniffed = _check_media(media, form_version.json_spec)
 
     spec = form_version.json_spec
     data = _normalise(data)
@@ -342,7 +438,8 @@ def store_submission(
             winner = _existing(db, uid)
             if winner is None:
                 raise
-            return _replay(winner, user)
+            _replay(winner, user)  # someone else's id: 409
+            return _attach_new_media(db, winner, user, media, request), False
         for name, rows in repeats.items():
             for i, row in enumerate(rows, start=1):  # 1-based, as in the failure paths
                 db.add(RepeatRow(submission_id=sub.id, repeat_name=name, row_index=i, data_json=row))

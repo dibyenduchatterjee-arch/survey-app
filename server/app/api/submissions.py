@@ -2,7 +2,7 @@
 
 import math
 import uuid as uuidlib
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -27,40 +27,24 @@ from app.db.models import Form, FormVersion, MediaFile, RepeatRow, Submission, U
 from app.db.session import get_session
 from app.intake.duplicates import likely_duplicates
 from app.intake.submissions import (
+    MAX_MEDIA_PARTS,
+    MAX_SUBMISSION_JSON_BYTES,
     IntakeRefused,
     MediaPart,
     SubmissionMeta,
+    lenient_dt,
     resolve_form_version,
     store_submission,
 )
 
 router = APIRouter(prefix="/api", tags=["submissions"])
 
-MAX_MEDIA_PARTS = 20
-MAX_SUBMISSION_JSON_BYTES = 1024 * 1024
 _STATUSES = Literal["received", "flagged", "approved", "rejected"]
 _anyone = require_role("admin", "supervisor", "enumerator")
 _staff = frozenset({"admin", "supervisor"})
 
 
 # ---- request / response models ----------------------------------------------------
-
-
-def _lenient_dt(v: Any) -> datetime | None:
-    """A device clock or timezone setting can be wrong; that must never cost the visit."""
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.strip())
-        except ValueError:
-            return None
-    if not isinstance(v, datetime):
-        return None
-    try:
-        if not 1970 <= v.astimezone(UTC).year <= 2200:
-            return None
-    except (OverflowError, ValueError, OSError):
-        return None
-    return v
 
 
 def _lenient_float(v: Any) -> float | None:
@@ -82,8 +66,8 @@ class SubmissionIn(BaseModel):
     data: dict[str, JsonValue]
     repeats: dict[Annotated[str, StringConstraints(min_length=1, max_length=150)], list[dict[str, JsonValue]]] = {}
     device_id: str | None = Field(default=None, max_length=100)
-    started_at: Annotated[datetime | None, BeforeValidator(_lenient_dt)] = None
-    finished_at: Annotated[datetime | None, BeforeValidator(_lenient_dt)] = None
+    started_at: Annotated[datetime | None, BeforeValidator(lenient_dt)] = None
+    finished_at: Annotated[datetime | None, BeforeValidator(lenient_dt)] = None
     gps_lat: Annotated[float | None, BeforeValidator(_lenient_float)] = None
     gps_lon: Annotated[float | None, BeforeValidator(_lenient_float)] = None
     gps_accuracy: Annotated[float | None, BeforeValidator(_lenient_float)] = None

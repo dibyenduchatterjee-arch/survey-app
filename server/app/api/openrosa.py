@@ -26,6 +26,7 @@ Not verified against the real ODK Collect app in this phase (see the Task 12 rep
 import base64
 import binascii
 import hashlib
+import math
 import re
 import xml.etree.ElementTree as ET
 from datetime import UTC
@@ -41,7 +42,6 @@ from starlette.datastructures import UploadFile
 
 from app.api import auth
 from app.api.forms import list_forms
-from app.api.submissions import MAX_MEDIA_PARTS, MAX_SUBMISSION_JSON_BYTES, _lenient_dt
 from app.core.clientip import client_ip
 from app.core.config import get_settings
 from app.core.ratelimit import RateLimited
@@ -49,9 +49,12 @@ from app.core.security import dummy_verify, verify_password
 from app.db.models import Form, FormVersion, User
 from app.db.session import get_session
 from app.intake.submissions import (
+    MAX_MEDIA_PARTS,
+    MAX_SUBMISSION_JSON_BYTES,
     IntakeRefused,
     MediaPart,
     SubmissionMeta,
+    lenient_dt,
     resolve_form_version,
     store_submission,
     walk_nodes,
@@ -271,6 +274,24 @@ def parse_instance(root: ET.Element, spec: dict) -> tuple[dict, dict[str, list[d
     return scope, repeats, leaves
 
 
+def _geopoint(text: str) -> tuple[float, float, float | None]:
+    """ODK's "lat lon altitude accuracy" (altitude and accuracy optional) -> (lat, lon, accuracy).
+
+    An unreadable value is an error, never silently blank columns: blank coordinates would
+    read as "no GPS captured" when GPS was in fact captured.
+    """
+    parts = text.split()
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        nums = []
+    if not 2 <= len(nums) <= 4 or not all(math.isfinite(n) for n in nums)             or not (-90 <= nums[0] <= 90 and -180 <= nums[1] <= 180):
+        raise OpenRosaError(
+            422, "bad_geopoint", 'A location is not in the form "latitude longitude altitude accuracy"'
+        )
+    return nums[0], nums[1], nums[3] if len(nums) == 4 else None
+
+
 def _instance_uuid(root: ET.Element) -> str:
     for meta in root:
         if _local(meta.tag) == "meta":
@@ -323,9 +344,18 @@ def _intake(db: Session, user: User, root: ET.Element, files: dict[str, bytes], 
                     422, "media_slot_duplicate", "Two files were sent for one question; this endpoint takes one"
                 )
             media[qname] = MediaPart(filename, content)
+        gps = [
+            _geopoint(text)
+            for n in walk_nodes(spec["nodes"]) if n["type"] == "geopoint"
+            for qname, text in leaves if qname == n["name"]
+        ]
+        lat, lon, acc = gps[0] if gps else (None, None, None)  # the form's first location answered
         meta = SubmissionMeta(
-            started_at=_lenient_dt(_top_text(root, "start")),
-            finished_at=_lenient_dt(_top_text(root, "end")),
+            gps_lat=lat,
+            gps_lon=lon,
+            gps_accuracy=acc,
+            started_at=lenient_dt(_top_text(root, "start")),
+            finished_at=lenient_dt(_top_text(root, "end")),
         )
         return store_submission(db, fv, user, data, repeats, media, uuid, request, meta=meta)
     except IntakeRefused as e:
