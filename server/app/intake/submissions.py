@@ -133,6 +133,9 @@ def _replay(existing: Submission, user: User) -> tuple[Submission, bool]:
     return existing, False
 
 
+# Question types that take an upload. The one list: routes import it, they do not copy it.
+MEDIA_QUESTION_TYPES = frozenset({"image", "audio", "video", "file"})
+
 # What each media question type accepts, decided by the BYTES (the client's file name and
 # content type are ignored). A file whose bytes do not match its question's type is refused.
 _IMAGE = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
@@ -203,7 +206,7 @@ def walk_nodes(nodes: list[dict]):
 
 def _media_questions(spec: dict) -> dict[str, str]:
     """Question name -> its type, for every question that takes an upload."""
-    return {n["name"]: n["type"] for n in walk_nodes(spec["nodes"]) if n["type"] in ("image", "audio", "video", "file")}
+    return {n["name"]: n["type"] for n in walk_nodes(spec["nodes"]) if n["type"] in MEDIA_QUESTION_TYPES}
 
 
 def _repeat_names(spec: dict) -> set[str]:
@@ -301,6 +304,10 @@ def _attach_new_media(
     the same payload twice changes nothing. The submission row, its data and its receipt are
     untouched (no re-validation). Refusals (size, slot, bytes) happen before anything is
     written; a later failure rolls the rows back and removes only the files written here.
+
+    There is deliberately no assignment check here: a replay of something we already hold is
+    always answered, even if the assignment was removed since (the replay-always rule in
+    store_submission). The caller has already matched the submitter to the owner.
     """
     media = {name: part for name, part in media.items() if part.data}
     if not media:

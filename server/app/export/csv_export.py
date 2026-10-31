@@ -58,6 +58,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
 from app.db.models import RepeatRow, Submission, User
+from app.intake.geopoint import GeopointError, parse_geopoint
 from app.export.media import media_by_submission, media_name
 
 BOM = b"\xef\xbb\xbf"
@@ -135,38 +136,24 @@ class GeopointFormatError(ValueError):
     """A stored geopoint is not in the pinned wire format. Names the submission and question."""
 
 
-def _coord(x: Any, lo: float, hi: float) -> str | None:
-    if isinstance(x, bool) or x is None:
-        return None
-    try:
-        v = float(x)
-    except (TypeError, ValueError):
-        return None
-    return str(x) if lo <= v <= hi else None
-
-
 def _geo(value: Any, where: str) -> list[str]:
     """[lat, lon, accuracy]. No value at all is blank (no GPS captured); a malformed one raises
-    GeopointFormatError, which _cells catches at the row level."""
+    GeopointFormatError, which _cells catches at the row level. What is valid is decided by
+    the one parser in app.intake.geopoint, the same one intake uses."""
     if value is None or value == "":
         return ["", "", ""]
-    lat = lon = acc = None
-    if isinstance(value, str):
-        parts = value.split()
-        if 2 <= len(parts) <= 4:
-            lat, lon = parts[0], parts[1]
-            acc = parts[3] if len(parts) == 4 else None
-    elif isinstance(value, dict):
+    if isinstance(value, dict):  # an older stored shape: re-express it in the pinned format
         lat = value.get("lat", value.get("latitude"))
         lon = value.get("lon", value.get("lng", value.get("longitude")))
         acc = value.get("accuracy")
-    lat, lon = _coord(lat, -90, 90), _coord(lon, -180, 180)
-    accuracy = _coord(acc, 0, float("inf")) if acc is not None else ""
-    if lat is None or lon is None or accuracy is None:
+        value = f"{lat} {lon}" if acc is None else f"{lat} {lon} 0 {acc}"
+    try:
+        g = parse_geopoint(value)
+    except GeopointError:
         raise GeopointFormatError(
             f"{where}: geopoint {value!r} is not 'lat lon [altitude [accuracy]]'"
-        )
-    return [lat, lon, accuracy]
+        ) from None
+    return [g.tokens[0], g.tokens[1], g.tokens[3] if len(g.tokens) == 4 else ""]
 
 
 def _cells(questions: list[dict], data: dict, media: dict[str, str], uuid: str,

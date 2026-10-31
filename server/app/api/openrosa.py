@@ -26,7 +26,6 @@ Not verified against the real ODK Collect app in this phase (see the Task 12 rep
 import base64
 import binascii
 import hashlib
-import math
 import re
 import xml.etree.ElementTree as ET
 from datetime import UTC
@@ -46,9 +45,11 @@ from app.core.clientip import client_ip
 from app.core.config import get_settings
 from app.core.ratelimit import RateLimited
 from app.core.security import dummy_verify, verify_password
-from app.db.models import Form, FormVersion, User
+from app.db.models import Form, FormVersion, MediaFile, User
 from app.db.session import get_session
+from app.intake.geopoint import GeopointError, parse_geopoint
 from app.intake.submissions import (
+    MEDIA_QUESTION_TYPES,
     MAX_MEDIA_PARTS,
     MAX_SUBMISSION_JSON_BYTES,
     IntakeRefused,
@@ -63,7 +64,6 @@ from app.intake.submissions import (
 OPENROSA_VERSION = "1.0"
 _RESPONSE_NS = "http://openrosa.org/http/response"
 _LIST_NS = "http://openrosa.org/xforms/xformsList"
-_MEDIA_TYPES = frozenset({"image", "audio", "video", "file"})
 _NUMBER = re.compile(r"-?\d+")
 _BASIC_REALM = 'Basic realm="Evidence Action survey platform", charset="UTF-8"'
 
@@ -274,22 +274,15 @@ def parse_instance(root: ET.Element, spec: dict) -> tuple[dict, dict[str, list[d
     return scope, repeats, leaves
 
 
-def _geopoint(text: str) -> tuple[float, float, float | None]:
-    """ODK's "lat lon altitude accuracy" (altitude and accuracy optional) -> (lat, lon, accuracy).
-
-    An unreadable value is an error, never silently blank columns: blank coordinates would
-    read as "no GPS captured" when GPS was in fact captured.
-    """
-    parts = text.split()
+def _gps(text: str):
+    """An unreadable location is an error, never silently blank columns: blank coordinates
+    would read as "no GPS captured" when GPS was in fact captured."""
     try:
-        nums = [float(p) for p in parts]
-    except ValueError:
-        nums = []
-    if not 2 <= len(nums) <= 4 or not all(math.isfinite(n) for n in nums)             or not (-90 <= nums[0] <= 90 and -180 <= nums[1] <= 180):
+        return parse_geopoint(text)
+    except GeopointError:
         raise OpenRosaError(
             422, "bad_geopoint", 'A location is not in the form "latitude longitude altitude accuracy"'
-        )
-    return nums[0], nums[1], nums[3] if len(nums) == 4 else None
+        ) from None
 
 
 def _instance_uuid(root: ET.Element) -> str:
@@ -329,7 +322,7 @@ def _intake(db: Session, user: User, root: ET.Element, files: dict[str, bytes], 
         fv = resolve_form_version(db, user, form_id, version, uuid)
         spec = fv.json_spec
         data, repeats, leaves = parse_instance(root, spec)
-        slots = {n["name"] for n in walk_nodes(spec["nodes"]) if n["type"] in _MEDIA_TYPES}
+        slots = {n["name"] for n in walk_nodes(spec["nodes"]) if n["type"] in MEDIA_QUESTION_TYPES}
         by_file: dict[str, str] = {}
         for qname, text in leaves:
             if qname in slots:
@@ -345,19 +338,24 @@ def _intake(db: Session, user: User, root: ET.Element, files: dict[str, bytes], 
                 )
             media[qname] = MediaPart(filename, content)
         gps = [
-            _geopoint(text)
+            _gps(text)
             for n in walk_nodes(spec["nodes"]) if n["type"] == "geopoint"
             for qname, text in leaves if qname == n["name"]
         ]
-        lat, lon, acc = gps[0] if gps else (None, None, None)  # the form's first location answered
+        first = gps[0] if gps else None  # the form's first location answered
         meta = SubmissionMeta(
-            gps_lat=lat,
-            gps_lon=lon,
-            gps_accuracy=acc,
+            gps_lat=first.lat if first else None,
+            gps_lon=first.lon if first else None,
+            gps_accuracy=first.accuracy if first else None,
             started_at=lenient_dt(_top_text(root, "start")),
             finished_at=lenient_dt(_top_text(root, "end")),
         )
-        return store_submission(db, fv, user, data, repeats, media, uuid, request, meta=meta)
+        sub, created = store_submission(db, fv, user, data, repeats, media, uuid, request, meta=meta)
+        # The instance names every file it expects. Any slot it names that still has no stored
+        # file means more attachments are coming in a later POST.
+        expected = {q for q, _ in leaves if q in slots}
+        held = set(db.scalars(select(MediaFile.question_name).where(MediaFile.submission_id == sub.id)))
+        return sub, created, len(expected - held)
     except IntakeRefused as e:
         raise _from_intake(e) from None
 
@@ -405,14 +403,18 @@ async def submission_post(
     finally:
         await form.close()
     root = _parse_xml(xml_raw)
-    sub, _created = await run_in_threadpool(_intake, db, user, root, files, request)
-    # 201 for a replay too: ODK Collect counts only 201/202 as delivered, and a retry must
-    # be told it succeeded so the phone stops resending.
+    sub, _created, outstanding = await run_in_threadpool(_intake, db, user, root, files, request)
+    # 201 when complete, for a replay too: ODK Collect counts only 201/202 as delivered, and a
+    # retry must be told it succeeded so the phone stops resending. 202 when the instance names
+    # attachments that have not arrived yet: the phone must keep sending, not discard them.
     flagged = sub.status == "flagged"
+    text = "Submission received and flagged for review" if flagged else "Submission received"
+    if outstanding:
+        text += f"; {outstanding} attachment(s) still to be sent"
     doc = _response_doc(
-        "Submission received and flagged for review" if flagged else "Submission received",
+        text,
         "submit_success",
         instanceID=f"uuid:{sub.uuid}",
         submissionDate=sub.received_at.astimezone(UTC).isoformat(),
     )
-    return _xml(doc, 201)
+    return _xml(doc, 202 if outstanding else 201)

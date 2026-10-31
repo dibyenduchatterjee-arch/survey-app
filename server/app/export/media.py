@@ -63,9 +63,10 @@ def build_media_zip(submissions: Sequence[Submission]) -> bytes:
     root = Path(get_settings().media_root)
     buf = io.BytesIO()
     skipped: list[str] = []
+    by_submission = media_by_submission(submissions)  # one query per 500, not one per submission
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for s in submissions:
-            for m in media_by_submission([s])[s.id]:
+            for m in by_submission.get(s.id, []):
                 try:
                     data = decrypt_bytes((root / m.storage_path).read_bytes())
                 except (OSError, InvalidTag) as e:

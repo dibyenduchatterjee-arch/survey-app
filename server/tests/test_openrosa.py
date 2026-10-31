@@ -340,9 +340,11 @@ def test_a_submission_split_across_posts_keeps_every_file(client, db, form, enum
     """Collect sends the same instance again with the attachments it did not fit in the first POST."""
     uid, xml = instance(form)
     first = post(client, xml, media={})
-    assert first.status_code == 201 and _count(db, MediaFile) == 0
+    assert first.status_code == 202 and _count(db, MediaFile) == 0  # the photo is named but not here yet
+    again = post(client, xml, media={})  # still outstanding: still 202, still one submission
+    assert again.status_code == 202 and _count(db, Submission) == 1
     second = post(client, xml, media={"p.jpg": JPEG})
-    assert second.status_code == 201
+    assert second.status_code == 201  # everything the instance names is now stored
     assert _count(db, Submission) == 1 and _count(db, MediaFile) == 1
     third = post(client, xml, media={"p.jpg": JPEG})  # the same again changes nothing
     assert third.status_code == 201 and _count(db, MediaFile) == 1
@@ -350,6 +352,20 @@ def test_a_submission_split_across_posts_keeps_every_file(client, db, form, enum
     assert m.question_name == "household_photo" and len([p for p in media_root.rglob("*") if p.is_file()]) == 1
     meta = [ET.fromstring(r.text).find(RESP_NS + "submissionMetadata").get("submissionDate") for r in (first, second, third)]
     assert len(set(meta)) == 1
+
+
+def test_202_names_how_many_attachments_are_outstanding_and_201_when_none_are_expected(client, db, form, enum):
+    _, xml = instance(form)
+    r = post(client, xml, media={})
+    assert r.status_code == 202 and "1 attachment" in msg(r).text and msg(r).get("nature") == "submit_success"
+    _, none_expected = instance(form, photo="")
+    r = post(client, none_expected, media={})
+    assert r.status_code == 201 and "attachment" not in msg(r).text
+
+
+def test_a_complete_single_post_is_201(client, form, enum):
+    _, xml = instance(form)
+    assert post(client, xml).status_code == 201
 
 
 def test_the_geopoint_string_fills_the_gps_columns(client, db, form, enum):
@@ -367,7 +383,9 @@ def test_a_geopoint_without_accuracy_still_gives_coordinates(client, db, form, e
     assert (s.gps_lat, s.gps_lon, s.gps_accuracy) == (25.6, 85.1, None)
 
 
-@pytest.mark.parametrize("bad", ["north east", "25.6", "95 85 0 5", "25 200 0 5", "nan 85 0 1", "1 2 3 4 5"])
+@pytest.mark.parametrize(
+    "bad", ["north east", "25.6", "95 85 0 5", "25 200 0 5", "nan 85 0 1", "1 2 3 4 5", "25 85 1 -2", "25 85 abc 4"]
+)
 def test_an_unparseable_geopoint_is_an_error_not_blank_columns(client, db, form, enum, media_root, bad):
     _, xml = instance(form, location=bad)
     r = post(client, xml)

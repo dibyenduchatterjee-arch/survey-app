@@ -317,7 +317,7 @@ def test_submitted_by_is_the_username(spec, make):
     assert dicts(build_csvs(spec, [make(U1)])[MAIN])[0]["submitted_by"] == "asha1"
 
 
-@pytest.mark.parametrize("bad", ["somewhere", "25.6", "a b", "25 85 1 2 3", "95 85", "25 190", "25 85 1 -2"])
+@pytest.mark.parametrize("bad", ["somewhere", "25.6", "a b", "25 85 1 2 3", "95 85", "25 190", "25 85 1 -2", "25 85 abc 4"])
 def test_a_malformed_geopoint_is_blank_and_listed_and_other_rows_survive(spec, make, bad):
     good = make(U2, {"visit_location": "25.6 85.1 0 4", "asha_name": "Sunita"})
     files = build_csvs(spec, [make(U1, {"visit_location": bad, "asha_name": "Rani"}), good])
@@ -337,3 +337,18 @@ def test_no_error_file_when_every_geopoint_is_fine(spec, make):
 def test_geopoint_without_altitude_or_accuracy_is_valid(spec, make):
     row = dicts(build_csvs(spec, [make(U1, {"visit_location": "25.6 85.1"})])[MAIN])[0]
     assert (row["visit_location_lat"], row["visit_location_accuracy"]) == ("25.6", "")
+
+
+def test_the_media_zip_reads_media_rows_in_chunks_not_per_submission(db, make, media_root):
+    from sqlalchemy import event
+
+    subs = [make(f"00000000-0000-4000-8000-00000000000{i}") for i in range(4)]
+    seen: list[str] = []
+    engine = db.get_bind()
+    listener = lambda conn, cur, stmt, *a: seen.append(stmt) if "FROM media_files" in stmt else None  # noqa: E731
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        build_media_zip(subs)
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+    assert len(seen) == 1
