@@ -130,6 +130,7 @@ New file: `Backend.gs`. Paste it beside `Code.gs` (new file named `Backend`). It
    | Project name | Drive folder id | Data spreadsheet id |
    |---|---|---|
    - *Drive folder id*: open the project's Drive folder; the id is the last part of the address (`.../folders/<this part>`). The `*.spec.json` form files and a `photos` folder live here.
+   - *Each project needs its own Drive folder.* The phone tells projects apart by a code derived from the folder, not by the name, so two projects may share a name but never a folder (the Check menu reports it). Pointing a project at a different folder later makes phones treat it as a new project.
    - *Data spreadsheet id*: open the project's data Google Sheet; the id is the long part between `/d/` and `/edit`. It can be this same Sheet.
    - Project names must be **unique**.
 4. **People tab - one row per person:**

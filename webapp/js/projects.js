@@ -3,7 +3,10 @@
 // server-version supervisor console only).
 //
 // The model: a worker types a project's access code. The backend answers with that project's
-// name and a session token. Both are kept in IndexedDB (db.js), never localStorage. A device
+// stable id, its name and a session token. All are kept in IndexedDB (db.js), never localStorage.
+// A project is KEYED by the id the backend sends (`project_id`), never by its name: two projects
+// can share a name, and then their forms and queued records would attach to each other. The name is
+// only what is shown. A device
 // can hold several projects at once; each is its own record and its own token, so entering a
 // second code ADDS a project and never replaces the first.
 //
@@ -38,8 +41,14 @@ export class ApiError extends Error {
 export async function appsScriptUrl() {
   let url;
   try { url = (await import('../config.js')).config.appsScriptUrl; } catch { url = undefined; }
-  if (!isUsableUrl(url)) throw new ApiError('not_configured', 'The Apps Script URL is not set in config.js', { retry: false });
+  if (!isUsableUrl(url)) throw new ApiError('not_configured', 'This app has not been set up yet: the web address of the survey server is still the placeholder in config.js.', { retry: false });
   return url;
+}
+
+// Has config.js been filled in? (Never throws.) The app asks this before anything else and says
+// so in plain words when it has not, instead of letting a call fail with a network error.
+export async function isConfigured() {
+  try { await appsScriptUrl(); return true; } catch { return false; }
 }
 
 // True for a real https address, false for the placeholder in config.example.js or nothing at all.
@@ -81,7 +90,8 @@ export async function callApi(body, { fetchImpl, url, timeoutMs = 60_000 } = {})
 // ---- projects held on this device -------------------------------------------------
 
 const recordId = key => PREFIX + key;
-const publicView = r => ({ key: r.key, name: r.name, person: r.person || '', revoked: !!r.revoked });
+// `legacy` appears only on a record from before ids existed (still keyed by name, not yet moved).
+const publicView = r => ({ key: r.key, name: r.name, person: r.person || '', revoked: !!r.revoked, ...(r.by_id ? {} : { legacy: true }) });
 
 // Every project this device holds, in the order they were added.
 export async function listProjects({ store = defaultStore } = {}) {
@@ -110,19 +120,56 @@ export async function openProject(code, { fetchImpl, store = defaultStore, url, 
   const typed = String(code || '').trim();
   if (!typed) throw new ApiError('refused', 'Enter the project code', { retry: false });
   const reply = await callApi({ action: 'open', code: typed }, { fetchImpl, url });
-  const name = typeof reply.project === 'string' ? reply.project.trim() : '';
-  if (!name || typeof reply.token !== 'string' || !reply.token) {
+  const { name, key } = identityOf(reply);
+  if (typeof reply.token !== 'string' || !reply.token) {
     throw new ApiError('bad_reply', 'The server did not answer properly', { retry: true });
   }
-  const id = recordId(name);
-  const prev = await store.getSessionRecord(id);
+  // Data stored by an older build under this project's NAME moves to its id first.
+  const legacy = await store.getSessionRecord(recordId(name));
+  const id = recordId(key);
+  if (legacy && !legacy.by_id) await store.migrateProjectKey(name, key, name);
+  const prev = (await store.getSessionRecord(id)) || legacy;
+  const person = typeof reply.person === 'string' ? reply.person : '';
   await store.putSessionRecord({
-    id, key: name, name, person: typeof reply.person === 'string' ? reply.person : '', code: typed, token: reply.token,
+    id, key, name, by_id: true, person, code: typed, token: reply.token,
     expires_at: reply.expires_at || null, revoked: false,
     added_at: prev && prev.added_at ? prev.added_at : now(),
   });
-  await store.putSessionRecord({ id: 'active', key: name });
-  return { key: name, name, person: typeof reply.person === 'string' ? reply.person : '' };
+  await store.putSessionRecord({ id: 'active', key });
+  return { key, name, person };
+}
+
+// { key, name } from an open reply. A reply with no project_id comes from a script deployed before
+// ids existed: using the name instead would bring back the very collision ids prevent, so refuse
+// plainly (not retryable: the owner must redeploy).
+function identityOf(reply) {
+  const name = typeof reply.project === 'string' ? reply.project.trim() : '';
+  if (!name) throw new ApiError('bad_reply', 'The server did not answer properly', { retry: true });
+  const key = typeof reply.project_id === 'string' ? reply.project_id.trim() : '';
+  if (!key) throw new ApiError('server_outdated', 'The survey server is an old version. Ask the person who runs it to deploy the new version.', { retry: false });
+  return { name, key };
+}
+
+// Phones that logged in before ids existed hold `project:<name>` records. Re-open each with its
+// stored code to learn its id, then move everything stored under the name (see db.js
+// migrateProjectKey). A project that cannot be asked right now (offline, refused) is left exactly
+// as it is and tried again on the next call; its queue is never touched. Returns the names left.
+export async function upgradeLegacyProjects({ fetchImpl, store = defaultStore, url } = {}) {
+  const left = [];
+  for (const rec of await store.listProjectSessions()) {
+    if (rec.by_id) continue;
+    try {
+      if (!rec.code) throw new ApiError('refused', '', { retry: false });
+      const reply = await callApi({ action: 'open', code: rec.code }, { fetchImpl, url });
+      const { name, key } = identityOf(reply);
+      await store.migrateProjectKey(rec.key, key, name);
+      const cur = await store.getSessionRecord(recordId(key));
+      if (cur && typeof reply.token === 'string' && reply.token) {
+        await store.putSessionRecord({ ...cur, token: reply.token, expires_at: reply.expires_at || null, revoked: false, person: typeof reply.person === 'string' ? reply.person : cur.person });
+      }
+    } catch { left.push(rec.name || rec.key); }
+  }
+  return left;
 }
 
 // Forget ONE project on this device (or all of them with no key). The queue, drafts, forms
@@ -156,7 +203,7 @@ export async function tokenFor(key, { fetchImpl, store = defaultStore, url, forc
     // Re-read: the person may have signed out while we were waiting.
     const cur = await store.getSessionRecord(id);
     if (!cur) throw new ApiError('no_project', 'This project is not open on this phone', { retry: false });
-    await store.putSessionRecord({ ...cur, person: typeof reply.person === 'string' ? reply.person : cur.person, token: reply.token, expires_at: reply.expires_at || null, revoked: false });
+    await store.putSessionRecord({ ...cur, name: typeof reply.project === 'string' && reply.project.trim() ? reply.project.trim() : cur.name, person: typeof reply.person === 'string' ? reply.person : cur.person, token: reply.token, expires_at: reply.expires_at || null, revoked: false });
     return reply.token;
   } catch (e) {
     if (e instanceof ApiError && e.code === 'refused') {

@@ -174,6 +174,16 @@ function parsePeople(values) {
   });
 }
 
+/**
+ * The project's stable identity on the phone: a short hash of its Drive folder id. The name is
+ * only what people read (two projects can end up with the same name; sharing a folder by accident
+ * is reported by projectProblems). Opaque, so the folder id itself never leaves the script.
+ * Changes only if the Projects row is pointed at a different folder.
+ */
+function projectIdOf_(project, sha) {
+  return sha('project-id|' + project.folderId).slice(0, 16);
+}
+
 /** The one usable project with this name (case-insensitive), or null if none or if the name is ambiguous. */
 function resolveProject_(projects, name) {
   var key = String(name || '').trim().toLowerCase();
@@ -190,6 +200,11 @@ function projectProblems(projects, people) {
     if (!p.usable) msgs.push(label + ': the name, Drive folder id or data spreadsheet id is empty, so nobody can be given this project.');
     var k = p.name.toLowerCase();
     if (k) names[k] = (names[k] || 0) + 1;
+  });
+  var folders = {};
+  projects.forEach(function (p) { if (p.folderId) folders[p.folderId] = (folders[p.folderId] || 0) + 1; });
+  Object.keys(folders).forEach(function (f) {
+    if (folders[f] > 1) msgs.push('Projects: the Drive folder id "' + f + '" is used by ' + folders[f] + ' rows. Each project needs its own folder, because the folder is what tells projects apart on the phone.');
   });
   Object.keys(names).forEach(function (k) {
     if (names[k] > 1) msgs.push('Projects: the name "' + k + '" appears ' + names[k] + ' times. Names must be unique, so everyone on that project is locked out until fixed.');
@@ -500,7 +515,7 @@ function doOpen_(body, deps) {
     return refused_();
   }
   return {
-    ok: true, project: hit.project.name, person: hit.person.name,
+    ok: true, project: hit.project.name, project_id: projectIdOf_(hit.project, deps.sha256hex), person: hit.person.name,
     token: signToken_(hit.person, now, deps.sha256hex, deps.hmacHex, deps.secret),
     expires_at: new Date(now + SESSION_TTL_MS).toISOString(),
     ttl_s: SESSION_TTL_MS / 1000
@@ -511,7 +526,7 @@ function doForms_(body, deps) {
   var auth = authorise_(body, deps);
   if (!auth) return sessionExpired_();
   var parsed = parseSpecFiles(deps.listSpecFiles(auth.project));
-  return { ok: true, project: auth.project.name, person: auth.person.name, forms: parsed.forms, skipped: parsed.skipped };
+  return { ok: true, project: auth.project.name, project_id: projectIdOf_(auth.project, deps.sha256hex), person: auth.person.name, forms: parsed.forms, skipped: parsed.skipped };
 }
 
 function doSubmit_(body, deps) {
@@ -833,7 +848,7 @@ function checkProjects() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     makeStoredCode: makeStoredCode, verifyCode: verifyCode, isStoredCode: isStoredCode, generateCode: generateCode,
-    codeProblem: codeProblem, parseProjects: parseProjects, parsePeople: parsePeople, projectProblems: projectProblems, findPerson: findPerson,
+    codeProblem: codeProblem, parseProjects: parseProjects, parsePeople: parsePeople, projectProblems: projectProblems, findPerson: findPerson, projectIdOf_: projectIdOf_,
     downloadPageAllowed: downloadPageAllowed, parseSpecFiles: parseSpecFiles, parseBody: parseBody,
     validateSubmission: validateSubmission, planTab: planTab, planColumns: planColumns, dispatch: dispatch,
     PROJECT_HEADERS: PROJECT_HEADERS, PEOPLE_HEADERS: PEOPLE_HEADERS, exampleProjectRow: exampleProjectRow, examplePersonRow: examplePersonRow

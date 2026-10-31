@@ -1,4 +1,6 @@
-// Copy this file to config.js and paste your Apps Script Web App address below.
+// config.js is committed (it holds only the Apps Script address, which is not a secret), so you
+// normally just edit config.js directly. This file is the pristine placeholder to copy back from.
+// Paste your Apps Script Web App address below.
 //
 // Where to find it: in the Apps Script editor, Deploy > Manage deployments > the Web app
 // deployment > "Web app URL". It ends in /exec.

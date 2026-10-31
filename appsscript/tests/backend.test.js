@@ -613,3 +613,26 @@ test('codeProblem: short codes and codes with spaces are not accepted', () => {
   assert.equal(L.codeProblem('abc123'), '');
   assert.equal(L.codeProblem('   '), L.codeProblem(''));
 });
+
+test('open and forms return a stable project_id that is not the name and does not leak the folder id', () => {
+  const w = makeWorld();
+  const a = w.open('AMB12345'), b = w.open('ODI67890');
+  assert.match(a.project_id, /^[0-9a-f]{16}$/);
+  assert.notEqual(a.project_id, b.project_id);
+  assert.equal(w.open('ravi55555').project_id, a.project_id);      // same project, same id, whoever opens it
+  assert.equal(w.open('AMB12345').project_id, a.project_id);       // and on every open
+  assert.ok(!a.project_id.includes('folderA'));
+  assert.equal(w.call({ action: 'forms', token: a.token }).project_id, a.project_id);
+});
+
+test('two projects with the same name still get different ids (and the sheet reports it)', () => {
+  const w = makeWorld({ projects: [PROJ_HEADER, ['Twin', 'folderA', 'ssA'], ['Twin', 'folderB', 'ssB']] });
+  const ids = L.parseProjects(w.projects).map(p => L.projectIdOf_(p, sha));
+  assert.notEqual(ids[0], ids[1]);
+  assert.match(L.projectProblems(L.parseProjects(w.projects), []).join('\n'), /"twin" appears 2 times/);
+});
+
+test('projectProblems flags a Drive folder shared by two rows', () => {
+  const projects = L.parseProjects([PROJ_HEADER, ['One', 'sameFolder', 'ss1'], ['Two', 'sameFolder', 'ss2']]);
+  assert.match(L.projectProblems(projects, []).join('\n'), /sameFolder.*2 rows/);
+});

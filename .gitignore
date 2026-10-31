@@ -35,5 +35,5 @@ Thumbs.db
 # SDD scratch workspace (ledger, briefs, review packages)
 .superpowers/
 
-# local config (client id, picker key) - never commit
-webapp/config.js
+# webapp/config.js is COMMITTED on purpose: it holds only the Apps Script address, which is not a
+# secret (without a valid access code it returns nothing), and GitHub Pages must ship it.

@@ -29,7 +29,7 @@
 // Node with no network.
 
 import * as defaultStore from './db.js';
-import { ApiError, callApi, listProjects, tokenFor } from './projects.js';
+import { ApiError, callApi, listProjects, tokenFor, upgradeLegacyProjects } from './projects.js';
 
 export const BACKOFF_BASE_MS = 5_000;       // between whole sync runs, after a failed run
 export const BACKOFF_CAP_MS = 300_000;
@@ -384,7 +384,10 @@ export async function bootstrap(options) {
   const { store, retry } = ctx;
   const out = { forms: [], datasets: [], config: {}, errors: [] };
 
-  const projects = (await listProjects({ store })).filter(p => !p.revoked);
+  // A login from before ids existed is moved to its id first. One that cannot be asked right now
+  // keeps working under its old key for sending, and is simply tried again next time.
+  await upgradeLegacyProjects({ fetchImpl: ctx.fetchImpl, store, url: ctx.url });
+  const projects = (await listProjects({ store })).filter(p => !p.revoked && !p.legacy);
   let asked = 0;
   let unreachable = null;
   for (const project of projects) {

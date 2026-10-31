@@ -32,9 +32,9 @@ test("a valid code lists only that project's forms, tagged and namespaced", asyn
   const store = await ready(be);
   const forms = await store.listForms();
   assert.equal(forms.length, 1);
-  assert.equal(forms[0].form_id, "Bihar AMB::visit");
+  assert.equal(forms[0].form_id, "id-Bihar AMB::visit");
   assert.equal(forms[0]._form_id, "visit");
-  assert.deepEqual(forms[0]._project, { id: "Bihar AMB", name: "Bihar AMB" });
+  assert.deepEqual(forms[0]._project, { id: "id-Bihar AMB", name: "Bihar AMB" });
   assert.equal(forms[0].title.en, "Home visit");
 });
 
@@ -42,9 +42,9 @@ test("two codes on one device: both projects' forms are kept apart even with the
   const be = world();
   const store = await ready(be, ["GAYA2026", "PATNA"]);
   const forms = await store.listForms();
-  assert.deepEqual(forms.map(f => f.form_id).sort(), ["Bihar AMB::visit", "Patna WIFS::visit"]);
-  assert.equal((await store.getForm("Patna WIFS::visit", "2026103101")).nodes[0].name, "school_name");
-  assert.equal((await store.getForm("Bihar AMB::visit", "2026103101")).nodes[0].name, "asha_name");
+  assert.deepEqual(forms.map(f => f.form_id).sort(), ["id-Bihar AMB::visit", "id-Patna WIFS::visit"]);
+  assert.equal((await store.getForm("id-Patna WIFS::visit", "2026103101")).nodes[0].name, "school_name");
+  assert.equal((await store.getForm("id-Bihar AMB::visit", "2026103101")).nodes[0].name, "asha_name");
 });
 
 test("each project's forms are fetched with that project's own token only", async () => {
@@ -58,8 +58,8 @@ test("each project's forms are fetched with that project's own token only", asyn
 test("a submission goes to its own project and never to another", async () => {
   const be = world();
   const store = await ready(be, ["GAYA2026", "PATNA"]);
-  await store.enqueue(sub("a1", "Bihar AMB::visit"), {});
-  await store.enqueue(sub("p1", "Patna WIFS::visit", { data: { school_name: "School 7" } }), {});
+  await store.enqueue(sub("a1", "id-Bihar AMB::visit"), {});
+  await store.enqueue(sub("p1", "id-Patna WIFS::visit", { data: { school_name: "School 7" } }), {});
   const r = await sync.syncOnce(opts(store, be));
   assert.equal(r.uploaded, 2);
   assert.equal(be.rows("Bihar AMB", "visit").length, 1);
@@ -76,17 +76,17 @@ test("a new form version is stored alongside the old one, never replacing it", a
   const r = await sync.bootstrap(opts(store, be));
   assert.equal(r.forms.filter(f => f.downloaded).length, 1);
   assert.equal((await store.listForms()).length, 2);
-  assert.equal((await store.getForm("Bihar AMB::visit", "2026103101")).nodes.length, FORM_A.nodes.length);
+  assert.equal((await store.getForm("id-Bihar AMB::visit", "2026103101")).nodes.length, FORM_A.nodes.length);
 });
 
 test("an already-stored version is left exactly as it was (a draft keeps the form it started on)", async () => {
   const be = world();
   const store = await ready(be);
-  const before = JSON.stringify(await store.getForm("Bihar AMB::visit", "2026103101"));
+  const before = JSON.stringify(await store.getForm("id-Bihar AMB::visit", "2026103101"));
   be.projects.GAYA2026.forms = [{ ...FORM_A, title: { en: "CHANGED SAME VERSION" } }];
   const r = await sync.bootstrap(opts(store, be));
   assert.equal(r.forms[0].downloaded, false);
-  assert.equal(JSON.stringify(await store.getForm("Bihar AMB::visit", "2026103101")), before);
+  assert.equal(JSON.stringify(await store.getForm("id-Bihar AMB::visit", "2026103101")), before);
 });
 
 test("one bad spec does not stop the others, and a project that fails does not stop the next", async () => {
@@ -318,7 +318,7 @@ test("a photo goes up as base64 with its mime, and its own question's cell is se
 test("repeat rows go in their own tabs carrying the parent uuid and row indexes; the main tab is last", async () => {
   const be = world();
   const store = await ready(be);
-  await store.enqueue(sub("u1", "Bihar AMB::visit", { repeats: { children: [{ child_name: "Ravi", doses: [{ dose_ml: 1 }, { dose_ml: 2 }] }, { child_name: "Mina" }] } }), {});
+  await store.enqueue(sub("u1", "id-Bihar AMB::visit", { repeats: { children: [{ child_name: "Ravi", doses: [{ dose_ml: 1 }, { dose_ml: 2 }] }, { child_name: "Mina" }] } }), {});
   await sync.syncOnce(opts(store, be));
   const body = submits(be)[0];
   assert.deepEqual(body.tabs.map(t => t.name), ["visit_children", "visit_children_doses", "visit"]);
@@ -333,7 +333,7 @@ test("repeat rows go in their own tabs carrying the parent uuid and row indexes;
 test("an answer starting with = is passed through as plain data", async () => {
   const be = world();
   const store = await ready(be);
-  await store.enqueue(sub("u1", "Bihar AMB::visit", { data: { asha_name: "=HYPERLINK(1)" } }), {});
+  await store.enqueue(sub("u1", "id-Bihar AMB::visit", { data: { asha_name: "=HYPERLINK(1)" } }), {});
   await sync.syncOnce(opts(store, be));
   assert.equal(be.rows("Bihar AMB", "visit")[0].asha_name, "=HYPERLINK(1)");
 });
@@ -355,11 +355,11 @@ test("when access is withdrawn the record stays queued, nothing is rejected, and
   const be = world();
   const store = await ready(be, ["GAYA2026", "PATNA"]);
   await store.enqueue(sub("a1"), {});
-  await store.enqueue(sub("p1", "Patna WIFS::visit", { data: { school_name: "S" } }), {});
+  await store.enqueue(sub("p1", "id-Patna WIFS::visit", { data: { school_name: "S" } }), {});
   be.projects.GAYA2026.active = false;
   const r = await sync.syncOnce(opts(store, be));
   assert.equal(r.authRequired, true);
-  assert.deepEqual(r.lostProjects, ["Bihar AMB"]);
+  assert.deepEqual(r.lostProjects, ["id-Bihar AMB"]);
   assert.equal(r.rejected, 0);
   assert.equal(r.uploaded, 1);
   assert.equal(await store.queueLength(), 1);
@@ -449,7 +449,7 @@ test("two overlapping syncOnce calls share one run", async () => {
 test("a submission whose form was never stored is skipped and kept", async () => {
   const be = world();
   const store = await ready(be);
-  await store.enqueue(sub("u1", "Bihar AMB::gone"), {});
+  await store.enqueue(sub("u1", "id-Bihar AMB::gone"), {});
   const r = await sync.syncOnce(opts(store, be));
   assert.equal(r.skipped, 1);
   assert.equal(await store.queueLength(), 1);
@@ -470,4 +470,48 @@ test("the service worker leaves cross-origin and /api/ requests alone, so backen
   assert.match(sw, /\/api\//);
   assert.match(sw, /req\.method !== 'GET'\) return/);
   assert.match(sw, /'js\/projects\.js'/);
+});
+
+// ---- same-name projects through the whole path ----------------------------------------------
+
+test("two projects with the same name keep forms, queue and rows apart", async () => {
+  const be = fakeBackend({
+    ONE: { name: "Anaemia", id: "pid-one", forms: [FORM_A] },
+    TWO: { name: "Anaemia", id: "pid-two", forms: [FORM_B] },
+  });
+  const store = await ready(be, ["ONE", "TWO"]);
+  assert.deepEqual((await store.listForms()).map(f => f.form_id).sort(), ["pid-one::visit", "pid-two::visit"]);
+  await store.enqueue(sub("a1", "pid-one::visit"), {});
+  await store.enqueue(sub("b1", "pid-two::visit", { data: { school_name: "S" } }), {});
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.uploaded, 2);
+  assert.deepEqual(be.rows("pid-one", "visit").map(x => x.uuid), ["a1"]);
+  assert.deepEqual(be.rows("pid-two", "visit").map(x => x.uuid), ["b1"]);
+});
+
+test("a name-keyed phone is moved to ids on the next bootstrap, and its queued record then sends once, same uuid", async () => {
+  const be = world();
+  const store = memStore();
+  await store.putSessionRecord({ id: "project:Bihar AMB", key: "Bihar AMB", name: "Bihar AMB", person: "Sita", code: "GAYA2026", token: "stale", expires_at: null, revoked: false, added_at: 1 });
+  await store.putForm({ ...FORM_A, form_id: "Bihar AMB::visit", _form_id: "visit", _project: { id: "Bihar AMB", name: "Bihar AMB" } });
+  await store.enqueue(sub("u1", "Bihar AMB::visit"), {});
+  await sync.bootstrap(opts(store, be));
+  assert.equal(await store.getSessionRecord("project:Bihar AMB"), undefined);
+  assert.equal(store.queue[0].uuid, "u1");
+  assert.equal(store.queue[0].form_id, "id-Bihar AMB::visit");
+  assert.deepEqual((await store.listForms()).map(f => f.form_id), ["id-Bihar AMB::visit"]);   // no stray name-keyed copy
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.uploaded, 1);
+  assert.equal(be.rows("Bihar AMB", "visit")[0].uuid, "u1");
+  assert.equal(store.queue.length, 0);
+});
+
+test("a name-keyed phone not yet moved still sends its queue under the old key", async () => {
+  const be = world();
+  const store = memStore();
+  await store.putSessionRecord({ id: "project:Bihar AMB", key: "Bihar AMB", name: "Bihar AMB", person: "Sita", code: "GAYA2026", token: null, expires_at: null, revoked: false, added_at: 1 });
+  await store.putForm({ ...FORM_A, form_id: "Bihar AMB::visit", _form_id: "visit", _project: { id: "Bihar AMB", name: "Bihar AMB" } });
+  await store.enqueue(sub("u1", "Bihar AMB::visit"), {});
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.uploaded, 1);
 });

@@ -18,6 +18,8 @@
 // inside ONE transaction. A crash or error can never leave media without a
 // submission, or a submission pointing at media that was never stored.
 
+import { rekeySpec, rekeyRecord, rekeyRejected, rekeySession } from './projectkey.js';
+
 export const DB_NAME = 'evac-survey';
 export const DB_VERSION = 2;
 const LEGACY_REJECTED = '_rejected_submissions'; // v1 builds kept these in preload
@@ -268,4 +270,40 @@ export const listProjectSessions = () =>
 export async function clearProjectSessions() {
   for (const r of await listProjectSessions()) await deleteSessionRecord(r.id);
   await deleteSessionRecord('active');
+}
+
+// ---- re-keying a project from its name to its stable id ----
+// One transaction over every store that carries the project key, so a crash leaves either the
+// old keys or the new ones, never a mix. Idempotent: running it again finds nothing to move.
+// What each record becomes is defined in projectkey.js. Uuids, versions, answers, photos and
+// media are untouched.
+export function migrateProjectKey(oldKey, newKey, name) {
+  const oldId = PROJECT_PREFIX + oldKey;
+  return run(['forms', 'drafts', 'queue', 'rejected', 'session'], 'readwrite', (tx, fail) => {
+    const guard = fn => (...a) => { try { fn(...a); } catch (e) { fail(e); } };
+    const each = (store, convert, onHit) => {
+      const all = tx.objectStore(store).getAll();
+      all.onsuccess = guard(() => {
+        for (const rec of all.result || []) {
+          const next = convert(rec);
+          if (next) onHit(tx.objectStore(store), rec, next);
+        }
+      });
+    };
+    each('forms', r => rekeySpec(r, oldKey, newKey, name), (s, r, n) => { s.delete([r.form_id, r.version]); s.put(n); });
+    each('drafts', r => rekeyRecord(r, oldKey, newKey), (s, r, n) => s.put(n));
+    each('queue', r => rekeyRecord(r, oldKey, newKey), (s, r, n) => s.put(n));
+    each('rejected', r => rekeyRejected(r, oldKey, newKey), (s, r, n) => s.put(n));
+    const sess = tx.objectStore('session');
+    const legacy = sess.get(oldId), current = sess.get(PROJECT_PREFIX + newKey), active = sess.get('active');
+    let pending = 3;
+    const step = guard(() => {
+      if (--pending) return;
+      const out = rekeySession({ legacy: legacy.result, current: current.result, active: active.result }, oldKey, newKey, name);
+      if (legacy.result) sess.delete(oldId);
+      if (out.project) sess.put(out.project);
+      if (out.active) sess.put(out.active);
+    });
+    legacy.onsuccess = current.onsuccess = active.onsuccess = step;
+  });
 }
