@@ -27,9 +27,16 @@ CHOICE FILTER
     itemset nodeset: `instance('block')/root/item[district= /data/district ]`.
     The predicate is extracted and converted back to `district = ${district}`.
     A bare name on the left (`district`) is a PROPERTY OF THE CHOICE being
-    filtered, read from that choice's `props`; `${...}` is a form field.
-    `expr.parse()` rejects bare names, so for validation only each bare name is
-    swapped for a `${name}` reference; the emitted string keeps the bare name.
+    filtered, read from that choice's `props`; `${...}` is a form field. The string
+    is validated with `expr.parse_choice_filter()` (bare names allowed) and emitted
+    exactly as validated; plain `parse()` still rejects it.
+
+LANGUAGES
+    `languages` and `default_language` are never empty: a form with no itext
+    translations gets `["default"]` / `"default"`, and its labels are keyed
+    `"default"`. Consumers always read `label[lang]` for a `lang` from `languages`.
+    Language codes are short (`hi (Hindi)` and `Hindi (hi)` both give `hi`); two
+    translations that shorten to the same code are refused, not merged.
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from app.forms.expr import UnsupportedExpression, parse
+from app.forms.expr import UnsupportedExpression, parse, parse_choice_filter
 
 XF = "{http://www.w3.org/2002/xforms}"
 H = "{http://www.w3.org/1999/xhtml}"
@@ -54,7 +61,8 @@ _BIND_TYPES = {
     "int": "integer", "decimal": "decimal", "date": "date", "time": "time",
     "dateTime": "dateTime", "geopoint": "geopoint", "barcode": "barcode",
 }
-_WORDS = {"and", "or", "div", "mod"}
+_CODE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]+)*$")
+_PAREN = re.compile(r"\(([^()]*)\)")
 
 
 class FormCompileError(ValueError):
@@ -66,9 +74,16 @@ def _local(tag: str) -> str:
 
 
 def _short(lang: str) -> str:
-    """'hi (Hindi)' -> 'hi'."""
+    """'hi (Hindi)' and 'Hindi (hi)' -> 'hi'. Prefer the leading token when it looks
+    like a language code, else a parenthesised code, else the leading token."""
     m = _LANG.match(lang)
-    return m.group(1) if m else lang
+    lead = m.group(1) if m else lang.strip()
+    if _CODE.match(lead):
+        return lead
+    for p in _PAREN.findall(lang):
+        if _CODE.match(p.strip()):
+            return p.strip()
+    return lead
 
 
 # ------------------------------------------------------------ expressions
@@ -97,9 +112,9 @@ def _to_dollar(expr: str, *, relative: bool = True) -> str:
     return "".join(parts).strip()
 
 
-def _check(expr: str, name: str, kind: str, validate_as: str | None = None) -> str:
+def _check(expr: str, name: str, kind: str, parser=parse) -> str:
     try:
-        parse(validate_as if validate_as is not None else expr)
+        parser(expr)
     except UnsupportedExpression as e:
         err = UnsupportedExpression(
             e.expression, f"in question '{name}' ({kind}): {e.reason}"
@@ -114,17 +129,8 @@ def _expr(raw: str, name: str, kind: str) -> str:
 
 
 def _choice_filter(predicate: str, name: str) -> str:
-    out = _to_dollar(predicate, relative=False)
-    probe = []
-    for i, seg in enumerate(_LITERAL.split(out)):
-        if i % 2 == 0:  # outside string literals: bare names are choice properties
-            seg = re.sub(
-                rf"(?<![\w$.{{])({_NAME})(?!\s*\()(?![\w}}])",
-                lambda m: m.group(0) if m.group(1) in _WORDS else "${" + m.group(1) + "}",
-                seg,
-            )
-        probe.append(seg)
-    return _check(out, name, "choice_filter", "".join(probe))
+    return _check(_to_dollar(predicate, relative=False), name, "choice_filter",
+                  parse_choice_filter)
 
 
 # ------------------------------------------------------------------ labels
@@ -136,9 +142,13 @@ class _Texts:
         self.by_lang: dict[str, dict[str, str]] = {}
         for tr in model.iter(f"{XF}translation"):
             code = _short(tr.get("lang", ""))
-            if code not in self.by_lang:
-                self.langs.append(code)
-                self.by_lang[code] = {}
+            if code in self.by_lang:
+                raise FormCompileError(
+                    f"two translations ('{tr.get('lang')}' and an earlier one) both "
+                    f"shorten to the language code '{code}'; give them distinct codes"
+                )
+            self.langs.append(code)
+            self.by_lang[code] = {}
             if tr.get("default") == "true()":
                 self.default = code
             for t in tr.findall(f"{XF}text"):
@@ -201,6 +211,7 @@ class _Compiler:
             elif tag == "repeat" and el.get("nodeset"):
                 self.repeats[el.get("nodeset")] = el
         self.seen: dict[str, str] = {}
+        self.refs: list[tuple[str, str]] = []
         self.data = next(
             (i[0] for i in model.findall(f"{XF}instance") if i.get("id") is None and len(i)),
             None,
@@ -328,6 +339,7 @@ class _Compiler:
                 f"question '{name}': choices must come from a choices list, got {got!r}"
             )
         node["choices_ref"] = m.group(1)
+        self.refs.append((name, m.group(1)))
         if m.group(2) is not None:
             node["choice_filter"] = _choice_filter(m.group(2), name)
 
@@ -362,13 +374,20 @@ def compile_spec(xform_xml: str) -> dict:
     except ET.ParseError as e:
         raise FormCompileError(f"not valid XML: {e}") from e
     c = _Compiler(root)
-    langs = c.texts.langs
+    langs = c.texts.langs or ["default"]
+    nodes = c.nodes(c.data, "/" + _local(c.data.tag), top=True)
+    choices = c.choices()
+    for qname, ref in c.refs:
+        if ref not in choices:
+            raise FormCompileError(
+                f"question '{qname}' uses the choice list '{ref}', which does not exist"
+            )
     return {
         "form_id": c.data.get("id", ""),
         "version": c.data.get("version", ""),
-        "title": {code: c.title for code in langs} if langs else {"default": c.title},
+        "title": {code: c.title for code in langs},
         "languages": langs,
-        "default_language": c.texts.default,
-        "nodes": c.nodes(c.data, "/" + _local(c.data.tag), top=True),
-        "choices": c.choices(),
+        "default_language": c.texts.default or "default",
+        "nodes": nodes,
+        "choices": choices,
     }

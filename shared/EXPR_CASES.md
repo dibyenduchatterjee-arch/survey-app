@@ -62,3 +62,15 @@ Rejection happens when parsing, never while evaluating.
 - `regex()` is a full match, ASCII classes, literal pattern. `string-length` counts code points.
 - Repeats: a scalar read of a list uses `repeat_index`; `position()` is `repeat_index + 1`;
   `indexed-repeat` is 1-based and gives "" out of range.
+
+## Choice filters: two namespaces (Task 17 needs the same mode)
+
+A `choice_filter` such as `district = ${district}` is parsed by `parse_choice_filter`, not
+`parse`. In that mode a BARE name (`district`) is a column of the choice being filtered,
+read from that choice's `props` in the JSON spec (a `Prop` node), and `${name}` is a form
+field (a `Ref` node), read from the current answers. The filter is evaluated once per
+choice; a choice is shown when the result is true. Everything else (operators, functions,
+literals) is as in the main subset. In plain `parse` a bare name is still rejected, so a
+bare name can never silently pass as a form field in a `relevant` or `constraint`.
+The JS twin needs a matching `parseChoiceFilter`. The compiler emits and validates the
+same string; there is no separate probe form.

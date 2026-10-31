@@ -167,3 +167,111 @@ def test_a_name_reused_across_groups_is_refused(xml):
     assert bad != xml
     with pytest.raises(FormCompileError, match="district"):
         compile_spec(bad)
+
+
+# ---- review fixes ---------------------------------------------------------
+
+import openpyxl  # noqa: E402
+
+from app.forms.compile import _short  # noqa: E402
+from app.forms.expr import Prop, Ref, parse, parse_choice_filter  # noqa: E402
+
+
+def test_the_emitted_choice_filter_parses_in_choice_filter_mode_only(spec):
+    cf = find(spec["nodes"], "block")["choice_filter"]
+    assert cf == "district = ${district}"
+    tree = parse_choice_filter(cf)
+    assert tree.left == Prop("district") and tree.right == Ref("district")
+    with pytest.raises(UnsupportedExpression, match="bare name"):
+        parse(cf)
+
+
+def test_leftover_raw_paths_are_rejected_by_parse():
+    for raw in ("../a/b", "/data", "/data/a", "../a", "a/b", "current()/x"):
+        with pytest.raises(UnsupportedExpression):
+            parse(raw)
+        with pytest.raises(UnsupportedExpression):
+            parse_choice_filter(raw)
+
+
+def _single_language_xml():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "survey"
+    ws.append(["type", "name", "label"])
+    ws.append(["text", "who", "Name"])
+    ws.append(["select_one yn", "ok", "OK?"])
+    ws = wb.create_sheet("choices")
+    ws.append(["list_name", "name", "label"])
+    ws.append(["yn", "y", "Yes"])
+    ws = wb.create_sheet("settings")
+    ws.append(["form_title", "form_id", "version"])
+    ws.append(["Solo", "solo", "1"])
+    import io
+    buf = io.BytesIO()
+    wb.save(buf)
+    return to_xform(buf.getvalue())
+
+
+def test_a_single_language_form_has_a_uniform_shape():
+    spec = compile_spec(_single_language_xml())
+    assert spec["languages"] == ["default"]
+    assert spec["default_language"] == "default"
+    assert spec["title"] == {"default": "Solo"}
+    who = find(spec["nodes"], "who")
+    assert set(who["label"]) <= set(spec["languages"])
+    assert spec["choices"]["yn"][0]["label"] == {"default": "Yes"}
+
+
+@pytest.mark.parametrize("raw, short", [
+    ("hi (Hindi)", "hi"), ("Hindi (hi)", "hi"), ("en (English)", "en"),
+    ("English (en)", "en"), ("hi", "hi"), ("pt-BR (Portuguese)", "pt-BR"),
+    ("Hindi", "Hindi"),
+])
+def test_language_codes_are_shortened_in_either_convention(raw, short):
+    assert _short(raw) == short
+
+
+def test_two_translations_with_the_same_short_code_are_refused(xml):
+    bad = xml.replace('lang="en (English)"', 'lang="Hindi (hi)"')
+    assert bad != xml
+    with pytest.raises(FormCompileError, match="hi"):
+        compile_spec(bad)
+
+
+def test_a_group_or_repeat_name_colliding_with_a_leaf_is_refused(xml):
+    later = xml.replace("<children_count/>", "<children/>")
+    earlier = xml.replace("<asha_name/>", "<children/>", 1)
+    for bad in (later, earlier):
+        assert bad != xml
+        with pytest.raises(FormCompileError, match="children"):
+            compile_spec(bad)
+
+
+_TEXT_BIND = '<bind nodeset="/data/asha_name" type="string" required="true()"/>'
+_TEXT_CTL = ('<input ref="/data/asha_name"><label ref="jr:itext(\'/data/asha_name:label\')"/>'
+             "</input>")
+_UPLOAD = ('<upload ref="/data/asha_name" mediatype="{m}"><label '
+           'ref="jr:itext(\'/data/asha_name:label\')"/></upload>')
+
+
+@pytest.mark.parametrize("bind_type, control, expected", [
+    ("time", None, "time"), ("dateTime", None, "dateTime"), ("decimal", None, "decimal"),
+    ("barcode", None, "barcode"),
+    ("binary", "audio/*", "audio"), ("binary", "video/*", "video"),
+    ("binary", "application/*", "file"),
+])
+def test_remaining_phase_1_types_are_mapped(xml, bind_type, control, expected):
+    bad = xml.replace(_TEXT_BIND, _TEXT_BIND.replace('type="string"', f'type="{bind_type}"'))
+    assert _TEXT_CTL in bad
+    if control:
+        bad = bad.replace(_TEXT_CTL, _UPLOAD.format(m=control))
+    assert bad != xml
+    assert find(compile_spec(bad)["nodes"], "asha_name")["type"] == expected
+
+
+def test_a_missing_choice_list_is_refused_not_left_dangling(xml):
+    bad = xml.replace('<instance id="sex">', '<instance id="sex_gone">')
+    assert bad != xml
+    with pytest.raises(FormCompileError, match="child_sex"):
+        compile_spec(bad)

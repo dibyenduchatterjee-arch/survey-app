@@ -131,6 +131,13 @@ class Ref(Node):
 
 
 @dataclass(frozen=True)
+class Prop(Node):
+    """A bare name in a choice filter: a column of the choice being filtered."""
+
+    name: str
+
+
+@dataclass(frozen=True)
 class Current(Node):
     pass
 
@@ -261,8 +268,9 @@ def _tokenize(expr: str) -> list[tuple[str, Any]]:
 
 
 class _Parser:
-    def __init__(self, expr: str):
+    def __init__(self, expr: str, props: bool = False):
         self.expr = expr
+        self.props = props
         self.tokens = _tokenize(expr)
         self.pos = 0
         self.depth = 0
@@ -358,6 +366,8 @@ class _Parser:
             return inner
         if kind == "name":
             if self.peek()[0] != "(":
+                if self.props:
+                    return self.node(Prop(value))
                 raise self.fail(f"bare name {value!r}: fields must be written ${{{value}}}")
             return self.parse_call(value)
         if kind == "end":
@@ -405,6 +415,20 @@ class _Parser:
 @lru_cache(maxsize=2048)
 def _parse(expression: str) -> Node:
     return _Parser(expression).parse()
+
+
+@lru_cache(maxsize=2048)
+def _parse_choice_filter(expression: str) -> Node:
+    return _Parser(expression, props=True).parse()
+
+
+def parse_choice_filter(expression: str) -> Node:
+    """Parse a choice_filter. Two namespaces: a bare name (`district`) is a column of
+    the choice being filtered (a `Prop`), and `${name}` is a form field (a `Ref`).
+    Everything else is exactly as in `parse()`."""
+    if not isinstance(expression, str):
+        raise UnsupportedExpression(str(expression), "expression must be text")
+    return _parse_choice_filter(expression)
 
 
 def parse(expression: str) -> Node:
