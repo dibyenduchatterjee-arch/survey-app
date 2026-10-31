@@ -71,6 +71,10 @@ async function defaultPickFolder(token) {
 // Escape for a Drive `q` string literal.
 const qs = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const enc = encodeURIComponent;
+// 1 -> A, 27 -> AA
+const colLetter = n => { let s = ''; for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
+// A1 range on a tab, with the tab name quoted (names may contain spaces or apostrophes).
+const a1 = (tab, range) => `'${String(tab).replace(/'/g, "''")}'!${range}`;
 
 export function createDrive({
   fetchImpl,
@@ -202,13 +206,45 @@ export function createDrive({
     const meta = await request(`${SHEETS}/${enc(spreadsheetId)}?fields=sheets.properties.title`);
     if ((meta.sheets || []).some(s => s.properties && s.properties.title === tabName)) return;
     try {
-      await json(`${SHEETS}/${enc(spreadsheetId)}:batchUpdate`, 'POST', { requests: [{ addSheet: { properties: { title: tabName } } }] });
+      await json(`${SHEETS}/${enc(spreadsheetId)}:batchUpdate`, 'POST', { requests: [{ addSheet: { properties: { title: tabName, gridProperties: { columnCount: Math.max(26, headerRow.length + 10) } } } }] });
     } catch (e) {
       // Another phone created the tab between our check and our create: it also writes the header.
       if (e.status === 400 && /already exists/i.test(e.body || e.message)) return;
       throw e;
     }
     await json(`${SHEETS}/${enc(spreadsheetId)}/values/${enc(tabName + '!A1')}?valueInputOption=RAW`, 'PUT', { values: [headerRow] });
+  }
+
+  // The first n columns of a tab, header row included, as arrays of strings. Sheets drops
+  // trailing empty cells and rows, so a row may be shorter than n.
+  async function readColumns(spreadsheetId, tabName, n = 1) {
+    const r = await request(`${SHEETS}/${enc(spreadsheetId)}/values/${enc(a1(tabName, `A:${colLetter(n)}`))}?majorDimension=ROWS`);
+    return (r.values || []).map(row => row.map(String));
+  }
+
+  // Makes sure every name in `names` is a column of the tab's header row, ADDING missing ones
+  // at the right-hand end. Columns are only ever added: never reordered, renamed or removed, so
+  // existing rows and anything already downloaded still line up. Grows the sheet grid if the
+  // new columns would not fit. After writing it re-reads the header: if another phone wrote a
+  // different name into the same cell at the same moment, it adds ours again. Returns the header.
+  async function ensureColumns(spreadsheetId, tabName, names) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const h = await request(`${SHEETS}/${enc(spreadsheetId)}/values/${enc(a1(tabName, '1:1'))}`);
+      const header = (h.values && h.values[0]) || [];
+      const missing = [...new Set(names)].filter(n => !header.includes(n));
+      if (!missing.length) return header;
+      const need = header.length + missing.length;
+      const meta = await request(`${SHEETS}/${enc(spreadsheetId)}?fields=sheets.properties(sheetId,title,gridProperties)`);
+      const sheet = (meta.sheets || []).map(s => s.properties).find(p => p && p.title === tabName);
+      const have = sheet && sheet.gridProperties && sheet.gridProperties.columnCount;
+      if (sheet && have && need > have) {
+        await json(`${SHEETS}/${enc(spreadsheetId)}:batchUpdate`, 'POST', {
+          requests: [{ appendDimension: { sheetId: sheet.sheetId, dimension: 'COLUMNS', length: need - have + 10 } }],
+        });
+      }
+      await json(`${SHEETS}/${enc(spreadsheetId)}/values/${enc(a1(tabName, `${colLetter(header.length + 1)}1`))}?valueInputOption=RAW`, 'PUT', { values: [missing] });
+    }
+    throw new DriveError(`Could not add the new columns to "${tabName}" (another phone kept changing the header). Try again.`, { retryable: true });
   }
 
   async function appendRow(spreadsheetId, tabName, values) {
@@ -223,7 +259,7 @@ export function createDrive({
     return json(`${SHEETS}/${enc(spreadsheetId)}/values/${enc(tabName)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, 'POST', { values: [row] });
   }
 
-  return { listProjects, listProjectsIn, addProject, removeProject, listForms, readSpec, uploadMedia, findOrCreateSpreadsheet, ensureTab, appendRow };
+  return { listProjects, listProjectsIn, addProject, removeProject, listForms, readSpec, uploadMedia, findOrCreateSpreadsheet, ensureTab, readColumns, ensureColumns, appendRow };
 }
 
 // Default instance: real fetch, token from googleauth.js. Built lazily.
@@ -238,4 +274,6 @@ export const readSpec = a => inst().readSpec(a);
 export const uploadMedia = (...a) => inst().uploadMedia(...a);
 export const findOrCreateSpreadsheet = (...a) => inst().findOrCreateSpreadsheet(...a);
 export const ensureTab = (...a) => inst().ensureTab(...a);
+export const readColumns = (...a) => inst().readColumns(...a);
+export const ensureColumns = (...a) => inst().ensureColumns(...a);
 export const appendRow = (...a) => inst().appendRow(...a);

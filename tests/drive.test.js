@@ -220,3 +220,93 @@ test("findOrCreateSpreadsheet: if a racing phone also created one, the oldest wi
   assert.equal(await drive.findOrCreateSpreadsheet("P1", "Data"), "OLD");
   assert.match(decodeURIComponent(calls[0].url), /orderBy=createdTime/);
 });
+
+// ---- reading and extending a tab ---------------------------------------------------
+
+test("readColumns reads the first n columns of a tab, quoted, as strings", async () => {
+  const { drive, calls } = rig(() => res({ values: [["uuid"], ["u1"], [7]] }));
+  const out = await drive.readColumns("S1", "form's tab", 1);
+  assert.deepEqual(out, [["uuid"], ["u1"], ["7"]]);
+  assert.match(decodeURIComponent(calls[0].url), /values\/'form''s tab'!A:A/);
+  await drive.readColumns("S1", "t", 28);
+  assert.match(decodeURIComponent(calls[1].url), /!A:AB/);
+});
+
+test("readColumns on an empty tab gives no rows", async () => {
+  const { drive } = rig(() => res({}));
+  assert.deepEqual(await drive.readColumns("S1", "t", 2), []);
+});
+
+// A sheet whose header row and grid width we control.
+function sheetRig({ header, columnCount = 26 }) {
+  let hdr = header.slice();
+  const state = { columnCount, grown: 0, puts: [] };
+  const r = rig((c) => {
+    const url = decodeURIComponent(c.url);
+    if (c.method === "GET" && /fields=sheets/.test(url)) return res({ sheets: [{ properties: { sheetId: 42, title: "t", gridProperties: { columnCount: state.columnCount } } }] });
+    if (c.method === "GET") return res({ values: [hdr] });
+    if (c.method === "POST" && url.includes(":batchUpdate")) {
+      const ad = JSON.parse(c.body).requests[0].appendDimension;
+      assert.equal(ad.sheetId, 42); assert.equal(ad.dimension, "COLUMNS");
+      state.columnCount += ad.length; state.grown += ad.length;
+      return res({});
+    }
+    if (c.method === "PUT") {
+      assert.ok(state.columnCount >= hdr.length + JSON.parse(c.body).values[0].length, "write must fit the grid");
+      state.puts.push({ url, values: JSON.parse(c.body).values[0] });
+      hdr = [...hdr, ...JSON.parse(c.body).values[0]];
+      return res({});
+    }
+    return res({});
+  });
+  return { ...r, state, header: () => hdr };
+}
+
+test("ensureColumns adds only the missing names, after the existing ones, never reordering", async () => {
+  const s = sheetRig({ header: ["uuid", "a", "b"] });
+  const h = await s.drive.ensureColumns("S1", "t", ["uuid", "b", "c", "d"]);
+  assert.deepEqual(s.header(), ["uuid", "a", "b", "c", "d"]);
+  assert.deepEqual(h, ["uuid", "a", "b", "c", "d"]);
+  assert.match(s.state.puts[0].url, /'t'!D1/);
+});
+
+test("ensureColumns writes nothing when every name is already a column", async () => {
+  const s = sheetRig({ header: ["uuid", "a"] });
+  await s.drive.ensureColumns("S1", "t", ["a", "uuid"]);
+  assert.equal(s.state.puts.length, 0);
+});
+
+test("ensureColumns grows the grid when the new columns would not fit", async () => {
+  const header = Array.from({ length: 26 }, (_, i) => "c" + i);
+  const s = sheetRig({ header, columnCount: 26 });
+  await s.drive.ensureColumns("S1", "t", [...header, "new1", "new2"]);
+  assert.ok(s.state.grown >= 2);
+  assert.equal(s.header().length, 28);
+});
+
+test("ensureColumns re-checks after writing: a racing phone that overwrote our cell makes us write again", async () => {
+  let hdr = ["uuid"];
+  let puts = 0;
+  const { drive } = rig((c) => {
+    const url = decodeURIComponent(c.url);
+    if (c.method === "GET" && /fields=sheets/.test(url)) return res({ sheets: [{ properties: { sheetId: 1, title: "t", gridProperties: { columnCount: 26 } } }] });
+    if (c.method === "GET") return res({ values: [hdr] });
+    if (c.method === "PUT") {
+      puts++;
+      // the first write is clobbered by another phone writing a different name into the same cell
+      hdr = puts === 1 ? ["uuid", "other"] : [...hdr, ...JSON.parse(c.body).values[0]];
+      return res({});
+    }
+    return res({});
+  });
+  await drive.ensureColumns("S1", "t", ["uuid", "mine"]);
+  assert.deepEqual(hdr, ["uuid", "other", "mine"]);
+});
+
+test("a new tab is created wide enough for its header", async () => {
+  const { drive, calls } = rig((c) => (c.method === "GET" ? res({ sheets: [] }) : res({})));
+  const header = Array.from({ length: 40 }, (_, i) => "c" + i);
+  await drive.ensureTab("S1", "wide", header);
+  const batch = JSON.parse(calls.find(c => c.url.includes(":batchUpdate")).body);
+  assert.ok(batch.requests[0].addSheet.properties.gridProperties.columnCount >= 40);
+});

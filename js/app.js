@@ -1,7 +1,7 @@
 // The enumerator app: log in, pick a form, fill it, finish, watch the queue drain.
 //
 // Deliberately thin. The logic lives in the modules it wires together:
-//   db.js (drafts, queue)  auth.js (login)  sync.js (bootstrap, upload)
+//   db.js (drafts, queue)  googleauth.js (Google sign-in)  drive.js (folder chooser)  sync.js (bootstrap, upload)
 //   formengine.js (answers, validation)  render.js (the screen, GPS, photos, drafts)
 //
 // Two rules that matter more than the rest:
@@ -12,7 +12,8 @@
 //     server answers 200 as a replay, never a duplicate household.
 
 import * as db from './db.js';
-import { login, logout } from './auth.js';
+import { signIn, signOut, currentUser } from './googleauth.js';
+import { addProject } from './drive.js';
 import { bootstrap, startSync, syncOnce, listRejected, retryRejected } from './sync.js';
 import { FormEngine } from './formengine.js';
 import { availableLanguages, translate } from './i18n.js';
@@ -49,6 +50,9 @@ const T = {
     username: 'यूज़रनेम',
     password: 'पासवर्ड',
     login: 'लॉगिन करें',
+    google_signin: 'Google से लॉगिन करें',
+    add_project: 'प्रोजेक्ट जोड़ें',
+    add_project_help: '"प्रोजेक्ट जोड़ें" दबाएँ और वह फ़ोल्डर चुनें जो आपके सुपरवाइज़र ने आपके साथ साझा किया है।',
     logging_in: 'लॉगिन हो रहा है…',
     login_failed: 'लॉगिन नहीं हो पाया',
     session_over: 'आपका लॉगिन समाप्त हो गया है। दोबारा लॉगिन करें। भरा हुआ काम फ़ोन में सुरक्षित है।',
@@ -95,6 +99,9 @@ const T = {
     username: 'Username',
     password: 'Password',
     login: 'Log in',
+    google_signin: 'Sign in with Google',
+    add_project: 'Add a project',
+    add_project_help: 'Tap "Add a project" and choose the folder your supervisor shared with you.',
     logging_in: 'Logging in…',
     login_failed: 'Could not log in',
     session_over: 'Your login has ended. Log in again. Your saved work is safe on this phone.',
@@ -161,11 +168,11 @@ const tIn = (lang, key, vars = {}) => {
 export const refreshLabel = (lang) => tIn(lang, 'refresh');
 
 // -> { status: 'offline' | 'failed' | 'partial' | 'ok', newForms, datasets, problems, boot }
-export async function refreshForms({ fetchImpl, online = () => navigator.onLine !== false } = {}) {
+export async function refreshForms({ online = () => navigator.onLine !== false } = {}) {
   const none = { newForms: 0, datasets: 0, problems: 0, boot: null };
   if (!online()) return { status: 'offline', ...none };
   let boot;
-  try { boot = await bootstrap(fetchImpl); } catch { return { status: 'failed', ...none }; }
+  try { boot = await bootstrap(); } catch { return { status: 'failed', ...none }; }
   const problems = boot.errors.length;
   return {
     status: problems ? 'partial' : 'ok',
@@ -222,6 +229,14 @@ function useChromeToggle(rerender) {
 const maxMediaBytes = () => mediaCap(localStorage);
 const rememberCap = (boot) => rememberMediaCap(boot, localStorage);
 
+// The signed-in person, in the shape the rest of the app reads: user.id is the Google email,
+// which is also what sync stamps as _submitted_by. Null when nobody is signed in.
+async function readSession() {
+  let u = null;
+  try { u = await currentUser(); } catch { /* treated as signed out */ }
+  return u && u.email ? { user: { id: u.email, email: u.email, name: u.name } } : null;
+}
+
 function deviceId() {
   let id = store.get('evac.device');
   if (!id) { id = crypto.randomUUID(); store.set('evac.device', id); }
@@ -255,34 +270,26 @@ function screen(name, title, ...kids) {
 
 function showLogin(message) {
   useChromeToggle(() => showLogin(message));
-  const user = h('input', 'control', { id: 'u', type: 'text', autocomplete: 'username', autocapitalize: 'off', spellcheck: 'false', required: true });
-  const pass = h('input', 'control', { id: 'p', type: 'password', autocomplete: 'current-password', required: true });
   const err = h('p', 'err', { role: 'alert' });
-  const go = h('button', 'btn btn-primary', { type: 'submit', text: t('login') });
-  const form = h('form', 'card', {
-    onsubmit: async (e) => {
-      e.preventDefault();
-      err.textContent = '';
-      go.disabled = true;
-      go.textContent = t('logging_in');
-      try {
-        await login(user.value.trim(), pass.value);
-        await afterLogin();
-      } catch (ex) {
-        err.textContent = `${t('login_failed')}: ${ex.message || ex}`;
-        go.disabled = false;
-        go.textContent = t('login');
-      }
-    },
-  },
-  h('div', 'field', {}, h('label', '', { for: 'u', text: t('username') }), user),
-  h('div', 'field', {}, h('label', '', { for: 'p', text: t('password') }), pass),
-  err, go);
-  screen('login', t('title'), message ? h('div', 'notice', { text: message }) : null, form);
+  const go = h('button', 'btn btn-primary', { type: 'button', text: t('google_signin') });
+  go.addEventListener('click', async () => {
+    err.textContent = '';
+    go.disabled = true;
+    go.textContent = t('logging_in');
+    try {
+      await signIn();          // called from the tap, so the browser allows Google's window
+      await afterLogin();
+    } catch (ex) {
+      err.textContent = `${t('login_failed')}: ${ex.message || ex}`;
+      go.disabled = false;
+      go.textContent = t('google_signin');
+    }
+  });
+  screen('login', t('title'), message ? h('div', 'notice', { text: message }) : null, h('div', 'card', {}, err, go));
 }
 
 async function afterLogin() {
-  state.session = await db.getSession();
+  state.session = await readSession();
   screen('boot', t('title'), h('p', 'card', { text: t('downloading') }));
   let boot = null;
   if (navigator.onLine !== false) {
@@ -314,8 +321,8 @@ const specTitle = (spec) => translate(spec.title, state.lang, spec.default_langu
 
 async function showHome(boot, note) {
   useChromeToggle(() => showHome(boot, note));
-  const session = (state.session = await db.getSession());
-  if (!session || session.needs_login) { showLogin(t('session_over')); return; }
+  const session = (state.session = await readSession());
+  if (!session) { showLogin(t('session_over')); return; }
   const uid = session.user && session.user.id;
 
   const forms = await latestForms();
@@ -326,7 +333,7 @@ async function showHome(boot, note) {
 
   const parts = [];
   if (boot && boot.errors && boot.errors.length) {
-    parts.push(h('div', 'notice', { text: boot.errors.map((e) => `${e.form_id || e.dataset}: ${e.error}`).join('\n') }));
+    parts.push(h('div', 'notice', { text: boot.errors.map((e) => `${e.file || e.project || e.form_id || e.dataset}: ${e.error}`).join('\n') }));
   }
 
   // Queue
@@ -336,7 +343,10 @@ async function showHome(boot, note) {
     onclick: async () => {
       sendBtn.disabled = true;
       sendBtn.textContent = t('sending');
-      try { await syncOnce(); } catch { /* shown by the count below */ }
+      let sent = null;
+      try { sent = await syncOnce(); } catch { /* shown by the count below */ }
+      // An expired Google sign-in: ask to sign in again. The queue has not been touched.
+      if (sent && sent.authRequired) { showLogin(t('session_over')); return; }
       showHome(boot);
     },
   });
@@ -361,7 +371,21 @@ async function showHome(boot, note) {
       await showHome(r.boot || boot, { kind: r.status === 'ok' ? 'good' : r.status === 'partial' ? '' : 'bad', text: refreshMessage(r, state.lang) });
     },
   });
-  parts.push(h('section', 'card', {}, refreshBtn, status));
+  const projectBtn = h('button', 'btn', { type: 'button', text: t('add_project') });
+  projectBtn.addEventListener('click', async () => {
+    projectBtn.disabled = true;
+    try {
+      const added = await addProject();           // Google's folder chooser; null if closed
+      if (added) { await refreshForms().then((r) => r.boot && rememberCap(r.boot)); }
+      await showHome(boot);
+    } catch (ex) {
+      projectBtn.disabled = false;
+      status.hidden = false;
+      status.className = 'notice bad';
+      status.textContent = t('fail', { m: (ex && ex.message) || ex });
+    }
+  });
+  parts.push(h('section', 'card', {}, refreshBtn, status, projectBtn));
 
   // Forms
   const formList = h('ul', 'list');
@@ -373,7 +397,7 @@ async function showHome(boot, note) {
     })));
   }
   parts.push(h('section', 'card', {}, h('h2', '', { text: t('forms') }),
-    forms.length ? formList : h('p', 'muted', { text: t('no_forms') })));
+    forms.length ? formList : h('p', 'muted', { text: t('no_forms') + ' ' + t('add_project_help') })));
 
   // Drafts
   if (drafts.length) {
@@ -417,7 +441,7 @@ async function showHome(boot, note) {
   const out = h('button', 'btn btn-quiet', { type: 'button', text: t('logout') });
   out.addEventListener('click', async () => {
     if (pending && !sure) { sure = true; out.textContent = t('logout_pending', { n: pending }); return; }
-    await logout();
+    await signOut();           // forgets the sign-in only; the queue, drafts and forms stay
     showLogin();
   });
   parts.push(out);
@@ -575,9 +599,8 @@ async function main() {
     screen('fatal', t('title'), h('div', 'notice bad', { text: t('fail', { m: (e && e.message) || e }) }));
     return;
   }
-  const session = await db.getSession();
+  const session = await readSession();
   if (!session) { showLogin(); return; }
-  if (session.needs_login) { showLogin(t('session_over')); return; }
   state.session = session;
   startSync();
   await showHome();
