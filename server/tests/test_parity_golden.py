@@ -61,8 +61,8 @@ def test_the_parity_corpus_is_not_quietly_shrunk():
 # deleted from it with both suites staying green, a regression could be removed silently.
 # Both suites pin the same count and the same hash of the sorted case names; changing the
 # corpus on purpose means updating the two pins together (test_expr.py, expr.test.js).
-CORPUS_COUNT = 388
-CORPUS_NAMES_SHA256 = "592486aa42c1d06e9454180ac6b29ff04bdbd291553cc1fd6ed8ec6c8551929e"
+CORPUS_COUNT = 409
+CORPUS_NAMES_SHA256 = "18d52af5ba77191ae3d901cd072b0c81c9706891c22f0f929d07ac21b2f51cc6"
 
 
 def test_the_shared_expression_corpus_is_pinned():

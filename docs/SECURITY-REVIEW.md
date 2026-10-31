@@ -165,7 +165,7 @@ Each item below was read in the code. The test named is the one that pins it.
   learns another project uses it. Read rule `access.dataset_filter`: admin all; supervisor their
   projects; enumerator their projects plus the project of any form they hold a direct assignment on.
   Writes need `staff_can_see_project` on the target project (the same refusal as a missing project).
-  `GET /api/datasets/{name}?project_id=` disambiguates a name held in two readable projects (409
+  `GET /api/datasets/{project_id}/{name}` disambiguates a name held in two readable projects (409
   without it). `test_dataset_scoping.py`; `alembic upgrade head` then `alembic check` reports no drift.
 - **I-5. User list.** A supervisor gets the members of their own projects (themselves included) and,
   with `?username=`, the one active account with exactly that name; every lookup is audited as

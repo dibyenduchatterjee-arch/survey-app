@@ -77,7 +77,6 @@ def content_security_policy(script_hashes: tuple[str, ...] = ()) -> str:
             "default-src 'self'",
             "script-src 'self'" + "".join(f" '{h}'" for h in script_hashes),
             "style-src 'self'",
-            "style-src-attr 'unsafe-inline'",
             "img-src 'self' blob: data:",  # data: is the manifest icon
             "media-src 'self' blob:",
             "connect-src 'self'",
