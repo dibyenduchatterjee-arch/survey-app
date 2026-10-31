@@ -59,8 +59,8 @@ for (const c of cases) {
 // The corpus is read by this suite and by pytest. Both pin the same count and the same
 // SHA-256 of the sorted case names (server/tests/test_parity_golden.py), so a case cannot be
 // deleted with both suites staying green. Changing the corpus on purpose means updating both pins.
-const CORPUS_COUNT = 388;
-const CORPUS_NAMES_SHA256 = "592486aa42c1d06e9454180ac6b29ff04bdbd291553cc1fd6ed8ec6c8551929e";
+const CORPUS_COUNT = 409;
+const CORPUS_NAMES_SHA256 = "18d52af5ba77191ae3d901cd072b0c81c9706891c22f0f929d07ac21b2f51cc6";
 
 test("the shared corpus is pinned: no case can be removed quietly", () => {
   assert.equal(cases.length, CORPUS_COUNT);
@@ -325,4 +325,27 @@ test("regex() uses the compiled pattern for every call without carrying state be
     assert.equal(evaluate("regex(${a}, '[a-c]+')", ctx("abc")), true);
     assert.equal(evaluate("regex(${a}, '[a-c]+')", ctx("abd")), false);
   }
+});
+
+// ---------------------------------------------------------------- regex: nested quantifiers (review I-2)
+//
+// The server refuses a pattern that can backtrack catastrophically; the phone must refuse the
+// same ones, at parse time, or a form that publishes cleanly would freeze every phone. The
+// corpus pins individual patterns; these pin the behaviour that matters.
+
+test("a catastrophic regex() is refused at parse time and never evaluated", () => {
+  for (const pattern of ["(a+)+$", "(?:a+)+", "(a|aa)+$", "(.*,)+"]) {
+    assert.throws(() => parse(`regex(\${a}, '${pattern}')`), (e) => e instanceof UnsupportedExpression && /backtrack/.test(e.reason), pattern);
+  }
+  // 40 'a's and a 'b' takes minutes in a backtracking engine; refusal means it returns at once.
+  const started = process.hrtime.bigint();
+  assert.throws(() => evaluate("regex(${a}, '(a+)+$')", { values: { a: `${"a".repeat(40)}b` }, current: null, now: NOW }), UnsupportedExpression);
+  assert.ok(process.hrtime.bigint() - started < 1_000_000_000n);
+});
+
+test("ordinary repeated patterns are still accepted and still match", () => {
+  const ok = (pattern, value) => evaluate(`regex(\${a}, '${pattern}')`, { values: { a: value }, current: null, now: NOW });
+  assert.equal(ok("([0-9]+[.]){3}[0-9]+", "10.0.0.1"), true);
+  assert.equal(ok("(cat|dog)+", "catdogx"), false);
+  assert.equal(ok("[a-z]+(,[a-z]+)*", "iron,folic"), true);
 });

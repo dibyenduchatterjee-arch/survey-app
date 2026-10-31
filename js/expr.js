@@ -17,6 +17,9 @@
 //     before a final \n, code points not UTF-16 units). See translateRegex().
 //   * string-length counts code points; -0 is returned as 0; ${ } allows \f and \v.
 //
+// A regex() that can backtrack catastrophically, such as (a+)+$, is refused at parse time
+// exactly as the server refuses it: backtrackingRisk() ports _backtracking_risk (finding I-2).
+//
 // Dates come only from context.now. There is no ambient clock in this file.
 
 export const MAX_NODES = 200;
@@ -515,17 +518,28 @@ class Parser {
       }
     }
     let source;
+    let tree;
     try {
-      source = translateRegex(pattern);
+      ({ source, tree } = translateRegex(pattern));
     } catch (e) {
       if (e instanceof PatternError) throw this.fail(`regex() pattern is invalid: ${e.message}`);
       throw this.fail("regex() pattern is too complex to check");
     }
+    let compiled;
     try {
-      return new RegExp(`^(?:${source})$`, "u");
+      compiled = new RegExp(`^(?:${source})$`, "u");
     } catch (e) {
       throw this.fail(`regex() pattern is invalid: ${e.message}`);
     }
+    const why = backtrackingRisk(tree);
+    if (why !== null) {
+      throw this.fail(
+        `regex() pattern could backtrack catastrophically (${why}); an answer of a few dozen ` +
+          "characters could hang the server and every phone that opens the form. " +
+          "Make the repeated part unambiguous, for example [a-z]+ instead of (a+)+",
+      );
+    }
+    return compiled;
   }
 }
 
@@ -668,6 +682,8 @@ function translateRegex(pattern) {
   function parseClass() {
     const negate = match("^");
     const items = [];
+    const set = []; // the same set as sre_parse builds it: [op, value] pairs
+    const setOf = (code) => (code.cat ? ["CATEGORY", code.cat] : ["LITERAL", code.cp]);
     let count = 0;
     for (;;) {
       let this_ = get();
@@ -683,16 +699,25 @@ function translateRegex(pattern) {
         if (that === "]") {
           items.push(code1.cat ? categorySource(code1.cat, true) : lit(code1.cp));
           items.push(lit(45));
+          set.push(setOf(code1), ["LITERAL", 45]);
           break;
         }
         const code2 = that === "\\" ? classEscape() : { cp: that.codePointAt(0) };
         if (code1.cat || code2.cat || code2.cp < code1.cp) fail("bad character range");
         items.push(`${lit(code1.cp)}-${lit(code2.cp)}`);
+        set.push(["RANGE", [code1.cp, code2.cp]]);
       } else {
         items.push(code1.cat ? categorySource(code1.cat, true) : lit(code1.cp));
+        set.push(setOf(code1));
       }
     }
-    return `[${negate ? "^" : ""}${items.join("")}]`;
+    let node;
+    if (set.length === 1 && set[0][0] === "LITERAL") {
+      node = negate ? { op: "NOT_LITERAL", av: set[0][1] } : { op: "LITERAL", av: set[0][1] };
+    } else {
+      node = { op: "IN", av: negate ? [["NEGATE", null], ...set] : set };
+    }
+    return { src: `[${negate ? "^" : ""}${items.join("")}]`, node };
   }
 
   // Reads {m}, {m,}, {,n}, {m,n}; null (position restored) when it is just a literal "{".
@@ -714,7 +739,8 @@ function translateRegex(pattern) {
     const max = comma ? (hi ? Number(hi) : null) : min;
     if (min >= MAXREPEAT || (max !== null && max >= MAXREPEAT)) fail("the repetition number is too large");
     if (max !== null && max < min) fail("min repeat greater than max repeat");
-    return max === null ? `{${min},}` : min === max ? `{${min}}` : `{${min},${max}}`;
+    const src = max === null ? `{${min},}` : min === max ? `{${min}}` : `{${min},${max}}`;
+    return { src, min, max: max === null ? Infinity : max };
   }
 
   // sre_parse's _parse: one alternative. Each item is {src, kind}; kind decides whether
@@ -728,15 +754,17 @@ function translateRegex(pattern) {
       if (ch === "\\") {
         const c = get();
         if (c === undefined) fail("bad escape (end of pattern)");
-        if (c === "A") items.push({ src: "^", kind: "at" });
-        else if (c === "Z" || c === "z") items.push({ src: "$", kind: "at" });
-        else if (c === "b" || c === "B") items.push({ src: `\\${c}`, kind: "at" });
-        else if ("dDsSwW".includes(c)) items.push({ src: categorySource(c, false), kind: "atom" });
-        else {
+        if (c === "A") items.push({ src: "^", kind: "at", node: AT });
+        else if (c === "Z" || c === "z") items.push({ src: "$", kind: "at", node: AT });
+        else if (c === "b" || c === "B") items.push({ src: `\\${c}`, kind: "at", node: AT });
+        else if ("dDsSwW".includes(c)) {
+          items.push({ src: categorySource(c, false), kind: "atom", node: { op: "IN", av: [["CATEGORY", c]] } });
+        } else {
           const code = codeEscape(c);
-          if (code !== null) items.push({ src: lit(code), kind: "atom" });
+          if (code !== null) items.push({ src: lit(code), kind: "atom", node: literalNode(code) });
           else if (c === "0") {
-            items.push({ src: lit(parseInt("0" + getWhile(2, isOct), 8)), kind: "atom" });
+            const cp = parseInt("0" + getWhile(2, isOct), 8);
+            items.push({ src: lit(cp), kind: "atom", node: literalNode(cp) });
           } else if (isDigit(c)) {
             let digits = c;
             if (isDigit(next())) {
@@ -745,7 +773,7 @@ function translateRegex(pattern) {
                 digits += get();
                 const v = parseInt(digits, 8);
                 if (v > 0o377) fail("octal escape value outside of range 0-0o377");
-                items.push({ src: lit(v), kind: "atom" });
+                items.push({ src: lit(v), kind: "atom", node: literalNode(v) });
                 continue;
               }
             }
@@ -753,20 +781,26 @@ function translateRegex(pattern) {
             if (group <= opened) fail("backreferences are not supported");
             fail(`invalid group reference ${group}`);
           } else if (isLetter(c) && c !== "_") fail(`bad escape \\${c}`);
-          else items.push({ src: lit(c.codePointAt(0)), kind: "atom" });
+          else items.push({ src: lit(c.codePointAt(0)), kind: "atom", node: literalNode(c.codePointAt(0)) });
         }
       } else if (ch === "[") {
-        items.push({ src: parseClass(), kind: "atom" });
+        const cls = parseClass();
+        items.push({ src: cls.src, kind: "atom", node: cls.node });
       } else if (ch === "*" || ch === "+" || ch === "?" || ch === "{") {
         let quant;
+        let low;
+        let high; // Infinity when unbounded; sre says MAXREPEAT, the test is only "more than 10"
         if (ch === "{") {
-          quant = parseBraces();
-          if (quant === null) {
-            items.push({ src: lit(123), kind: "atom" });
+          const braces = parseBraces();
+          if (braces === null) {
+            items.push({ src: lit(123), kind: "atom", node: literalNode(123) });
             continue;
           }
+          ({ src: quant, min: low, max: high } = braces);
         } else {
           quant = ch;
+          low = ch === "+" ? 1 : 0;
+          high = ch === "?" ? 1 : Infinity;
         }
         const item = items[items.length - 1];
         if (!item || item.kind === "at") fail("nothing to repeat");
@@ -775,45 +809,278 @@ function translateRegex(pattern) {
         if (match("?")) suffix = "?";
         else if (next() === "+") fail("possessive quantifiers are not supported");
         const base = item.kind === "assert" ? `(?:${item.src})` : item.src;
-        items[items.length - 1] = { src: base + quant + suffix, kind: "repeat" };
+        items[items.length - 1] = {
+          src: base + quant + suffix,
+          kind: "repeat",
+          node: { op: "REPEAT", av: { low, high, body: [item.node] } },
+        };
       } else if (ch === ".") {
-        items.push({ src: "[^\\n]", kind: "atom" });
+        items.push({ src: "[^\\n]", kind: "atom", node: { op: "ANY" } });
       } else if (ch === "(") {
         let prefix = "(";
         let kind = "atom";
+        let groupOp = "SUBPATTERN";
         if (match("?")) {
           const flag = get();
           if (flag === ":") prefix = "(?:";
           else if (flag === "=" || flag === "!") {
             prefix = `(?${flag}`;
             kind = "assert";
+            groupOp = flag === "=" ? "ASSERT" : "ASSERT_NOT";
           } else fail("unsupported group syntax");
         } else {
           opened += 1;
         }
         const body = parseAlternatives(nested + 1);
         if (!match(")")) fail("missing ), unterminated subpattern");
-        items.push({ src: `${prefix}${body})`, kind });
+        items.push({ src: `${prefix}${body.src})`, kind, node: { op: groupOp, av: { body: body.nodes } } });
       } else if (ch === "^") {
-        items.push({ src: "^", kind: "at" });
+        items.push({ src: "^", kind: "at", node: AT });
       } else if (ch === "$") {
-        items.push({ src: "(?=\\n?$)", kind: "at" });
+        items.push({ src: "(?=\\n?$)", kind: "at", node: AT });
       } else {
-        items.push({ src: lit(ch.codePointAt(0)), kind: "atom" });
+        items.push({ src: lit(ch.codePointAt(0)), kind: "atom", node: literalNode(ch.codePointAt(0)) });
       }
     }
-    return items.map((it) => it.src).join("");
+    return { src: items.map((it) => it.src).join(""), nodes: items.map((it) => it.node) };
   }
 
   function parseAlternatives(nested) {
     const branches = [parseBranch(nested)];
     while (match("|")) branches.push(parseBranch(nested));
-    return branches.join("|");
+    return { src: branches.map((b) => b.src).join("|"), nodes: joinAlternatives(branches.map((b) => b.nodes)) };
   }
 
-  const source = parseAlternatives(0);
+  const parsed = parseAlternatives(0);
   if (pos < cps.length) fail("unbalanced parenthesis");
-  return source;
+  return { source: parsed.src, tree: parsed.nodes };
+}
+
+// ---- the tree translateRegex builds beside the JavaScript source ----------------------------
+//
+// The same shape Python's sre_parse gives the server: LITERAL, NOT_LITERAL, ANY, AT, IN (a list
+// of [op, value] set members), SUBPATTERN, BRANCH, REPEAT (greedy and lazy alike), ASSERT and
+// ASSERT_NOT; a sequence is an array of nodes. backtrackingRisk() below is a port of
+// _backtracking_risk in server/app/forms/expr.py and must give the same answer for every
+// pattern, because a pattern one side publishes and the other refuses is a lost visit.
+
+const AT = { op: "AT" };
+const literalNode = (cp) => ({ op: "LITERAL", av: cp });
+
+// sre_parse's equality for the first item of every alternative: plain values compare by
+// value, anything that holds a sub-pattern (groups, repeats, branches) never compares equal.
+function sameNode(a, b) {
+  if (a.op !== b.op) return false;
+  switch (a.op) {
+    case "LITERAL":
+    case "NOT_LITERAL":
+      return a.av === b.av;
+    case "ANY":
+    case "AT":
+      return true;
+    case "IN":
+      return (
+        a.av.length === b.av.length &&
+        a.av.every(([op, v], i) => op === b.av[i][0] && JSON.stringify(v) === JSON.stringify(b.av[i][1]))
+      );
+    default:
+      return false;
+  }
+}
+
+// sre_parse's _parse_sub: factor out a common prefix, then turn an alternation of single
+// characters into one set, else keep a BRANCH.
+function joinAlternatives(alternatives) {
+  if (alternatives.length === 1) return alternatives[0];
+  const alts = alternatives.map((a) => a.slice());
+  const out = [];
+  for (;;) {
+    let prefix;
+    let common = true;
+    for (const alt of alts) {
+      if (alt.length === 0) {
+        common = false;
+        break;
+      }
+      if (prefix === undefined) prefix = alt[0];
+      else if (!sameNode(alt[0], prefix)) {
+        common = false;
+        break;
+      }
+    }
+    if (!common) break;
+    for (const alt of alts) alt.shift();
+    out.push(prefix);
+  }
+  const set = [];
+  let asSet = true;
+  for (const alt of alts) {
+    if (alt.length !== 1) {
+      asSet = false;
+      break;
+    }
+    const [node] = alt;
+    if (node.op === "LITERAL") set.push(["LITERAL", node.av]);
+    else if (node.op === "IN" && node.av[0][0] !== "NEGATE") set.push(...node.av);
+    else {
+      asSet = false;
+      break;
+    }
+  }
+  out.push(asSet ? { op: "IN", av: set } : { op: "BRANCH", av: alts });
+  return out;
+}
+
+// ---- catastrophic backtracking (security review I-2) ----------------------------------------
+//
+// Mirrors the server, rule for rule. A pattern such as (a+)+$ lets the engine split the same text
+// in exponentially many ways before it gives up. Only repeats that can run long (more than
+// LONG_REPEAT times) are examined. Inside one, these are refused: a body that can match nothing;
+// a part whose length can vary followed by something that can start with the same character
+// (including the next time round the repeat); alternatives that can start with the same
+// character, or that cannot be told apart. Stricter than strictly necessary, on purpose.
+// A character set is a Set of code points, or null for "cannot say, assume anything".
+
+const LONG_REPEAT = 10;
+const ASCII_CATEGORIES = {
+  d: new Set([..."0123456789"].map((c) => c.codePointAt(0))),
+  s: new Set([9, 10, 11, 12, 13, 32]),
+  w: new Set([..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"].map((c) => c.codePointAt(0))),
+};
+
+const union = (...parts) => {
+  if (parts.some((p) => p === null)) return null;
+  const out = new Set();
+  for (const p of parts) for (const cp of p) out.add(cp);
+  return out;
+};
+
+function overlap(a, b) {
+  if (a === null || b === null) return true;
+  for (const cp of a) if (b.has(cp)) return true;
+  return false;
+}
+
+// A sequence with every group opened in place (a group alone is only sequencing).
+function flatten(items) {
+  const out = [];
+  for (const node of items) {
+    if (node.op === "SUBPATTERN") out.push(...flatten(node.av.body));
+    else out.push(node);
+  }
+  return out;
+}
+
+// Code points a match of `items` can begin with, and whether it can match nothing.
+function firstInfo(items) {
+  let out = new Set();
+  for (const node of items) {
+    let got;
+    let empty;
+    if (node.op === "LITERAL") return [union(out, new Set([node.av])), false];
+    if (node.op === "IN") {
+      const chars = new Set();
+      for (const [iop, iav] of node.av) {
+        if (iop === "LITERAL") chars.add(iav);
+        else if (iop === "RANGE" && iav[1] - iav[0] <= 256) for (let c = iav[0]; c <= iav[1]; c += 1) chars.add(c);
+        else if (iop === "CATEGORY" && Object.hasOwn(ASCII_CATEGORIES, iav)) {
+          for (const cp of ASCII_CATEGORIES[iav]) chars.add(cp);
+        } else return [null, false]; // negated, huge or non-ASCII class: assume it overlaps
+      }
+      return [union(out, chars), false];
+    }
+    if (node.op === "AT") continue; // an anchor consumes nothing; the next item decides
+    if (node.op === "SUBPATTERN") [got, empty] = firstInfo(node.av.body);
+    else if (node.op === "BRANCH") {
+      const infos = node.av.map(firstInfo);
+      got = union(...infos.map((i) => i[0]));
+      empty = infos.some((i) => i[1]);
+    } else if (node.op === "REPEAT") {
+      [got, empty] = firstInfo(node.av.body);
+      empty = empty || node.av.low === 0;
+    } else return [null, false]; // ANY, NOT_LITERAL, lookarounds ...
+    out = union(out, got);
+    if (!empty) return [out, false];
+  }
+  return [out, true];
+}
+
+// The fewest characters a sequence can match (sre's getwidth()[0]).
+function minWidth(items) {
+  let total = 0;
+  for (const node of items) {
+    switch (node.op) {
+      case "LITERAL":
+      case "NOT_LITERAL":
+      case "ANY":
+      case "IN":
+        total += 1;
+        break;
+      case "SUBPATTERN":
+        total += minWidth(node.av.body);
+        break;
+      case "BRANCH":
+        total += Math.min(...node.av.map(minWidth));
+        break;
+      case "REPEAT":
+        total += minWidth(node.av.body) * node.av.low;
+        break;
+      default: // AT, ASSERT, ASSERT_NOT consume nothing
+    }
+  }
+  return total;
+}
+
+function backtrackingRisk(tree) {
+  for (const node of tree) {
+    let why = null;
+    if (node.op === "REPEAT") {
+      const { high, body } = node.av;
+      if (high > LONG_REPEAT) {
+        if (minWidth(body) === 0) return "a repeated group can match nothing";
+        if (isAmbiguous(flatten(body), firstInfo(body)[0])) {
+          return "the same text can be split between repeats in more than one way";
+        }
+      }
+      why = backtrackingRisk(body);
+    } else if (node.op === "SUBPATTERN" || node.op === "ASSERT" || node.op === "ASSERT_NOT") {
+      why = backtrackingRisk(node.av.body);
+    } else if (node.op === "BRANCH") {
+      for (const alt of node.av) {
+        why = backtrackingRisk(alt);
+        if (why !== null) break;
+      }
+    }
+    if (why !== null) return why;
+  }
+  return null;
+}
+
+// Inside a long repeat: can a variable-length part be cut in more than one place? `after` is
+// what can follow this sequence (the next time round the repeat, and so on).
+function isAmbiguous(items, after) {
+  for (let i = 0; i < items.length; i += 1) {
+    const node = items[i];
+    const [rest, restEmpty] = firstInfo(items.slice(i + 1));
+    const follow = restEmpty ? union(rest, after) : rest;
+    if (node.op === "REPEAT") {
+      const { low, high, body } = node.av;
+      const chars = firstInfo(body)[0];
+      if (low !== high && overlap(chars, follow)) return true;
+      const again = high > 1 ? union(chars, follow) : follow;
+      if (isAmbiguous(flatten(body), again)) return true;
+    } else if (node.op === "BRANCH") {
+      const infos = node.av.map(firstInfo);
+      let seen = new Set();
+      for (const [got] of infos) {
+        if (overlap(seen, got)) return true;
+        seen = union(seen, got);
+      }
+      if (infos.some(([, empty]) => empty) && overlap(seen, follow)) return true;
+      if (node.av.some((alt) => isAmbiguous(flatten(alt), follow))) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------- coercion
