@@ -4,7 +4,7 @@ import { enter } from '../console/js/session.js';
 import { mountForms, questionList } from '../console/js/forms.js';
 import { mountSubmissions } from '../console/js/submissions.js';
 import { mountHome } from '../console/js/home.js';
-import { exportControl, safeDriveUrl, saveBlob } from '../console/js/exports.js';
+import { exportControl, mountExports, safeDriveUrl, saveBlob } from '../console/js/exports.js';
 import { mountAudit } from '../console/js/audit.js';
 import { mountProjects } from '../console/js/projects.js';
 
@@ -400,6 +400,158 @@ export async function test_the_download_needs_a_session_and_only_opens_drive_lin
   await until(() => el2.querySelector('.export-result .msg'), 'result');
   assert(!el2.querySelector('a'), 'no anchor for a non-Drive url');
   el2.remove();
+}
+
+// ---- the Exports page: project, form, date range
+
+const PROJECTS = [
+  { id: 1, name: 'Anemia Mukt Bihar', form_count: 2, member_count: 3 },
+  { id: 2, name: 'Deworming', form_count: 1, member_count: 1 },
+];
+const PROJECT_DETAIL = {
+  1: { ...PROJECTS[0], forms: [{ form_id: 'asha_visit', title: 'ASHA visit' }, { form_id: 'school_visit', title: 'School visit' }], members: [] },
+  2: { ...PROJECTS[1], forms: [{ form_id: 'worm_day', title: 'Worm day' }], members: [] },
+};
+
+function exportsStub(job = {}, posted = []) {
+  return stub([
+    ['GET', /\/api\/projects$/, PROJECTS],
+    ['GET', /\/api\/projects\/(\d)$/, m => PROJECT_DETAIL[m[1]]],
+    ['POST', /\/api\/exports$/, (m, init) => { posted.push(JSON.parse(init.body)); return { status: 202, body: { job_id: 5 } }; }],
+    ['GET', /\/api\/exports\/5$/, () => ({ job_id: 5, status: 'done', error: null, drive_file_id: null, row_count: 12, form_id: null, project_id: 1, project_name: 'Anemia Mukt Bihar', date_from: null, date_to: null, message: null, ...job })],
+    ['GET', /\/api\/exports\/5\/download$/, { status: 200, blob: new Blob(['x']), headers: { 'Content-Disposition': 'attachment; filename="Anemia_Mukt_Bihar_20261031T090000Z.zip"' } }],
+  ]);
+}
+
+async function exportsPage(job, posted) {
+  const { api, calls } = exportsStub(job, posted);
+  const saved = [];
+  const root = mount();
+  await mountExports(root, { api, pollMs: 5, save: (blob, name) => saved.push(name) });
+  await until(() => root.querySelectorAll('#export-form option').length > 1, 'forms of the first project');
+  return { root, calls, saved };
+}
+
+function setValue(el, v) { el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); }
+
+export async function test_the_exports_page_offers_a_project_a_form_and_two_dates() {
+  const { root } = await exportsPage();
+  const projects = [...root.querySelectorAll('#export-project option')].map(o => o.textContent);
+  eq(projects, ['Anemia Mukt Bihar', 'Deworming']);
+  const forms = [...root.querySelectorAll('#export-form option')];
+  assert(/all forms/i.test(forms[0].textContent) && forms[0].value === '', 'form is optional: the first choice is every form');
+  eq(forms.slice(1).map(o => o.value), ['asha_visit', 'school_visit']);
+  eq(root.querySelector('#export-from').type, 'date');
+  eq(root.querySelector('#export-to').type, 'date');
+  assert(root.querySelector('label[for="export-from"]') && root.querySelector('label[for="export-to"]'), 'dates are labelled');
+  assert(/UTC/.test(text(root)) && /everything/i.test(text(root)), 'says what the dates mean and that empty means everything');
+  root.remove();
+}
+
+export async function test_changing_the_project_reloads_its_forms_and_resets_the_form_choice() {
+  const { root } = await exportsPage();
+  setValue(root.querySelector('#export-form'), 'school_visit');
+  setValue(root.querySelector('#export-project'), '2');
+  await until(() => [...root.querySelectorAll('#export-form option')].some(o => o.value === 'worm_day'), 'new forms');
+  eq([...root.querySelectorAll('#export-form option')].map(o => o.value), ['', 'worm_day']);
+  eq(root.querySelector('#export-form').value, '', 'back to all forms');
+  root.remove();
+}
+
+export async function test_no_dates_and_no_form_asks_for_the_whole_project() {
+  const posted = [];
+  const { root, saved } = await exportsPage({}, posted);
+  root.querySelector('button.download-csv').click();
+  await until(() => root.querySelector('.saved-name'), 'done');
+  eq(posted, [{ project_id: 1 }], 'only the project: no dates means everything');
+  eq(saved, ['Anemia_Mukt_Bihar_20261031T090000Z.zip']);
+  root.remove();
+}
+
+export async function test_a_form_and_a_date_range_are_sent_as_chosen() {
+  const posted = [];
+  const { root } = await exportsPage({ form_id: 'asha_visit', project_id: null, project_name: null, date_from: '2026-10-01', date_to: '2026-10-31' }, posted);
+  setValue(root.querySelector('#export-form'), 'asha_visit');
+  setValue(root.querySelector('#export-from'), '2026-10-01');
+  setValue(root.querySelector('#export-to'), '2026-10-31');
+  root.querySelector('button.download-csv').click();
+  await until(() => root.querySelector('.saved-name'), 'done');
+  eq(posted, [{ form_id: 'asha_visit', date_from: '2026-10-01', date_to: '2026-10-31' }], 'a form replaces the project: never both');
+  root.remove();
+}
+
+export async function test_a_one_sided_range_sends_only_that_side() {
+  const posted = [];
+  const { root } = await exportsPage({}, posted);
+  setValue(root.querySelector('#export-from'), '2026-10-15');
+  root.querySelector('button.download-csv').click();
+  await until(() => root.querySelector('.saved-name'), 'done');
+  eq(posted, [{ project_id: 1, date_from: '2026-10-15' }]);
+  root.remove();
+}
+
+export async function test_a_to_date_before_the_from_date_is_caught_before_anything_is_sent() {
+  const posted = [];
+  const { root } = await exportsPage({}, posted);
+  setValue(root.querySelector('#export-from'), '2026-10-20');
+  setValue(root.querySelector('#export-to'), '2026-10-10');
+  root.querySelector('button.download-csv').click();
+  const err = await until(() => root.querySelector('.export-error'), 'error shown');
+  assert(/earlier/i.test(err.textContent), err.textContent);
+  eq(posted, [], 'nothing sent');
+  assert(!root.querySelector('button.download-csv').disabled, 'can fix the dates and go again');
+  root.remove();
+}
+
+export async function test_after_a_download_the_page_says_what_was_downloaded() {
+  const { root } = await exportsPage({ row_count: 12, date_from: '2026-10-01', date_to: '2026-10-31' });
+  root.querySelector('button.download-csv').click();
+  await until(() => root.querySelector('.export-summary'), 'summary');
+  const t = text(root.querySelector('.export-summary'));
+  assert(t.includes('Anemia Mukt Bihar') && /all forms/i.test(t), 'project: ' + t);
+  assert(t.includes('2026-10-01') && t.includes('2026-10-31'), 'range: ' + t);
+  assert(t.includes('12 submissions'), 'count: ' + t);
+  root.remove();
+  const one = await exportsPage({ form_id: 'asha_visit', project_id: null, project_name: null, row_count: 1 });
+  one.root.querySelector('button.download-csv').click();
+  await until(() => one.root.querySelector('.export-summary'), 'summary');
+  const t1 = text(one.root.querySelector('.export-summary'));
+  assert(t1.includes('asha_visit') && /all dates/i.test(t1) && t1.includes('1 submission') && !t1.includes('1 submissions'), t1);
+  one.root.remove();
+}
+
+export async function test_an_empty_range_is_said_plainly_not_shown_as_a_failure() {
+  const msg = 'No submissions matched (project Anemia Mukt Bihar, 2027-01-01 to 2027-01-31). The CSV holds the column headings only.';
+  const { root } = await exportsPage({ row_count: 0, date_from: '2027-01-01', date_to: '2027-01-31', message: msg });
+  root.querySelector('button.download-csv').click();
+  const empty = await until(() => root.querySelector('.export-empty'), 'empty message');
+  assert(empty.textContent.includes('No submissions matched'), empty.textContent);
+  assert(!root.querySelector('.export-error'), 'not an error');
+  assert(text(root.querySelector('.export-summary')).includes('0 submissions'), 'still says what was asked for');
+  root.remove();
+}
+
+export async function test_a_server_refusal_is_shown_in_its_own_words() {
+  const { api } = stub([
+    ['GET', /\/api\/projects$/, PROJECTS],
+    ['GET', /\/api\/projects\/(\d)$/, m => PROJECT_DETAIL[m[1]]],
+    ['POST', /\/api\/exports$/, { status: 404, body: { detail: 'Project not found' } }],
+  ]);
+  const root = mount();
+  await mountExports(root, { api, pollMs: 5 });
+  await until(() => root.querySelectorAll('#export-form option').length > 1, 'forms');
+  root.querySelector('button.download-csv').click();
+  const err = await until(() => root.querySelector('.export-error'), 'error');
+  assert(err.textContent.includes('Project not found'), err.textContent);
+  root.remove();
+}
+
+export async function test_a_person_with_no_projects_is_told_so() {
+  const { api } = stub([['GET', /\/api\/projects$/, []]]);
+  const root = mount();
+  await mountExports(root, { api });
+  assert(/no projects/i.test(text(root)) && !root.querySelector('button.download-csv'), text(root));
+  root.remove();
 }
 
 // ------------------------------------------------------------------ projects, access
