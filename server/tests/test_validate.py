@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.forms.compile import compile_spec
-from app.forms.validate import Failure, validate_submission
+from app.forms.validate import CalculateCycleError, Failure, validate_submission
 from app.forms.xlsform import to_xform
 
 FIX = Path(__file__).parent / "fixtures"
@@ -162,25 +162,61 @@ def test_a_constraint_on_an_omitted_field_fails_cleanly(spec):
     assert pairs(validate_submission(s, GOOD, {}, NOW)) == [("household_children", "constraint")]
 
 
-def test_an_expression_that_errors_is_a_constraint_failure_not_a_crash(spec):
+def test_an_erroring_constraint_is_an_error_not_a_violation(spec):
     s = copy.deepcopy(spec)
     find(s["nodes"], "household_children")["constraint"] = "bogus(.)"
     f = validate_submission(s, GOOD, {}, NOW)
-    assert pairs(f) == [("household_children", "constraint")]
-    assert f[0].message == HI_COUNT
+    assert pairs(f) == [("household_children", "error")]
+    assert "bogus(.)" in f[0].message and "could not be evaluated" in f[0].message
 
 
-def test_a_relevant_that_errors_leaves_the_question_checked(spec):
+def test_an_erroring_relevant_is_an_error_and_the_question_is_still_checked(spec):
     s = copy.deepcopy(spec)
     find(s["nodes"], "asha_name")["relevant"] = "bogus()"
     data = {k: v for k, v in GOOD.items() if k != "asha_name"}
-    assert pairs(validate_submission(s, data, {}, NOW)) == [("asha_name", "required")]
+    f = validate_submission(s, data, {}, NOW)
+    assert pairs(f) == [("asha_name", "error"), ("asha_name", "required")]
 
 
-def test_a_calculate_that_errors_leaves_the_value_empty(spec):
+def test_an_erroring_calculate_is_an_error_and_leaves_the_value_empty(spec):
     s = copy.deepcopy(spec)
     find(s["nodes"], "child_age_years")["calculate"] = "bogus()"
-    assert validate_submission(s, GOOD, {"children": [row()]}, NOW) == []
+    f = validate_submission(s, GOOD, {"children": [row()]}, NOW)
+    assert pairs(f) == [("children[1]/child_age_years", "error")]
+
+
+def test_a_calculate_declared_before_its_input_still_feeds_relevant(spec):
+    s = copy.deepcopy(spec)
+    s["nodes"] = [
+        {"type": "calculate", "name": "fwd_a", "calculate": "${fwd_b} + 1"},
+        {"type": "calculate", "name": "fwd_b", "calculate": "${household_children} * 2"},
+        *s["nodes"],
+    ]
+    find(s["nodes"], "asha_name")["relevant"] = "${fwd_a} > 3"
+    data = {k: v for k, v in GOOD.items() if k != "asha_name"}
+    assert pairs(validate_submission(s, data, {}, NOW)) == [("asha_name", "required")]
+    data["household_children"] = 1  # fwd_b=2, fwd_a=3: hidden
+    assert validate_submission(s, data, {}, NOW) == []
+
+
+def test_a_calculate_dependency_cycle_raises(spec):
+    s = copy.deepcopy(spec)
+    s["nodes"] = [
+        {"type": "calculate", "name": "cyc_a", "calculate": "coalesce(${cyc_b}, 0) + 1"},
+        {"type": "calculate", "name": "cyc_b", "calculate": "coalesce(${cyc_a}, 0) + 1"},
+        *s["nodes"],
+    ]
+    with pytest.raises(CalculateCycleError):
+        validate_submission(s, GOOD, {}, NOW)
+
+
+def test_a_select_multiple_list_means_the_same_as_the_spaced_string(spec):
+    s = copy.deepcopy(spec)
+    find(s["nodes"], "referral_note")["required"] = True
+    as_list = validate_submission(s, GOOD, {"children": [row(symptoms=["pallor", "fever"])]}, NOW)
+    as_text = validate_submission(s, GOOD, {"children": [row(symptoms="pallor fever")]}, NOW)
+    assert pairs(as_list) == pairs(as_text) == [("children[1]/referral_note", "required")]
+    assert validate_submission(s, GOOD, {"children": [row(symptoms=["fever"])]}, NOW) == []
 
 
 def test_malformed_repeat_data_is_tolerated(spec):
