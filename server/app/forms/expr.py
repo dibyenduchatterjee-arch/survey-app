@@ -421,6 +421,12 @@ class _Parser:
             raise self.fail("regex() pattern is too large or too deeply nested") from exc
         if _uses_unshared_construct(tree):
             raise self.fail("regex() pattern uses possessive quantifiers, atomic groups or backreferences, which browsers do not share")
+        if (why := _backtracking_risk(tree)) is not None:
+            raise self.fail(
+                f"regex() pattern could backtrack catastrophically ({why}); an answer of a few dozen "
+                "characters could hang the server and every phone that opens the form. "
+                "Make the repeated part unambiguous, for example [a-z]+ instead of (a+)+"
+            )
 
 
 def _has_named_escape(pattern: str) -> bool:
@@ -446,6 +452,142 @@ def _uses_unshared_construct(node: Any) -> bool:
         return True
     if isinstance(node, tuple | list | _sre_parser.SubPattern):
         return any(_uses_unshared_construct(child) for child in node)
+    return False
+
+
+# ---- catastrophic backtracking -------------------------------------------------------------
+#
+# A pattern such as (a+)+$ lets the engine split the same text in exponentially many ways
+# before it gives up. Python's `re` and every browser engine backtrack, so one such pattern in
+# a form freezes the server and each phone that opens it. It is refused at publish, where
+# failure is loud and the author can fix it. Only repeats that can run long (more than
+# _LONG_REPEAT times) are examined, so a dotted number such as (\d+\.){3}\d+ and [0-9]{10}
+# stay legal. Inside a long repeat these are refused:
+#   * a body that can match nothing                              (a*)*   (a?){30}
+#   * a part whose length can vary, followed by something that can start with the same
+#     character - including the next time round the repeat       (a+)+   (a|aa)+   (x+x+)+
+#   * alternatives that can start with the same character, or that we cannot tell apart
+#                                                                 (.|ab)+
+# Stricter than strictly necessary on purpose: a pattern is cheap to rewrite.
+
+_LONG_REPEAT = 10
+_REPEATS = (_sre_constants.MAX_REPEAT, _sre_constants.MIN_REPEAT)
+_ASCII_CATEGORIES = {
+    _sre_constants.CATEGORY_DIGIT: frozenset(map(ord, "0123456789")),
+    _sre_constants.CATEGORY_SPACE: frozenset({9, 10, 11, 12, 13, 32}),  # ASCII whitespace
+    _sre_constants.CATEGORY_WORD: frozenset(
+        map(ord, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+    ),
+}
+_Chars = frozenset[int] | None  # code points; None = cannot say, assume anything
+
+
+def _union(*parts: _Chars) -> _Chars:
+    return None if any(p is None for p in parts) else frozenset().union(*parts)
+
+
+def _overlap(a: _Chars, b: _Chars) -> bool:
+    return a is None or b is None or bool(a & b)
+
+
+def _flatten(items: Any) -> list:
+    """A sequence with every group opened in place (a group alone is only sequencing)."""
+    out: list = []
+    for op, av in items:
+        if op == _sre_constants.SUBPATTERN:
+            out.extend(_flatten(av[3]))
+        else:
+            out.append((op, av))
+    return out
+
+
+def _first_info(items: Any) -> tuple[_Chars, bool]:
+    """(code points a match of `items` can begin with, whether it can match nothing)."""
+    out: _Chars = frozenset()
+    for op, av in items:
+        if op == _sre_constants.LITERAL:
+            return _union(out, frozenset({av})), False
+        if op == _sre_constants.IN:
+            chars: set[int] = set()
+            for iop, iav in av:
+                if iop == _sre_constants.LITERAL:
+                    chars.add(iav)
+                elif iop == _sre_constants.RANGE and iav[1] - iav[0] <= 256:
+                    chars.update(range(iav[0], iav[1] + 1))
+                elif iop == _sre_constants.CATEGORY and iav in _ASCII_CATEGORIES:
+                    chars |= _ASCII_CATEGORIES[iav]
+                else:
+                    return None, False  # negated, huge or non-ASCII class: assume it overlaps
+            return _union(out, frozenset(chars)), False
+        if op == _sre_constants.AT:
+            continue  # an anchor consumes nothing; the next item decides
+        if op == _sre_constants.SUBPATTERN:
+            got, empty = _first_info(av[3])
+        elif op == _sre_constants.BRANCH:
+            infos = [_first_info(alt) for alt in av[1]]
+            got, empty = _union(*(i[0] for i in infos)), any(i[1] for i in infos)
+        elif op in _REPEATS:
+            got, empty = _first_info(av[2])
+            empty = empty or av[0] == 0
+        else:
+            return None, False  # ANY, NOT_LITERAL, lookarounds ...
+        out = _union(out, got)
+        if not empty:
+            return out, False
+    return out, True
+
+
+def _backtracking_risk(tree: Any) -> str | None:
+    """Why this parsed pattern may backtrack catastrophically, or None if it looks safe."""
+    for op, av in tree:
+        if op in _REPEATS:
+            low, high, body = av
+            if high > _LONG_REPEAT:
+                if body.getwidth()[0] == 0:
+                    return "a repeated group can match nothing"
+                if _ambiguous(_flatten(body), _first_info(body)[0]):
+                    return "the same text can be split between repeats in more than one way"
+            why = _backtracking_risk(body)
+        elif op == _sre_constants.SUBPATTERN:
+            why = _backtracking_risk(av[3])
+        elif op == _sre_constants.BRANCH:
+            why = next((w for alt in av[1] if (w := _backtracking_risk(alt))), None)
+        elif op in (_sre_constants.ASSERT, _sre_constants.ASSERT_NOT):
+            why = _backtracking_risk(av[1])
+        else:
+            why = None
+        if why is not None:
+            return why
+    return None
+
+
+def _ambiguous(items: list, after: _Chars) -> bool:
+    """Inside a long repeat: can a variable-length part be cut in more than one place?
+
+    `after` is what can follow this sequence (the next time round the repeat, and so on).
+    """
+    for i, (op, av) in enumerate(items):
+        rest, rest_empty = _first_info(items[i + 1 :])
+        follow = _union(rest, after) if rest_empty else rest
+        if op in _REPEATS:
+            low, high, body = av
+            chars = _first_info(body)[0]
+            if low != high and _overlap(chars, follow):
+                return True
+            again = _union(chars, follow) if high > 1 else follow
+            if _ambiguous(_flatten(body), again):
+                return True
+        elif op == _sre_constants.BRANCH:
+            infos = [_first_info(alt) for alt in av[1]]
+            seen: _Chars = frozenset()
+            for got, _empty in infos:
+                if _overlap(seen, got):
+                    return True
+                seen = _union(seen, got)
+            if any(empty for _got, empty in infos) and _overlap(seen, follow):
+                return True  # an optional part followed by what it can itself start with
+            if any(_ambiguous(_flatten(alt), follow) for alt in av[1]):
+                return True
     return False
 
 

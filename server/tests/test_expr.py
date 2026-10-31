@@ -37,9 +37,19 @@ def _context(case):
     )
 
 
+# Corpus cases the SERVER now refuses at publish although the shared corpus (which the
+# JavaScript suite also reads) still says they evaluate. Security review I-2: a nested
+# quantifier can backtrack catastrophically. The shared file is not ours to edit from server/;
+# when webapp/js/expr.js mirrors the restriction, move these into the corpus as `unsupported`.
+SERVER_REFUSES_SINCE_I2 = {"regex_plus_after_a_group_quantifier_pair"}
+
+
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["name"])
 def test_expression_corpus(case):
-    if case.get("unsupported"):
+    if case["name"] in SERVER_REFUSES_SINCE_I2:
+        with pytest.raises(UnsupportedExpression, match="backtrack"):
+            parse(case["expr"])
+    elif case.get("unsupported"):
         with pytest.raises(UnsupportedExpression):
             parse(case["expr"])
         # Rejection is at parse time, so evaluating must refuse the same way.
