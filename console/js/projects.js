@@ -97,6 +97,11 @@ export async function mountProjects(root, ctx) {
         const f = movable.find(x => x.form_id === formSel.value);
         if (!f) return;
         const from = details.find(d => (d.forms || []).some(x => x.form_id === f.form_id));
+        const ask = ctx.confirm || (m => window.confirm(m));
+        const fromName = from ? `"${from.name}"` : 'its current project';
+        if (!ask(`Move "${f.title}" from ${fromName} into "${p.name}"?
+
+The members of "${p.name}" will be able to see this form's data. People who are only in ${fromName} will lose access to it. Anyone who was given this form directly keeps it.`)) return;
         try {
           await api.request(`/api/projects/${p.id}/forms/${encodeURIComponent(f.form_id)}`, { method: 'PUT' });
           say(`Moved "${f.title}" into "${p.name}". Its ${plural(members.length, 'member', 'members')} can fill it now; people assigned only to the old project no longer get it.`);
