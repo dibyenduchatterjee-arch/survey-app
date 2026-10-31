@@ -1,11 +1,12 @@
 from fastapi import FastAPI
 
-from app.api import auth, forms, submissions
+from app.api import auth, forms, openrosa, submissions
 
 app = FastAPI(title="Evidence Action survey platform")
 app.include_router(auth.router)
 app.include_router(forms.router)
 app.include_router(submissions.router)
+app.include_router(openrosa.router)
 
 
 @app.get("/health")
