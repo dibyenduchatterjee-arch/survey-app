@@ -58,11 +58,46 @@ export async function mountForms(root, ctx) {
   const out = h('div', { class: 'upload-out', 'aria-live': 'polite' });
   const file = h('input', { type: 'file', id: 'xlsx', accept: '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const go = h('button', { class: 'primary upload', type: 'button', text: 'Upload and check' });
+  // The project decides who can see this form's data, so it is chosen, never guessed.
+  const projectSel = h('select', { id: 'upload-project', class: 'upload-project' });
+  const projectRow = h('div', { class: 'project-pick', hidden: true },
+    h('label', { for: 'upload-project', text: 'Project this form belongs to' }), projectSel);
+  api.get('/api/projects').then(list => {
+    if (!Array.isArray(list) || !list.length) return;
+    if (list.length > 1) projectSel.append(h('option', { value: '', text: 'Choose a project...' }));
+    for (const p of list) projectSel.append(h('option', { value: String(p.id), text: p.name }));
+    projectRow.hidden = false;
+  }).catch(() => { /* no list: the server will say if it needs a project */ });
 
-  go.addEventListener('click', async () => {
+  function chooseProject(id) {
+    if (![...projectSel.options].some(o => o.value === String(id))) return;
+    projectSel.value = String(id);
+  }
+
+  // The server refused because it needs to be told the project: show its list as choices.
+  function projectChoices(d) {
+    const choices = Array.isArray(d.projects) ? d.projects : [];
+    const box = h('div', { class: 'msg warn project-choices', role: 'alert' },
+      h('p', { text: d.message || 'Say which project this form belongs to.' }));
+    if (choices.length) {
+      box.append(h('div', { class: 'toolbar' }, choices.map(c => h('button', {
+        type: 'button', class: 'choose-project', 'data-project': c.id, text: `Upload to ${c.name}`,
+        onclick: () => { chooseProject(c.id); upload(c.id); },
+      }))));
+    }
+    return box;
+  }
+
+  go.addEventListener('click', () => upload(projectSel.value));
+
+  async function upload(projectId) {
     clear(out);
     if (!file.files || !file.files[0]) {
       out.append(h('p', { class: 'msg bad', role: 'alert', text: 'Choose an .xlsx file first.' }));
+      return;
+    }
+    if (!projectRow.hidden && !projectId) {
+      out.append(h('p', { class: 'msg bad', role: 'alert', text: 'Choose the project this form belongs to first.' }));
       return;
     }
     go.disabled = true;
@@ -70,6 +105,7 @@ export async function mountForms(root, ctx) {
     try {
       const fd = new FormData();
       fd.append('file', file.files[0]);
+      if (projectId) fd.append('project_id', String(projectId));
       const res = await api.upload('/api/forms', fd);
       let spec = res.spec || null;
       let previewNote = null;
@@ -84,9 +120,10 @@ export async function mountForms(root, ctx) {
       }
       showResult(res, spec, previewNote);
     } catch (e) {
-      clear(out).append(errorPanel(e));
+      const d = e instanceof ApiError ? e.detail : null;
+      clear(out).append(e.status === 422 && d && typeof d === 'object' && d.error === 'project_required' ? projectChoices(d) : errorPanel(e));
     } finally { go.disabled = false; }
-  });
+  }
 
   function showResult(res, spec, previewNote) {
     clear(out);
@@ -114,5 +151,5 @@ export async function mountForms(root, ctx) {
 
   root.append(h('h1', { text: 'Upload a form' }),
     h('p', { class: 'hint', text: 'Upload the XLSForm for a project. You will see every question before anything goes live.' }),
-    h('div', { class: 'card' }, h('label', { for: 'xlsx', text: 'XLSForm (.xlsx)' }), file, go), out);
+    h('div', { class: 'card' }, projectRow, h('label', { for: 'xlsx', text: 'XLSForm (.xlsx)' }), file, go), out);
 }

@@ -57,7 +57,9 @@ About 980 Python tests and 573 JavaScript tests pass, plus the browser harness
 3. **Choose hosting.** Not decided. The browser app calls `/api/...` on its own address, so the
    app files and the API must be served from one address by a reverse proxy
    (`README.md`, section 6). A separate static host will not work unless it forwards `/api/`.
-4. Make the first admin (`make_admin.py`), then the projects.
+4. Make the first admin: `.\.venv\Scripts\python.exe tools\create_admin.py create-admin --username X [--full-name "..."]`
+   (asks for the password twice, hidden). Then the projects. Add every supervisor to a project: a supervisor
+   in no project gets a 422 on form upload.
 
 ## Next steps, in order
 

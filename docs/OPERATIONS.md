@@ -12,6 +12,8 @@ unless a path says Linux.
 - [ ] **`TRUST_PROXY_HEADERS=true` and `TRUSTED_PROXY_HOPS=1` set** (below).
 - [ ] **One server worker process** (below).
 - [ ] Google: the folder is in a **Shared Drive** and the service account is a **Content manager**.
+- [ ] **Every supervisor belongs to at least one project.** A supervisor in no project gets an error (HTTP 422)
+  when uploading a form. An admin must add them to a project first (console, Projects).
 - [ ] A **backup has been made and a restore has been tried once.**
 - [ ] Decided: SQLite or PostgreSQL (below). Decide **before** collecting real data; moving later is harder.
 - [ ] Everyone who will see data knows: **answers are not end-to-end encrypted** (`ARCHITECTURE.md`).
@@ -202,6 +204,8 @@ The console shows Google's own message. Find yours below.
 
 Notes:
 
+- **Without Google Drive set up, the CSV is rebuilt at the moment you click Download.** It shows the data as
+  it is at that click, not as it was when the export job ran. With Drive set up, you get the file the job saved.
 - A failed export keeps its error text; nothing is lost. The submissions themselves are not
   affected by an export failure. **Your data is safe in the server's database.**
 - A damaged photo or a bad GPS value does **not** fail an export. It is skipped and listed in
@@ -290,7 +294,9 @@ A tidy-up button for this has not been built.
 - **A lost or stolen phone:** deactivate the user in the console (Users). That ends the login. Anything
   already queued on that phone stays on it.
 - **A forgotten password:** an admin sets a new one (Users page, or `PATCH /api/users/{id}` with `password`).
-  If **every admin** has lost their password, make a new admin with `make_admin.py` (`README.md`, section 2).
+  If **every admin** has lost their password, make a new one on the server with
+  `.\.venv\Scripts\python.exe tools\create_admin.py create-admin --username X [--full-name "..."]`.
+  It asks for the password twice, hidden; the password is never typed as part of the command.
 - **A locked-out username:** five failed logins lock that username for 15 minutes. It clears
   by itself; there is no unlock button. Someone who knows a username can use this to annoy that person.
 - Old submissions are never deleted by the platform. Disk usage grows with photos; watch free space.

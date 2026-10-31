@@ -3,6 +3,8 @@
 // their own projects; an admin everything) and makes that consequence visible in words.
 import { h, clear } from './ui.js';
 
+// Read before the click, so it must say exactly what the move does.
+export const MOVE_WARNING = 'Moving a form changes who gets it. The members of this project will get it. People who were only in the old project will stop getting it. Anyone who was given this form directly (not through a project) keeps it. A form taken out of a project goes to the Default project, so the members of the project it left lose it.';
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 export async function mountProjects(root, ctx) {
@@ -113,6 +115,7 @@ export async function mountProjects(root, ctx) {
         h('h3', { text: `Forms in this project (${forms.length})` }),
         forms.length ? h('ul', { class: 'forms-in' }, forms.map(f => h('li', {}, h('span', { lang: 'hi', text: f.title }), ' ', h('code', { text: f.form_id })))) : h('p', { class: 'hint', text: 'No forms yet.' }),
         mover,
+        h('p', { class: 'hint move-warning', text: MOVE_WARNING }),
         h('h3', { text: `Who has access (${members.length})` }),
         h('p', { class: 'access-note', text: `Everyone below can fill all ${plural(forms.length, 'form', 'forms')} above, and any form moved into "${p.name}" later.` }),
         h('ul', { class: 'members' }, who),
