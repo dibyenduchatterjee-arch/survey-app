@@ -16,9 +16,9 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core import audit
 from app.core.rbac import current_user, require_role
@@ -205,18 +205,30 @@ def publish_form(
 def list_forms(
     user: User = Depends(current_user), db: Session = Depends(get_session)
 ) -> list[FormSummary]:
-    query = select(Form).order_by(Form.id)
+    # One query, scalar columns only: devices poll this on every reconnect, so it must
+    # never load a version's blob or spec.
+    cur = aliased(FormVersion)
+    published = (
+        select(FormVersion.id)
+        .where(FormVersion.form_id == Form.id, FormVersion.published_at.is_not(None))
+        .exists()
+    )
+    query = (
+        select(Form.form_id, Form.title, cur.version)
+        .outerjoin(cur, and_(cur.form_id == Form.id, cur.is_current.is_(True)))
+        .where(published)
+        .order_by(Form.id)
+    )
     if user.role == "enumerator":  # never learns that other forms exist
-        query = query.join(Assignment, Assignment.form_id == Form.id).where(
-            Assignment.user_id == user.id
+        query = query.where(
+            select(Assignment.id)
+            .where(Assignment.form_id == Form.id, Assignment.user_id == user.id)
+            .exists()
         )
-    out = []
-    for form in db.scalars(query).all():
-        if not any(v.published_at is not None for v in form.versions):
-            continue  # nothing published yet: no device may see this form
-        current = next((v.version for v in form.versions if v.is_current), None)
-        out.append(FormSummary(form_id=form.form_id, title=form.title, current_version=current))
-    return out
+    return [
+        FormSummary(form_id=fid, title=title, current_version=ver)
+        for fid, title, ver in db.execute(query).all()
+    ]
 
 
 @router.get("/forms/{form_id}/versions/{version}/spec")

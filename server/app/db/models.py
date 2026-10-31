@@ -108,7 +108,8 @@ class Form(Base):
             # one-current-version-per-form unique index never sees two.
             session.flush()
         version.is_current = True
-        version.published_at = utcnow()
+        if version.published_at is None:  # republishing keeps the original go-live time
+            version.published_at = utcnow()
         self.versions.append(version)
         return version
 
@@ -130,12 +131,15 @@ class FormVersion(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     form_id: Mapped[int] = mapped_column(ForeignKey("forms.id"))
     version: Mapped[str] = mapped_column(String(50))
-    xlsform_blob: Mapped[bytes] = mapped_column(LargeBinary)
+    # Deferred: up to 5 MB, never needed by a list or a publish; loaded only on access.
+    xlsform_blob: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     xform_xml: Mapped[str] = mapped_column(Text)
-    json_spec: Mapped[dict[str, Any]] = mapped_column(JSON)
+    json_spec: Mapped[dict[str, Any]] = mapped_column(JSON, deferred=True)
     # NULL means uploaded but never published. Only Form.publish() sets it; nothing
     # may serve a version to a device while it is NULL.
     published_at: Mapped[datetime | None] = mapped_column(default=None)
+    # NOT NULL, so it holds the uploader until publish: read it as "last touched by",
+    # not "published by". Whether it was published is `published_at`.
     published_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     is_current: Mapped[bool] = mapped_column(default=False)
 

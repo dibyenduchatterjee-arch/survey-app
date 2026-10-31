@@ -312,3 +312,63 @@ def test_bad_datasets_are_refused_and_store_nothing(client, db, sup, name, data)
     r = client.post(f"/api/datasets/{name}", files={"file": ("b.csv", data)}, headers=h)
     assert r.status_code in (404, 422)
     assert _count(db, Dataset) == 0
+
+
+def test_form_list_carries_no_spec_or_blob(client, sup):
+    _, h = sup
+    body = _upload(client, h)
+    _publish(client, h, body["form_id"], body["version"])
+    r = client.get("/api/forms", headers=h)
+    assert set(r.json()[0]) == {"form_id", "title", "current_version"}
+    assert "nodes" not in r.text and "PK" not in r.text and "xlsform" not in r.text
+
+
+def test_publishing_another_forms_version_is_404_and_changes_nothing(client, db, sup):
+    user, h = sup
+    a = _upload(client, h)
+    db.add(Form(form_id="form_b", title="B", created_by=user.id))
+    db.commit()
+    assert _publish(client, h, "form_b", a["version"]).status_code == 404
+    v = db.scalar(select(FormVersion))
+    assert v.published_at is None and not v.is_current
+    assert _count(db, AuditLog) == 1  # only the upload row
+
+
+def test_a_failed_publish_leaves_no_audit_row_and_no_state(client, db, sup, monkeypatch):
+    from app.api import forms as forms_api
+
+    _, h = sup
+    body = _upload(client, h)
+    real = forms_api.audit.record
+
+    def record_then_fail(*args, **kwargs):
+        real(*args, **kwargs)  # flushed into the transaction, as in production
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(forms_api.audit, "record", record_then_fail)
+    with pytest.raises(RuntimeError):
+        _publish(client, h, body["form_id"], body["version"])
+    monkeypatch.undo()
+    assert db.scalars(select(AuditLog).where(AuditLog.action == "form.publish")).all() == []
+    v = db.scalar(select(FormVersion))
+    assert v.published_at is None and not v.is_current
+
+
+def test_an_upload_of_exactly_5_mb_passes_the_size_cap(client, db, sup):
+    _, h = sup
+    exact = b"PK\x03\x04" + b"0" * (5 * 1024 * 1024 - 4)
+    assert len(exact) == 5 * 1024 * 1024
+    r = client.post("/api/forms", files=_files("exact.xlsx", exact), headers=h)
+    assert r.status_code == 422  # past the cap, rejected as a bad spreadsheet, not 413
+    assert r.json()["detail"]["error"] == "invalid_xlsform"
+
+
+def test_republishing_the_current_version_keeps_its_original_published_at(client, db, sup):
+    _, h = sup
+    body = _upload(client, h)
+    assert _publish(client, h, body["form_id"], body["version"]).status_code == 200
+    first = db.scalar(select(FormVersion)).published_at
+    assert first is not None
+    assert _publish(client, h, body["form_id"], body["version"]).status_code == 200
+    v = db.scalar(select(FormVersion))
+    assert v.is_current and v.published_at == first
