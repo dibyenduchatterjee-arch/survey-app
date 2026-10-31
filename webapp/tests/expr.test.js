@@ -270,8 +270,8 @@ test("number to text follows Python's repr at the extremes, not JavaScript's Str
   assert.equal(s("0.0001"), "0.0001");
   assert.equal(s("0.000012345"), "1.2345e-05");
   assert.equal(s("999999999999999"), "999999999999999");
-  assert.equal(s("1000000000000000"), "1000000000000000.0"); // a Python quirk, pinned
-  assert.equal(s("1234567890123456"), "1234567890123456.0");
+  assert.equal(s("1000000000000000"), "1000000000000000");
+  assert.equal(s("1234567890123456"), "1234567890123456");
   assert.equal(s("123456789012345678"), "1.2345678901234568e+17");
   assert.equal(s("-10000000000000000"), "-1e+16");
   assert.equal(s("1" + "0".repeat(400)), "Infinity");
@@ -283,7 +283,7 @@ test("date arithmetic is exact far from today, as Python's timedelta division is
   assert.equal(e("number('9999-12-31T23:59:59.999999-23:59')"), 2932897.9993055556);
   assert.equal(e("number('0001-01-01T00:00+05:30')"), -719162.2291666666);
   assert.equal(e("number('2026-03-15T09:00:00.5Z')"), 20527.37500578704);
-  assert.equal(e("number('2026-03-15T24:00Z')"), 20528);
+  assert.ok(Number.isNaN(e("number('2026-03-15T24:00Z')")), "hour 24 is refused");
   assert.ok(Number.isNaN(e("number('2026-03-15T24:01Z')")));
   assert.ok(Number.isNaN(e("number('2026-03-15T25:00Z')")));
   assert.ok(Number.isNaN(e("number('2026-03-15T09:00+24:00')")));
@@ -293,10 +293,8 @@ test("date arithmetic is exact far from today, as Python's timedelta division is
 
 // ---------------------------------------------------------------- regex: where JS is stricter than Python
 
-// Python accepts each of these; they cannot be reproduced exactly in a browser, so they
-// are refused at parse time instead of silently behaving differently. They are NOT in
-// the shared corpus because the Python suite would fail on them. See the task report:
-// the cleanest fix is for expr.py to refuse them too, after which they can move there.
+// These are also in the shared corpus now that expr.py refuses them too; this keeps a
+// JS-side check that the browser never quietly accepts one.
 test("regex syntax that Python accepts but a browser cannot match exactly is refused loudly", () => {
   for (const pattern of ["a*+", "a++", "a?+", "a{2}+", "(a)\\1", "(a)?\\1", "\\N{DIGIT ONE}","a{99999999999}", "a{4294967295}"]) {
     assert.throws(() => parse(`regex(\${a}, '${pattern}')`), UnsupportedExpression, pattern);

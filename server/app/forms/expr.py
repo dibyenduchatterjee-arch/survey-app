@@ -52,7 +52,8 @@ TYPE RULES (every one of these is pinned by a case in the corpus)
       name, default Asia/Kolkata), so a 05:00 IST visit is dated today. now() is the
       instant, Context.now converted to UTC, whatever the timezone.
     * regex() must match the WHOLE string, uses ASCII classes (\\d is 0-9 only),
-      and the pattern must be a string literal using only syntax JavaScript shares.
+      and the pattern must be a string literal using only syntax JavaScript shares:
+      no possessive quantifiers, atomic groups, backreferences or \\N{name}.
     * Repeats: `${f}` where f is a list reads row Context.repeat_index (0-based;
       past the end reads as empty). count() and sum() see every row. sum() skips
       empty rows, a non-numeric row makes it NaN. position() is repeat_index + 1.
@@ -70,6 +71,8 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
+from re import _constants as _sre_constants
+from re import _parser as _sre_parser
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -406,10 +409,44 @@ class _Parser:
         for m in re.finditer(r"\(\?(.?)", pattern):
             if m.group(1) not in (":", "=", "!"):
                 raise self.fail("regex() pattern uses syntax that browsers and the server do not share")
+        if _has_named_escape(pattern):
+            raise self.fail("regex() pattern uses a \\N{name} escape, which browsers do not share")
         try:
             re.compile(pattern, re.ASCII)
+            tree = _sre_parser.parse(pattern, re.ASCII)
         except re.error as exc:
             raise self.fail(f"regex() pattern is invalid: {exc}") from exc
+        except (OverflowError, RecursionError) as exc:
+            # a repeat count of 2**32-1 or more, or absurd nesting: refuse, never crash
+            raise self.fail("regex() pattern is too large or too deeply nested") from exc
+        if _uses_unshared_construct(tree):
+            raise self.fail("regex() pattern uses possessive quantifiers, atomic groups or backreferences, which browsers do not share")
+
+
+def _has_named_escape(pattern: str) -> bool:
+    """True if the pattern contains a \\N{...} escape (an escaped backslash is skipped)."""
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            if pattern[i + 1 : i + 2] == "N":
+                return True
+            i += 2
+        else:
+            i += 1
+    return False
+
+
+_UNSHARED_OPS = {_sre_constants.POSSESSIVE_REPEAT, _sre_constants.ATOMIC_GROUP,
+                 _sre_constants.GROUPREF, _sre_constants.GROUPREF_EXISTS}
+
+
+def _uses_unshared_construct(node: Any) -> bool:
+    """Walk an sre parse tree for possessive repeats, atomic groups and backreferences."""
+    if isinstance(node, tuple) and len(node) == 2 and node[0] in _UNSHARED_OPS:
+        return True
+    if isinstance(node, tuple | list | _sre_parser.SubPattern):
+        return any(_uses_unshared_construct(child) for child in node)
+    return False
 
 
 @lru_cache(maxsize=2048)
@@ -477,6 +514,8 @@ def to_number(v: Any) -> float:
             except ValueError:
                 return NAN
         if _ISO_DATETIME.fullmatch(s):
+            if s[11:13] == "24":  # Python 3.14 reads T24:00 as the next midnight; browsers do not
+                return NAN
             try:
                 return _datetime_days(datetime.fromisoformat(s))
             except ValueError:
@@ -502,7 +541,7 @@ def to_string(v: Any) -> str:
             return "NaN"
         if math.isinf(f):
             return "Infinity" if f > 0 else "-Infinity"
-        if f == int(f) and abs(f) < 1e15:
+        if f == int(f) and abs(f) < 1e16:
             return str(int(f))
         return repr(f)
     if isinstance(v, datetime | date):
@@ -555,6 +594,8 @@ def _arithmetic(op: str, left: Any, right: Any) -> float:
         return a * b
     if b == 0 or math.isnan(a) or math.isnan(b):
         return NAN
+    if op == "mod" and math.isinf(a):
+        return NAN  # math.fmod(inf, x) raises; the answer is undefined, like division by zero
     return a / b if op == "div" else math.fmod(a, b)
 
 
@@ -669,7 +710,7 @@ def _call(node: Call, ctx: Context) -> Any:
         return float(ctx.repeat_index + 1)
     if name == "indexed-repeat":
         n = to_number(arg(2))
-        if math.isnan(n) or n != math.trunc(n):
+        if math.isnan(n) or math.isinf(n) or n != math.trunc(n):
             return ""
         rows = _raw(ctx, args[0].name)  # type: ignore[attr-defined]
         if not isinstance(rows, list):

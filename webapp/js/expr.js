@@ -10,8 +10,8 @@
 // UnsupportedExpression while PARSING. Nothing parses to a quiet "true".
 //
 // Where JavaScript and Python differ, this file imitates Python on purpose:
-//   * number -> text: Python's repr() of a float (1e+16, 1e-05, and "1000000000000000.0"
-//     for whole numbers from 1e15 up to 1e16), not JavaScript's String().
+//   * number -> text: Python's repr() of a float (1e+16, 1e-05, and plain digits
+//     for every whole number below 1e16), not JavaScript's String().
 //   * regex(): the pattern is parsed with Python's rules and re-emitted as a JavaScript
 //     pattern that behaves the same (ASCII \s, '.' stops at \n only, '$' also matches
 //     before a final \n, code points not UTF-16 units). See translateRegex().
@@ -126,8 +126,6 @@ function validDate(y, m, d) {
   return y >= 1 && y <= 9999 && m >= 1 && m <= 12 && d >= 1 && d <= daysInMonth(y, m);
 }
 
-const MAX_DAYS = daysFromCivil(9999, 12, 31);
-
 // n / d for BigInts (d > 0), rounded once to the nearest double, ties to even.
 // Python divides two timedeltas as exact integers; a plain Number(n) / Number(d) is
 // only exact while n < 2**53, which stops being true around the year 2255.
@@ -156,9 +154,8 @@ const ISO_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
 const ISO_DATETIME = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?(Z|[+-][0-9]{2}:[0-9]{2})?$/;
 
 // Mirrors datetime.fromisoformat for the strings ISO_DATETIME lets through (Python 3.14:
-// hour 24 is accepted only as exactly 24:00[:00] and rolls to the next day; an offset's
-// minutes may run to 99 provided the whole offset is under 24 hours; fractions beyond
-// six digits are truncated). Returns null for anything Python refuses, else
+// an offset's minutes may run to 99 provided the whole offset is under 24 hours;
+// fractions beyond six digits are truncated; expr.py itself refuses hour 24). Returns null for anything Python refuses, else
 // {micros, aware}.
 function parseDateTime(s) {
   const m = ISO_DATETIME.exec(s);
@@ -166,20 +163,13 @@ function parseDateTime(s) {
   const y = Number(m[1]);
   const mo = Number(m[2]);
   const d = Number(m[3]);
-  let hh = Number(m[4]);
+  const hh = Number(m[4]);
   const mi = Number(m[5]);
   const ss = m[6] === undefined ? 0 : Number(m[6]);
   const micro = m[7] === undefined ? 0 : Number(m[7].slice(0, 6).padEnd(6, "0"));
   if (!validDate(y, mo, d)) return null;
-  let days = daysFromCivil(y, mo, d);
-  if (hh === 24) {
-    if (mi !== 0 || ss !== 0 || micro !== 0) return null;
-    hh = 0;
-    days += 1;
-    if (days > MAX_DAYS) return null;
-  } else if (hh > 23) {
-    return null;
-  }
+  const days = daysFromCivil(y, mo, d);
+  if (hh > 23) return null; // T24:00 too: Python 3.14 accepts it, but the server refuses it
   if (mi > 59 || ss > 59) return null;
   let offset = 0;
   const aware = m[8] !== undefined;
@@ -900,7 +890,7 @@ export function toString(v) {
   if (typeof v === "number") {
     if (Number.isNaN(v)) return "NaN";
     if (!Number.isFinite(v)) return v > 0 ? "Infinity" : "-Infinity";
-    if (v === Math.trunc(v) && Math.abs(v) < 1e15) return String(Math.trunc(v));
+    if (v === Math.trunc(v) && Math.abs(v) < 1e16) return String(Math.trunc(v));
     return pyFloatRepr(v);
   }
   if (isTemporal(v)) return v.isoformat();

@@ -1949,22 +1949,22 @@
   "note": "Whole numbers below 1e15 print as plain integers."
  },
  {
-  "name": "to_string_1e15_keeps_point_zero",
+  "name": "to_string_1e15_has_no_point_zero",
   "expr": "concat(1000000000000000)",
   "values": {},
   "current": null,
   "now": "2026-03-15T09:30:00+00:00",
-  "expect": "1000000000000000.0",
-  "note": "PINS A PYTHON QUIRK: whole numbers from 1e15 up to 1e16 fall through to repr() and print with '.0', contrary to the docstring's 'no trailing .0'. JavaScript imitates it. If expr.py is fixed, change this case and the JS together."
+  "expect": "1000000000000000",
+  "note": "Whole numbers print without '.0' up to (not including) 1e16, as the module docstring says. Used to print '1000000000000000.0'."
  },
  {
-  "name": "to_string_16_digit_integer_keeps_point_zero",
+  "name": "to_string_16_digit_integer_has_no_point_zero",
   "expr": "concat(1234567890123456)",
   "values": {},
   "current": null,
   "now": "2026-03-15T09:30:00+00:00",
-  "expect": "1234567890123456.0",
-  "note": "See to_string_1e15_keeps_point_zero."
+  "expect": "1234567890123456",
+  "note": "See to_string_1e15_has_no_point_zero."
  },
  {
   "name": "to_string_large_whole_number_exponent_form",
@@ -3125,5 +3125,230 @@
   "now": "2026-03-15T09:30:00+00:00",
   "expect": "",
   "repeat_index": -1
+ },
+ {
+  "name": "to_string_9007199254740993_literal_rounds_to_2_53",
+  "expr": "concat(9007199254740993)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "9007199254740992"
+ },
+ {
+  "name": "to_string_just_below_1e16_is_plain",
+  "expr": "concat(9999999999999998)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "9999999999999998"
+ },
+ {
+  "name": "to_string_1e16_is_the_first_exponent_form",
+  "expr": "concat(9999999999999999 + 1)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "1e+16"
+ },
+ {
+  "name": "unsupported_regex_possessive_star",
+  "expr": "regex(${a}, 'a*+')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_possessive_plus",
+  "expr": "regex(${a}, 'a++')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_possessive_optional",
+  "expr": "regex(${a}, 'a?+')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_possessive_braces",
+  "expr": "regex(${a}, 'a{2}+')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_possessive_after_group",
+  "expr": "regex(${a}, '(?:ab)*+')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_backreference",
+  "expr": "regex(${a}, '(a)\\1')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_backreference_to_optional_group",
+  "expr": "regex(${a}, '(a)?\\1')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_named_character_escape",
+  "expr": "regex(${a}, '\\N{DIGIT ONE}')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_repeat_count_too_large",
+  "expr": "regex(${a}, 'a{99999999999}')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "unsupported_regex_repeat_count_at_the_cap",
+  "expr": "regex(${a}, 'a{4294967295}')",
+  "unsupported": true,
+  "note": "A construct the browser's regex engine does not share: refused when parsing, so a form that uses it fails to publish."
+ },
+ {
+  "name": "regex_escaped_backslash_then_n_is_not_a_named_escape",
+  "expr": "regex(., '\\\\N')",
+  "values": {},
+  "current": "\\N",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_octal_escape_is_not_a_backreference",
+  "expr": "regex(., '\\101')",
+  "values": {},
+  "current": "A",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_lazy_quantifier_is_not_possessive",
+  "expr": "regex(., 'a*?')",
+  "values": {},
+  "current": "aa",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_plus_after_a_group_quantifier_pair",
+  "expr": "regex(., '(?:a+)+')",
+  "values": {},
+  "current": "aaa",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_repeat_count_just_under_the_cap",
+  "expr": "regex(., 'a{4294967294}')",
+  "values": {},
+  "current": "a",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "mod_with_infinite_dividend_is_nan",
+  "expr": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 mod 3",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN",
+  "note": "A 400-digit literal is Infinity. math.fmod(inf, x) used to raise."
+ },
+ {
+  "name": "mod_with_infinite_divisor_keeps_the_dividend",
+  "expr": "5 mod 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 5
+ },
+ {
+  "name": "mod_of_negative_infinity_is_nan",
+  "expr": "-10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 mod 3",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "indexed_repeat_with_infinite_index_is_empty",
+  "expr": "indexed-repeat(${age}, ${children}, 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000)",
+  "values": {
+   "age": [
+    4,
+    9
+   ],
+   "children": [
+    "a",
+    "b"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "note": "int(inf) used to raise OverflowError."
+ },
+ {
+  "name": "indexed_repeat_with_huge_finite_index_is_empty",
+  "expr": "indexed-repeat(${age}, ${children}, 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000)",
+  "values": {
+   "age": [
+    4,
+    9
+   ],
+   "children": [
+    "a",
+    "b"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "datetime_hour_24_is_nan",
+  "expr": "number('2026-03-15T24:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN",
+  "note": "Hour 24 is refused: Python 3.14's fromisoformat reads T24:00 as the next midnight and even accepts an impossible date with it; browsers do not."
+ },
+ {
+  "name": "datetime_hour_24_with_seconds_is_nan",
+  "expr": "number('2026-03-15T24:00:00+05:30')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_hour_24_on_an_impossible_date_is_nan",
+  "expr": "number('2026-03-00T24:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_hour_24_on_month_zero_is_nan",
+  "expr": "number('2026-00-00T24:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_hour_23_59_is_fine",
+  "expr": "number('2026-03-15T23:59Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 20527.999305555557
  }
 ]
