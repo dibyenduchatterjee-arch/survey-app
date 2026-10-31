@@ -1,7 +1,7 @@
 // Browser tests for the admin console. fetch is a scripted stand-in: no server needed.
 import { createApi } from '../console/js/api.js';
 import { enter } from '../console/js/session.js';
-import { mountForms } from '../console/js/forms.js';
+import { mountForms, questionList } from '../console/js/forms.js';
 import { mountSubmissions } from '../console/js/submissions.js';
 import { mountHome } from '../console/js/home.js';
 import { exportControl, safeDriveUrl, saveBlob } from '../console/js/exports.js';
@@ -515,6 +515,8 @@ function projectWorld(role = 'admin') {
     ['DELETE', /\/api\/projects\/(\d+)\/members\/(\d+)$/, m => { const p = find(m[1]); p.members = p.members.filter(x => x.user_id !== Number(m[2])); return { status: 204 }; }],
     ['GET', /\/api\/forms$/, () => w.projects.flatMap(p => p.forms.map(f => ({ form_id: f.form_id, title: f.title, current_version: '1' })))],
     ['GET', /\/api\/users$/, () => w.users],
+    // What the server does for a supervisor: the ONE active account with exactly this username.
+    ['GET', /\/api\/users\?username=([^&]*)$/, m => w.users.filter(u => u.is_active && u.username === decodeURIComponent(m[1])).map(({ id, username, full_name, role }) => ({ id, username, full_name, role }))],
   ];
   return { w, ...stub(routes), ctx: (api, confirm = () => true) => ({ api, confirm, user: { id: 1, username: 'm', role } }) };
 }
@@ -658,6 +660,121 @@ export async function test_a_supervisor_sees_only_what_the_api_returns() {
   assert(![...root.querySelectorAll('.project-name')].some(n => n.textContent === 'Default project'), 'default project not listed');
   assert(!root.querySelector('button.add-member'), 'no add control for a supervisor');
   root.remove();
+}
+
+// ------------------------------------------------------------------ supervisor: username lookup (review I-5)
+
+const lookup = (root, id, name) => {
+  const c = pcard(root, id);
+  c.querySelector('input.lookup-username').value = name;
+  c.querySelector('form.lookup').dispatchEvent(new Event('submit', { cancelable: true }));
+};
+const usersCalls = calls => calls.filter(c => /\/api\/users/.test(c.url));
+
+export async function test_a_supervisor_gets_a_username_lookup_and_no_directory() {
+  const { api, ctx, calls, w } = projectWorld('supervisor');
+  w.projects.shift();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  const c = pcard(root, 2);
+  assert(c.querySelector('input.lookup-username') && c.querySelector('button.find-user'), 'a lookup is offered');
+  assert(!c.querySelector('select.add-member-user'), 'no pick-list of everyone');
+  assert(!text(c).includes('Only an admin can add people'), 'no longer told they cannot add');
+  eq(usersCalls(calls).length, 0, 'opening the page does not list users for a supervisor');
+  root.remove();
+}
+
+export async function test_looking_up_an_exact_username_finds_the_person_and_adds_them() {
+  const { api, ctx, calls } = projectWorld('supervisor');
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  lookup(root, 2, '  rani ');
+  await until(() => pcard(root, 2).querySelector('.lookup-found'), 'found');
+  const found = pcard(root, 2).querySelector('.lookup-found').textContent;
+  assert(found.includes('Rani Kumari') && found.includes('rani'), found);
+  const get = usersCalls(calls)[0];
+  assert(/\/api\/users\?username=rani$/.test(get.url), 'trimmed, exact: ' + get.url);
+  pcard(root, 2).querySelector('button.add-found-member').click();
+  await until(() => pcard(root, 2).querySelector('.member[data-user="8"]'), 'Rani listed');
+  const post = calls.find(x => x.method === 'POST' && /projects\/2\/members$/.test(x.url));
+  eq(JSON.parse(post.init.body), { user_id: 8 });
+  assert(text(root).includes('Rani Kumari can now fill all 2 forms'), 'consequence stated');
+  assert(!pcard(root, 2).querySelector('.lookup-found'), 'the result is cleared once they are added');
+  root.remove();
+}
+
+export async function test_a_username_nobody_has_is_a_calm_not_found_not_an_error() {
+  const { api, ctx } = projectWorld('supervisor');
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  lookup(root, 2, 'ranii');
+  await until(() => pcard(root, 2).querySelector('.lookup-none'), 'not found message');
+  const n = pcard(root, 2).querySelector('.lookup-none');
+  assert(n.textContent.includes('ranii') && /exactly/i.test(n.textContent) && /spelling/i.test(n.textContent), n.textContent);
+  assert(!pcard(root, 2).querySelector('.msg.bad, [role="alert"]'), 'not styled or announced as an error');
+  assert(!pcard(root, 2).querySelector('button.add-found-member'), 'nothing to add');
+  assert(!/denied|forbidden|error|fail|invalid/i.test(n.textContent), 'unalarming wording: ' + n.textContent);
+  root.remove();
+}
+
+export async function test_looking_up_someone_already_in_the_project_says_so_and_offers_no_add() {
+  const { api, ctx } = projectWorld('supervisor');
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  lookup(root, 2, 'sita');
+  await until(() => pcard(root, 2).querySelector('.lookup-already'), 'already message');
+  assert(pcard(root, 2).querySelector('.lookup-already').textContent.includes('Sita Devi'), 'names them');
+  assert(!pcard(root, 2).querySelector('button.add-found-member'), 'no add button');
+  root.remove();
+}
+
+export async function test_an_empty_lookup_asks_for_a_username_without_calling_the_server() {
+  const { api, ctx, calls } = projectWorld('supervisor');
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  lookup(root, 2, '   ');
+  await sleep(30);
+  eq(usersCalls(calls).length, 0, 'no request for blank input');
+  assert(/username/i.test(pcard(root, 2).querySelector('.lookup-result').textContent), 'asks for one');
+  root.remove();
+}
+
+export async function test_a_failed_lookup_shows_the_servers_words_as_an_error() {
+  const { ctx } = projectWorld('supervisor');
+  const root = mount();
+  const { api: broken } = stub([
+    ['GET', /\/api\/projects$/, [{ id: 2, name: 'IFA syrup', form_count: 0, member_count: 0 }]],
+    ['GET', /\/api\/projects\/2$/, { id: 2, name: 'IFA syrup', form_count: 0, member_count: 0, forms: [], members: [] }],
+    ['GET', /\/api\/forms$/, []],
+    ['GET', /\/api\/users\?username=/, { status: 500, body: { detail: 'Something went wrong on the server' } }],
+  ]);
+  await mountProjects(root, ctx(broken));
+  lookup(root, 2, 'rani');
+  await until(() => pcard(root, 2).querySelector('.lookup-result .msg.bad'), 'error shown');
+  assert(pcard(root, 2).querySelector('.lookup-result').textContent.includes('Something went wrong'), 'server words');
+  root.remove();
+}
+
+export async function test_an_admin_keeps_the_full_pick_list_and_no_lookup() {
+  const { api, ctx } = projectWorld('admin');
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  assert(pcard(root, 2).querySelector('select.add-member-user'), 'admin still picks from the list');
+  assert(!pcard(root, 2).querySelector('input.lookup-username'), 'no lookup for an admin');
+  root.remove();
+}
+
+// ------------------------------------------------------------------ question list indentation (CSP)
+
+export async function test_nested_questions_are_indented_without_an_inline_style_attribute() {
+  const table = questionList(SPEC);
+  document.body.append(table);
+  const pad = name => parseFloat(getComputedStyle([...table.querySelectorAll('tr')].find(r => r.textContent.includes(name)).querySelector('.q-name')).paddingLeft);
+  assert(pad('child_age') > pad('children') + 10, `a repeat's child is indented further: ${pad('child_age')} vs ${pad('children')}`);
+  // Markup-sourced style attributes are what the CSP blocks. The source scan in
+  // console_csp.test.js guards the code; here, confirm the page really laid the cell out.
+  assert(pad('asha_name') > 0, 'top level has its own padding');
+  table.remove();
 }
 
 export async function test_the_projects_page_is_not_shown_to_an_enumerator() {
