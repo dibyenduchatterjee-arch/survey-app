@@ -247,6 +247,33 @@ export async function downscaleImage(file, maxBytes, startEdge = START_EDGE) {
   }
 }
 
+// ---------------------------------------------------------------- the server's media cap
+
+// The cap is the server's max_media_bytes, delivered in bootstrap()'s `config`. This phone
+// remembers the last value it was told, so photos taken offline are sized to the cap the server
+// will enforce. FALLBACK applies ONLY while no value has ever been received (first run, config
+// fetch failed); it is deliberately below the server's 5 MiB default so a photo sized to it
+// cannot be refused, and it is replaced the moment a real value arrives.
+export const MEDIA_CAP_KEY = 'evac.max_media_bytes';
+export const FALLBACK_MEDIA_BYTES = 2 * 1024 * 1024;
+
+const validCap = (n) => Number.isFinite(n) && n > 0;
+
+// Remember the cap from a bootstrap() result. An empty or malformed config keeps the old value.
+export function rememberMediaCap(boot, storage) {
+  const n = Number(boot && boot.config && boot.config.max_media_bytes);
+  if (!validCap(n)) return false;
+  try { storage.setItem(MEDIA_CAP_KEY, String(Math.floor(n))); } catch { /* private mode: carry on */ }
+  return true;
+}
+
+// The cap to size photos to: last known server value, else the fallback. Always a number.
+export function mediaCap(storage) {
+  let n = NaN;
+  try { n = Number(storage.getItem(MEDIA_CAP_KEY)); } catch { /* fall through */ }
+  return validCap(n) ? n : FALLBACK_MEDIA_BYTES;
+}
+
 // ---------------------------------------------------------------- drafts
 
 // Saves the whole answer set on every answer. Writes are serialised and coalesced: if one is

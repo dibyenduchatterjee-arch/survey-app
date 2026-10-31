@@ -39,7 +39,13 @@ if (params.get('probe') === 'queue') {
       if (only && !name.includes(only)) continue;
       const t0 = performance.now();
       try {
-        await mod[name]();
+        // A test that hangs is a failure, not a stall: the run must always reach __done.
+        let timer;
+        await Promise.race([
+          mod[name](),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out after 90s')), 90000); }),
+        ]);
+        clearTimeout(timer);
         window.__results.push({ module, name, ok: true, error: null, ms: Math.round(performance.now() - t0) });
       } catch (e) {
         window.__results.push({ module, name, ok: false, error: String((e && e.message) || e), ms: Math.round(performance.now() - t0) });
