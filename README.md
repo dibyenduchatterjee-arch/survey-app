@@ -517,3 +517,13 @@ cd server
 
 सब ठीक हो तो `Published.` दिखेगा, साथ में फ़ॉर्म का नाम, वर्ज़न, सवालों की गिनती और Drive का लिंक। फ़ोल्डर में दो फ़ाइलें आती हैं: `amb_asha_visit.xlsx` और `amb_asha_visit.spec.json`। वही फ़ॉर्म दोबारा प्रकाशित करने पर यही दो फ़ाइलें नए वर्ज़न से बदलती हैं, लिंक वही रहते हैं। कोई गड़बड़ हो तो `NOT published.` दिखेगा और उस सवाल का नाम, जिसे ठीक करना है। तब Drive में कुछ नहीं जाता।
 
+
+## Weekly CSV download page (Google Sheet, Apps Script)
+
+A page you paste into the survey Google Sheet and open as a web page: pick the form, dates,
+district and block, see the row count, download a CSV that opens in Excel with Hindi intact.
+Setup steps in English and Hindi are in [`appsscript/README.md`](appsscript/README.md).
+
+## साप्ताहिक CSV डाउनलोड पेज (Google Sheet, Apps Script)
+
+यह पेज सर्वे वाली Google Sheet में पेस्ट होता है और वेब पेज की तरह खुलता है: फ़ॉर्म, तारीख, जिला और ब्लॉक चुनिए, पंक्तियों की गिनती देखिए, और CSV डाउनलोड कीजिए जो एक्सेल में हिंदी के साथ सही खुलती है। अंग्रेज़ी और हिंदी में सेटअप के कदम [`appsscript/README.md`](appsscript/README.md) में हैं।

@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evidence Action - Survey data download</title>
+<style>
+  :root { --ink:#1b1b1f; --mag:#b3135e; --gray:#5d6470; --line:#d5d9e0; --bg:#f4f5f8; --ok:#0b6b3a; --warn:#8a5a00; --bad:#a3181f; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 "Nirmala UI","Segoe UI",system-ui,sans-serif; }
+  header { background:var(--ink); color:#fff; padding:14px 16px; border-bottom:4px solid var(--mag); }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:2px 0 0; color:#d8dbe2; font-size:14px; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:14px; }
+  .step { font-weight:700; color:var(--mag); margin:0 0 8px; }
+  label { display:block; font-weight:600; margin:10px 0 4px; }
+  label small { font-weight:400; color:var(--gray); }
+  select, input[type=date] { width:100%; padding:10px; font-size:16px; border:1px solid #9aa1ad; border-radius:6px; background:#fff; color:var(--ink); }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > div { flex:1 1 200px; }
+  #count { font-size:28px; font-weight:700; margin:0; }
+  #countNote { margin:4px 0 0; color:var(--gray); }
+  .msg { padding:10px 12px; border-radius:6px; margin-top:10px; border:1px solid; }
+  .msg.warn { background:#fff6e0; border-color:#e6c36b; color:var(--warn); }
+  .msg.bad  { background:#fde9ea; border-color:#e59aa0; color:var(--bad); }
+  .msg.ok   { background:#e6f4ec; border-color:#8fcaa8; color:var(--ok); }
+  button { font-size:17px; font-weight:700; padding:12px 20px; border-radius:6px; border:0; background:var(--mag); color:#fff; cursor:pointer; }
+  button:disabled { background:#b9bdc6; cursor:not-allowed; }
+  button.link { background:none; color:var(--mag); padding:6px 0; font-size:15px; text-decoration:underline; font-weight:600; }
+  .hidden { display:none; }
+  #summary { margin:0 0 10px; color:var(--ink); }
+  footer { text-align:center; color:var(--gray); font-size:13px; padding:8px 16px 24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Evidence Action &middot; सर्वे डेटा डाउनलोड / Survey data download</h1>
+  <p>तारीख और जगह चुनें, फिर CSV डाउनलोड करें &middot; Pick dates and places, then download a CSV</p>
+</header>
+
+<main>
+  <div class="card">
+    <p class="step">1. फ़ॉर्म चुनें / Choose the form</p>
+    <label for="tab">फ़ॉर्म (टैब) / Form (tab)</label>
+    <select id="tab"></select>
+    <div id="tabNote" class="msg warn hidden"></div>
+  </div>
+
+  <div class="card" id="filtersCard">
+    <p class="step">2. तारीख और जगह चुनें / Choose dates and places</p>
+    <div class="row">
+      <div>
+        <label for="from">कब से <small>(खाली छोड़ सकते हैं)</small><br>Date from <small>(optional)</small></label>
+        <input type="date" id="from">
+      </div>
+      <div>
+        <label for="to">कब तक <small>(खाली छोड़ सकते हैं)</small><br>Date to <small>(optional)</small></label>
+        <input type="date" id="to">
+      </div>
+    </div>
+    <div id="dateColWrap" class="hidden">
+      <label for="dateCol">तारीख किस कॉलम से / Date taken from column</label>
+      <select id="dateCol"></select>
+    </div>
+    <p style="margin:6px 0 0;color:var(--gray);font-size:14px">तारीखें भारतीय समय (IST) में गिनी जाती हैं। / Dates are counted in Indian time (IST).</p>
+    <div id="filters"></div>
+    <div style="margin-top:8px"><button class="link" id="clear" type="button">सब चुनाव हटाएँ / Clear all choices</button></div>
+  </div>
+
+  <div class="card" id="resultCard">
+    <p class="step">3. जाँचें और डाउनलोड करें / Check and download</p>
+    <p id="summary"></p>
+    <p id="count">&hellip;</p>
+    <p id="countNote"></p>
+    <div id="problem" class="msg bad hidden"></div>
+    <div id="empty" class="msg warn hidden"></div>
+    <div id="undated" class="msg warn hidden"></div>
+    <p style="margin-top:14px">
+      <button id="download" type="button" disabled>CSV डाउनलोड करें / Download CSV</button>
+    </p>
+    <div id="done" class="msg ok hidden"></div>
+    <div id="fail" class="msg bad hidden"></div>
+  </div>
+</main>
+<footer>Evidence Action &middot; CSV UTF-8 (BOM) &mdash; Excel में हिंदी सही खुलेगी / Hindi opens correctly in Excel</footer>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var selected = {};          // filter column -> chosen value
+  var seq = 0;                // ignore answers that arrive after a newer question
+  var timer = null;
+  var lastInfo = null;
+  var busy = false;
+
+  function show(id, text) {
+    var el = $(id);
+    if (text) { el.textContent = text; el.classList.remove('hidden'); }
+    else { el.textContent = ''; el.classList.add('hidden'); }
+  }
+  function server() {
+    if (!window.google || !google.script || !google.script.run) {
+      throw new Error('This page must be opened from the Apps Script web app URL.');
+    }
+    return google.script.run;
+  }
+  function errText(e) { return (e && e.message) ? e.message : String(e); }
+
+  function request() {
+    return {
+      tab: $('tab').value,
+      dateFrom: $('from').value,
+      dateTo: $('to').value,
+      dateColumn: $('dateCol').value,
+      selected: selected
+    };
+  }
+
+  function loadTabs() {
+    server().withFailureHandler(function (e) { show('fail', 'फ़ॉर्म की सूची नहीं मिली / Could not read the form list: ' + errText(e)); })
+      .withSuccessHandler(function (tabs) {
+        var sel = $('tab');
+        sel.innerHTML = '';
+        var ph = document.createElement('option');
+        ph.value = ''; ph.textContent = '-- चुनें / choose --';
+        sel.appendChild(ph);
+        tabs.forEach(function (t) {
+          var o = document.createElement('option');
+          o.value = t.name;
+          o.textContent = t.name + '  (' + t.rows + ')';
+          sel.appendChild(o);
+        });
+        if (tabs.length === 1) { sel.value = tabs[0].name; refresh(); }
+        else render(null);
+      }).getTabs();
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, 250);
+  }
+
+  function refresh() {
+    show('done', ''); show('fail', '');
+    if (!$('tab').value) { render(null); return; }
+    var my = ++seq;
+    $('download').disabled = true;
+    $('count').textContent = '…';
+    server().withFailureHandler(function (e) {
+      if (my !== seq) return;
+      show('fail', 'गिनती नहीं हो सकी / Could not count: ' + errText(e));
+    }).withSuccessHandler(function (info) {
+      if (my !== seq) return;
+      selected = info.selected || {};
+      render(info);
+    }).queryTab(request());
+  }
+
+  function render(info) {
+    lastInfo = info;
+    var f = $('filters');
+    f.innerHTML = '';
+    show('problem', ''); show('empty', ''); show('undated', ''); show('tabNote', '');
+    if (!info) {
+      $('count').textContent = '—';
+      $('countNote').textContent = 'पहले फ़ॉर्म चुनें। / Choose a form first.';
+      $('summary').textContent = '';
+      $('download').disabled = true;
+      return;
+    }
+
+    if (info.empty) {
+      $('count').textContent = '0';
+      $('countNote').textContent = '';
+      show('empty', 'इस टैब में अभी कोई कॉलम नहीं है। / This tab has no columns yet.');
+      $('download').disabled = true;
+      return;
+    }
+    if (info.parent) {
+      show('tabNote', 'यह दोहराए गए सवालों का टैब है; जिला/ब्लॉक/तारीख मुख्य फ़ॉर्म "' + info.parent + '" से जुड़े हैं। / This is a repeat-group tab; district, block and date come from the main form "' + info.parent + '".');
+    }
+
+    // date column picker only when there is a real choice
+    var dc = $('dateCol');
+    dc.innerHTML = '';
+    (info.dateColumns || []).forEach(function (n) {
+      var o = document.createElement('option'); o.value = n; o.textContent = n; dc.appendChild(o);
+    });
+    dc.value = info.dateColumn || '';
+    $('dateColWrap').classList.toggle('hidden', (info.dateColumns || []).length < 2);
+
+    // dropdowns found in the data
+    info.filters.forEach(function (flt) {
+      var wrap = document.createElement('div');
+      var lab = document.createElement('label');
+      lab.textContent = flt.column;
+      var sel = document.createElement('select');
+      var all = document.createElement('option');
+      all.value = ''; all.textContent = 'सभी / All (' + flt.options.length + ')';
+      sel.appendChild(all);
+      flt.options.forEach(function (v) {
+        var o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+      });
+      sel.value = flt.selected || '';
+      sel.addEventListener('change', function () {
+        if (sel.value) selected[flt.column] = sel.value; else delete selected[flt.column];
+        refresh();
+      });
+      lab.htmlFor = 'f_' + flt.column;
+      sel.id = 'f_' + flt.column;
+      wrap.appendChild(lab); wrap.appendChild(sel);
+      f.appendChild(wrap);
+    });
+
+    $('summary').textContent = describe(info);
+    $('count').textContent = info.count + (info.count === 1 ? ' पंक्ति / row' : ' पंक्तियाँ / rows');
+    $('countNote').textContent = 'कुल ' + info.total + ' में से / out of ' + info.total + ' in this form';
+
+    if (info.problem === 'range_reversed') {
+      show('problem', '"कब से" तारीख "कब तक" से बाद की है। तारीखें ठीक करें। / "Date from" is later than "Date to". Please fix the dates.');
+    } else if (info.dateIgnored) {
+      show('problem', 'इस फ़ॉर्म में तारीख वाला कॉलम नहीं मिला, इसलिए तारीख का चुनाव लागू नहीं हुआ। सारी पंक्तियाँ गिनी गई हैं। / No date column was found in this form, so the dates were NOT applied. All rows are counted.');
+    } else if (info.count === 0) {
+      show('empty', 'इस चुनाव में कोई डेटा नहीं मिला। तारीख या जगह बदलकर देखें। / Nothing matched these choices. Try a different date range or place.');
+    }
+    if (info.undated > 0) {
+      show('undated', info.undated + ' पंक्तियों में तारीख पढ़ी नहीं जा सकी, इसलिए तारीख लगाने पर वे शामिल नहीं हैं। / ' + info.undated + ' row(s) have no readable date and are left out while a date range is set.');
+    }
+    $('download').disabled = !!info.problem;
+  }
+
+  function describe(info) {
+    var parts = [];
+    var from = $('from').value, to = $('to').value;
+    if (info.dateIgnored) parts.push('तारीख: लागू नहीं / Dates: not applied');
+    else if (from || to) parts.push('तारीख / Dates: ' + (from || '…') + ' → ' + (to || '…') + ' (IST)');
+    else parts.push('तारीख / Dates: सभी / all');
+    Object.keys(info.selected || {}).forEach(function (k) { parts.push(k + ': ' + info.selected[k]); });
+    return parts.join('  ·  ');
+  }
+
+  function download() {
+    if (busy) return;
+    busy = true;
+    show('done', ''); show('fail', '');
+    $('download').disabled = true;
+    server().withFailureHandler(function (e) {
+      busy = false; $('download').disabled = false;
+      show('fail', 'डाउनलोड नहीं हो सका / Download failed: ' + errText(e));
+    }).withSuccessHandler(function (out) {
+      busy = false; $('download').disabled = false;
+      if (out.problem) { show('fail', 'तारीखें ठीक करें / Please fix the dates.'); return; }
+      // The BOM is the first character of out.csv; the Blob encodes it as UTF-8 bytes EF BB BF.
+      var blob = new Blob([out.csv], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = out.filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      var shown = lastInfo ? lastInfo.count : out.count;
+      var msg = out.count + ' पंक्तियाँ डाउनलोड हुईं / ' + out.count + ' row(s) downloaded: ' + out.filename;
+      if (out.count !== shown) msg += '  — सूची इस बीच बदल गई थी / the sheet changed since the count was shown.';
+      show('done', msg);
+      if (out.count === 0) show('done', 'खाली फ़ाइल (सिर्फ़ कॉलम के नाम) डाउनलोड हुई / Downloaded a file with column names only: ' + out.filename);
+    }).exportCsv(request());
+  }
+
+  $('tab').addEventListener('change', function () { selected = {}; $('dateCol').innerHTML = ''; refresh(); });
+  $('from').addEventListener('change', schedule);
+  $('to').addEventListener('change', schedule);
+  $('dateCol').addEventListener('change', schedule);
+  $('clear').addEventListener('click', function () { selected = {}; $('from').value = ''; $('to').value = ''; refresh(); });
+  $('download').addEventListener('click', download);
+
+  try { loadTabs(); } catch (e) { show('fail', errText(e)); }
+})();
+</script>
+</body>
+</html>
