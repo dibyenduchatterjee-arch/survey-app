@@ -226,11 +226,37 @@ def test_enumerator_gets_404_for_an_unassigned_forms_spec(client, as_, sup):
     assert r.status_code == 404
 
 
-def test_supervisor_lists_all_forms(client, sup):
+def test_unpublished_version_is_neither_fetchable_nor_listed(client, as_, db, sup):
     _, h = sup
     body = _upload(client, h)
-    rows = client.get("/api/forms", headers=h).json()
-    assert rows[0]["form_id"] == body["form_id"] and rows[0]["current_version"] is None
+    spec_url = f"/api/forms/{body['form_id']}/versions/{body['version']}/spec"
+    eu, eh = as_("enumerator")
+    db.add(Assignment(user_id=eu.id, form_id=db.scalar(select(Form)).id))
+    db.commit()
+    assert db.scalar(select(FormVersion)).published_at is None
+    for headers in (h, eh):
+        assert client.get(spec_url, headers=headers).status_code == 404
+        assert client.get("/api/forms", headers=headers).json() == []
+    _publish(client, h, body["form_id"], body["version"])
+    for headers in (h, eh):
+        assert client.get(spec_url, headers=headers).status_code == 200
+        rows = client.get("/api/forms", headers=headers).json()
+        assert [r["form_id"] for r in rows] == [body["form_id"]]
+        assert rows[0]["current_version"] == body["version"]
+
+
+def test_a_newer_unpublished_version_is_hidden_but_the_published_one_stays(client, sup):
+    _, h = sup
+    a = _upload(client, h)
+    _publish(client, h, a["form_id"], a["version"])
+    b = _upload(client, h)
+    assert client.get(
+        f"/api/forms/{b['form_id']}/versions/{b['version']}/spec", headers=h
+    ).status_code == 404
+    assert client.get(
+        f"/api/forms/{a['form_id']}/versions/{a['version']}/spec", headers=h
+    ).status_code == 200
+    assert client.get("/api/forms", headers=h).json()[0]["current_version"] == a["version"]
 
 
 def test_publish_writes_an_audit_row(client, db, sup):

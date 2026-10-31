@@ -113,7 +113,7 @@ def upgrade() -> None:
     sa.Column('xlsform_blob', sa.LargeBinary(), nullable=False),
     sa.Column('xform_xml', sa.Text(), nullable=False),
     sa.Column('json_spec', sa.JSON(), nullable=False),
-    sa.Column('published_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('published_by', sa.Integer(), nullable=False),
     sa.Column('is_current', sa.Boolean(), nullable=False),
     sa.ForeignKeyConstraint(['form_id'], ['forms.id'], ),

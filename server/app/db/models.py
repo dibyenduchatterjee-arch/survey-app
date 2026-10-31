@@ -133,7 +133,9 @@ class FormVersion(Base):
     xlsform_blob: Mapped[bytes] = mapped_column(LargeBinary)
     xform_xml: Mapped[str] = mapped_column(Text)
     json_spec: Mapped[dict[str, Any]] = mapped_column(JSON)
-    published_at: Mapped[datetime] = mapped_column(default=utcnow)
+    # NULL means uploaded but never published. Only Form.publish() sets it; nothing
+    # may serve a version to a device while it is NULL.
+    published_at: Mapped[datetime | None] = mapped_column(default=None)
     published_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     is_current: Mapped[bool] = mapped_column(default=False)
 

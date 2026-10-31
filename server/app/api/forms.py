@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.core import audit
 from app.core.rbac import current_user, require_role
-from app.db.models import Assignment, Dataset, Form, FormVersion, User, utcnow
+from app.db.models import Assignment, Dataset, Form, FormVersion, User
 from app.db.session import get_session
 from app.forms.compile import FormCompileError, compile_spec
 from app.forms.expr import UnsupportedExpression
@@ -149,7 +149,6 @@ def upload_form(
                 xlsform_blob=data,
                 xform_xml=xform_xml,
                 json_spec=spec,
-                published_at=utcnow(),
                 published_by=user.id,
                 is_current=False,
             )
@@ -213,6 +212,8 @@ def list_forms(
         )
     out = []
     for form in db.scalars(query).all():
+        if not any(v.published_at is not None for v in form.versions):
+            continue  # nothing published yet: no device may see this form
         current = next((v.version for v in form.versions if v.is_current), None)
         out.append(FormSummary(form_id=form.form_id, title=form.title, current_version=current))
     return out
@@ -232,7 +233,7 @@ def get_spec(
     row = db.scalar(
         select(FormVersion).where(FormVersion.form_id == form.id, FormVersion.version == version)
     )
-    if row is None:
+    if row is None or row.published_at is None:  # never served before it is published
         raise not_found
     if user.role == "enumerator":
         assigned = db.scalar(
@@ -241,11 +242,6 @@ def get_spec(
             )
         )
         if assigned is None:
-            raise not_found
-        # Devices get the current version, or an older one to finish a draft; a version
-        # newer than the published one is still a draft of the supervisor's.
-        current = next((v.version for v in form.versions if v.is_current), None)
-        if current is None or version > current:
             raise not_found
     return row.json_spec
 
