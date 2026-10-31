@@ -444,7 +444,7 @@ export async function test_the_exports_page_offers_a_project_a_form_and_two_date
   eq(root.querySelector('#export-from').type, 'date');
   eq(root.querySelector('#export-to').type, 'date');
   assert(root.querySelector('label[for="export-from"]') && root.querySelector('label[for="export-to"]'), 'dates are labelled');
-  assert(/UTC/.test(text(root)) && /everything/i.test(text(root)), 'says what the dates mean and that empty means everything');
+  assert(/Indian dates/i.test(text(root)) && !/UTC/.test(text(root)) && /everything/i.test(text(root)), 'says the dates are Indian dates, and that empty means everything');
   root.remove();
 }
 

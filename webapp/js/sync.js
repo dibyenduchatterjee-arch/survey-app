@@ -27,6 +27,7 @@
 // same second, or a lost reply read before the row becomes visible). Column 1 is the safety
 // net for that; it is not airtight.
 //
+// The Drive calls come from drive.js (readColumns, ensureColumns included).
 // `drive`, `store`, `getUser`, `sleep` and `random` are parameters so the logic is testable
 // in Node with no network.
 
@@ -45,8 +46,6 @@ const MAX_CONSECUTIVE_KEEPS = 3;
 const REJECT_STATUSES = new Set([400, 403, 404, 413, 422]);
 // A 403 with one of these reasons is Google's rate limiter, not a permission problem.
 const QUOTA_403 = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded|dailyLimitExceeded|RATE_LIMIT|RESOURCE_EXHAUSTED/i;
-
-const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 // ---- shared state ----------------------------------------------------------------
 
@@ -73,30 +72,6 @@ function normalise(a, b) {
 
 // ---- the Drive layer -------------------------------------------------------------
 
-const colLetter = n => { let s = ''; for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
-
-// Reads the first `n` columns of a tab (header included) as strings. drive.js has no read
-// primitive yet, so this is the fallback; a `readColumns` exported by drive.js wins.
-async function fallbackReadColumns(spreadsheetId, tab, n) {
-  const token = await (await import('./googleauth.js')).getAccessToken();
-  const range = `'${String(tab).replace(/'/g, "''")}'!A:${colLetter(n)}`;
-  let res;
-  try {
-    res = await globalThis.fetch(`${SHEETS}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?majorDimension=ROWS`,
-      { headers: { Authorization: 'Bearer ' + token } });
-  } catch (e) {
-    throw new driveModule.DriveError('Network error: ' + (e && e.message), { retryable: true, cause: e });
-  }
-  if (!res.ok) {
-    let text = ''; try { text = await res.text(); } catch { /* ignore */ }
-    throw new driveModule.DriveError(`Google API ${res.status} reading ${tab}`, {
-      status: res.status, retryable: res.status === 429 || res.status >= 500, body: text,
-    });
-  }
-  const j = await res.json();
-  return (j.values || []).map(r => r.map(String));
-}
-
 const defaultDrive = () => ({
   listProjects: driveModule.listProjects,
   listForms: driveModule.listForms,
@@ -105,7 +80,9 @@ const defaultDrive = () => ({
   findOrCreateSpreadsheet: driveModule.findOrCreateSpreadsheet,
   ensureTab: driveModule.ensureTab,
   appendRow: driveModule.appendRow,
-  readColumns: driveModule.readColumns || fallbackReadColumns,
+  readColumns: driveModule.readColumns,
+  ensureColumns: driveModule.ensureColumns,
+  listProjectsIn: driveModule.listProjectsIn,
 });
 
 async function defaultGetUser() {
@@ -266,7 +243,11 @@ async function sendOne(item, spec, media, user, ctx, sheets) {
   // Main tab first: uuid is column 1.
   const qs = questions(spec.nodes);
   const mainTab = tabName(spec.form_id);
-  await retry(() => drive.ensureTab(ss, mainTab, ['uuid', ...qs.map(q => q.name), ...META]));
+  const mainHeader = ['uuid', ...qs.map(q => q.name), ...META];
+  await retry(() => drive.ensureTab(ss, mainTab, mainHeader));
+  // A newer form version may carry questions the tab has no column for. Add them (at the right-hand
+  // end; columns are never reordered or removed) BEFORE writing, so no answer is ever dropped.
+  await retry(() => drive.ensureColumns(ss, mainTab, mainHeader));
   const seen = await retry(() => drive.readColumns(ss, mainTab, 1));
   const uuidKey = keyOf([item.uuid]);
   if (seen.some(r => keyOf([r[0] ?? '']) === uuidKey)) return 'replay';
@@ -287,7 +268,9 @@ async function sendOne(item, spec, media, user, ctx, sheets) {
     const rqs = questions(node.children);
     const keyCols = ['parent_uuid', ...path.slice(0, -1).map(p => `${p}_row_index`), 'row_index'];
     const tab = tabName(spec.form_id, path);
-    await retry(() => drive.ensureTab(ss, tab, [...keyCols, ...rqs.map(q => q.name)]));
+    const repHeader = [...keyCols, ...rqs.map(q => q.name)];
+    await retry(() => drive.ensureTab(ss, tab, repHeader));
+    await retry(() => drive.ensureColumns(ss, tab, repHeader));
     const have = new Set((await retry(() => drive.readColumns(ss, tab, keyCols.length))).map(r => keyOf(r.slice(0, keyCols.length))));
     for (const { keys, data } of rows) {
       if (have.has(keyOf([item.uuid, ...keys]))) continue;
@@ -395,8 +378,17 @@ export async function bootstrap(a, b) {
   const rootFolderId = o.rootFolderId || await defaultRootFolder();
   const out = { forms: [], datasets: [], config: {}, errors: [] };
 
-  const projects = await retry(() => drive.listProjects(rootFolderId));
+  // Projects the person added through the folder chooser, plus (best effort) folders inside the
+  // configured main folder, which under drive.file only lists what this app can see.
+  const projects = await retry(() => drive.listProjects());
   if (!Array.isArray(projects)) throw new Error('Project list was not a list');
+  if (rootFolderId && drive.listProjectsIn) {
+    try {
+      for (const p of await retry(() => drive.listProjectsIn(rootFolderId))) {
+        if (!projects.some(x => x.id === p.id)) projects.push(p);
+      }
+    } catch (e) { if (isAuth(e)) throw e; /* the chosen projects still work */ }
+  }
 
   for (const project of projects) {
     let files;

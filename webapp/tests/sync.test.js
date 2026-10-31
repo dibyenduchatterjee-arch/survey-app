@@ -94,6 +94,12 @@ function fakeDrive(fail = {}) {
       hit("ensureTab");
       if (!tabs.has(tab)) tabs.set(tab, [header.slice()]);
     },
+    async ensureColumns(ss, tab, names) {
+      hit("ensureColumns");
+      const header = tabs.get(tab)[0];
+      for (const n of names) if (!header.includes(n)) header.push(n);   // add only, never reorder
+      return header;
+    },
     async readColumns(ss, tab, n) {
       hit("readColumns");
       return (tabs.get(tab) || []).map(r => r.slice(0, n).map(String));
@@ -132,6 +138,46 @@ test("a submission appends exactly one row, uuid first, answers in header order,
     "u1", "सीता", 2, "", "25.5 85.1", "2026-10-31T09:00:00Z", "2026-10-31T09:05:00Z", "dev-1", "asha@x.org", "2026103101",
   ]]);
   assert.equal(await store.queueLength(), 0);
+});
+
+test("a newer form version's new question gets a new column; the old row is untouched", async () => {
+  const store = await readyStore();
+  const drive = fakeDrive();
+  await store.enqueue(sub("u1"), {});
+  await sync.syncOnce(opts(store, drive));
+  const v1Header = drive.tabs.get("visit")[0].slice();
+  const v1Row = drive.rows("visit")[0].slice();
+
+  // the user adds a question, the team refreshes, and a submission is collected on version 2
+  const v2 = { ...SPEC, version: "2026110101", nodes: [...SPEC.nodes, { type: "text", name: "new_q" }] };
+  await store.putForm({ ...v2, _project: PROJECT });
+  await store.enqueue(sub("u2", { version: "2026110101", data: { asha_name: "गीता", new_q: "answer-2" } }), {});
+  await sync.syncOnce(opts(store, drive));
+
+  const header = drive.tabs.get("visit")[0];
+  assert.deepEqual(header.slice(0, v1Header.length), v1Header, "existing columns are not reordered");
+  assert.equal(header[header.length - 1], "new_q");
+  const rows = drive.rows("visit");
+  assert.deepEqual(rows[0], v1Row, "the version-1 row is untouched");
+  assert.equal(rows[1][header.indexOf("new_q")], "answer-2");
+  assert.equal(rows[1][header.indexOf("asha_name")], "गीता");
+  assert.equal(rows[1][header.indexOf("_form_version")], "2026110101");
+});
+
+test("a new question inside a repeat gets its column in the repeat tab", async () => {
+  const store = await readyStore();
+  const drive = fakeDrive();
+  await store.enqueue(sub("u1", { repeats: { children: [{ child_name: "A" }] } }), {});
+  await sync.syncOnce(opts(store, drive));
+  const v2 = structuredClone(SPEC);
+  v2.version = "2026110101";
+  v2.nodes.find(n => n.name === "children").children.push({ type: "integer", name: "age" });
+  await store.putForm({ ...v2, _project: PROJECT });
+  await store.enqueue(sub("u2", { version: "2026110101", repeats: { children: [{ child_name: "B", age: 4 }] } }), {});
+  await sync.syncOnce(opts(store, drive));
+  const header = drive.tabs.get("visit_children")[0];
+  assert.deepEqual(header, ["parent_uuid", "row_index", "child_name", "age"]);
+  assert.equal(drive.rows("visit_children")[1][header.indexOf("age")], 4);
 });
 
 test("a replay of the same uuid appends nothing and still dequeues", async () => {
