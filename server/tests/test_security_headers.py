@@ -52,9 +52,11 @@ def test_every_response_carries_the_security_headers(client, path):
     assert set(csp["img-src"]) == {"'self'", "blob:", "data:"}
     assert set(csp["media-src"]) == {"'self'", "blob:"}
     assert "'unsafe-eval'" not in r.headers["content-security-policy"]
-    # The one narrow exception: inline style ATTRIBUTES (console/js/forms.js indents nested
-    # questions with one). Never script, never <style> elements.
-    assert [d for d, v in csp.items() if "'unsafe-inline'" in v] == ["style-src-attr"]
+    # Nothing is allowed inline at all. The console's inline module scripts are permitted
+    # by hash, and the last inline style attribute was removed from console/js/forms.js,
+    # so no directive needs 'unsafe-inline'. Keep it that way: this assertion is what
+    # stops a future convenience edit reopening the hole.
+    assert [d for d, v in csp.items() if "'unsafe-inline'" in v] == []
 
 
 def test_no_directive_that_runs_code_or_styles_allows_unsafe_inline(client):

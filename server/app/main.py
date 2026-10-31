@@ -63,9 +63,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 # and its buttons (deactivate a user, start an export) must not be clickjackable. So every
 # response says: never framed, never sniffed, no referrer, HTTPS only, and run only script this
 # server shipped. The console pages each carry one inline module script; it is allowed by
-# its hash (computed from the file being served), never by 'unsafe-inline'. The one other
-# concession is inline style ATTRIBUTES, which console/js/forms.js sets to indent nested
-# questions: `style-src-attr` only, so no <style> element and no script can ride on it.
+# its hash (computed from the file being served), never by 'unsafe-inline'. Nothing else is
+# allowed inline either: the last inline style attribute (console/js/forms.js indenting
+# nested questions) now goes through el.style, so no directive carries 'unsafe-inline'.
 
 _INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script>", re.S | re.I)
 _NO_CSP_PATHS = ("/docs", "/redoc")  # FastAPI's own pages load a CDN and inline script
