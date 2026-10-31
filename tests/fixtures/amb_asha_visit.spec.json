@@ -1,0 +1,394 @@
+{
+ "form_id": "amb_asha_visit",
+ "version": "2026103101",
+ "title": {
+  "hi": "Anemia Mukt Bihar - ASHA home visit",
+  "en": "Anemia Mukt Bihar - ASHA home visit"
+ },
+ "languages": [
+  "hi",
+  "en"
+ ],
+ "default_language": "hi",
+ "nodes": [
+  {
+   "type": "select_one",
+   "name": "district",
+   "label": {
+    "hi": "ज़िला",
+    "en": "District"
+   },
+   "required": true,
+   "choices_ref": "district"
+  },
+  {
+   "type": "select_one",
+   "name": "block",
+   "label": {
+    "hi": "प्रखंड",
+    "en": "Block"
+   },
+   "required": true,
+   "choices_ref": "block",
+   "choice_filter": "district = ${district}"
+  },
+  {
+   "type": "text",
+   "name": "asha_name",
+   "label": {
+    "hi": "आशा का नाम",
+    "en": "ASHA name"
+   },
+   "required": true
+  },
+  {
+   "type": "geopoint",
+   "name": "visit_location",
+   "label": {
+    "hi": "घर की लोकेशन",
+    "en": "Household location"
+   }
+  },
+  {
+   "type": "image",
+   "name": "household_photo",
+   "label": {
+    "hi": "घर की फोटो",
+    "en": "Household photo"
+   },
+   "appearance": "new"
+  },
+  {
+   "type": "integer",
+   "name": "household_children",
+   "label": {
+    "hi": "घर में पाँच साल से छोटे कितने बच्चे हैं?",
+    "en": "How many children under five live in the household?"
+   },
+   "required": true,
+   "constraint": ". >= 0 and . <= 10",
+   "constraint_message": {
+    "hi": "कृपया शून्य से दस के बीच की संख्या डालें",
+    "en": "Enter a number from 0 to 10"
+   }
+  },
+  {
+   "type": "repeat",
+   "name": "children",
+   "label": {
+    "hi": "बच्चों की सूची",
+    "en": "Children roster"
+   },
+   "repeat_count": "${household_children}",
+   "children": [
+    {
+     "type": "text",
+     "name": "child_name",
+     "label": {
+      "hi": "बच्चे का नाम",
+      "en": "Child's name"
+     },
+     "required": true
+    },
+    {
+     "type": "select_one",
+     "name": "child_sex",
+     "label": {
+      "hi": "बच्चे का लिंग",
+      "en": "Child's sex"
+     },
+     "choices_ref": "sex"
+    },
+    {
+     "type": "integer",
+     "name": "child_age_months",
+     "label": {
+      "hi": "बच्चे की उम्र (महीनों में)",
+      "en": "Child's age (in months)"
+     },
+     "hint": {
+      "hi": "छह से उनसठ महीने",
+      "en": "6 to 59 months"
+     },
+     "required": true,
+     "constraint": ". >= 6 and . <= 59",
+     "constraint_message": {
+      "hi": "उम्र छह से उनसठ महीने के बीच होनी चाहिए",
+      "en": "Age must be between 6 and 59 months"
+     }
+    },
+    {
+     "type": "calculate",
+     "name": "child_age_years",
+     "calculate": "int(${child_age_months} div 12)"
+    },
+    {
+     "type": "select_one",
+     "name": "ifa_form",
+     "label": {
+      "hi": "बच्चे को कौन सी आई एफ ए दी जाती है?",
+      "en": "Which IFA does the child receive?"
+     },
+     "choices_ref": "ifa_form"
+    },
+    {
+     "type": "select_multiple",
+     "name": "symptoms",
+     "label": {
+      "hi": "इस दौरे में बच्चे में कौन से लक्षण दिखे?",
+      "en": "Which symptoms were seen during this visit?"
+     },
+     "choices_ref": "symptom"
+    },
+    {
+     "type": "text",
+     "name": "referral_note",
+     "label": {
+      "hi": "स्वास्थ्य केंद्र भेजने की वजह लिखें",
+      "en": "Write the reason for referral"
+     },
+     "relevant": "selected(${symptoms}, 'pallor')"
+    },
+    {
+     "type": "select_one",
+     "name": "tablet_taken",
+     "label": {
+      "hi": "क्या बच्चे ने इस हफ़्ते गोली खाई?",
+      "en": "Did the child take the tablet this week?"
+     },
+     "relevant": "${ifa_form} != 'syrup' and ${child_age_years} >= 3",
+     "choices_ref": "yes_no"
+    },
+    {
+     "type": "select_one",
+     "name": "syrup_given",
+     "label": {
+      "hi": "क्या बच्चे को आई एफ ए सिरप पिलाया गया?",
+      "en": "Was the child given IFA syrup?"
+     },
+     "required": true,
+     "relevant": "${ifa_form} = 'syrup'",
+     "choices_ref": "yes_no"
+    },
+    {
+     "type": "repeat",
+     "name": "ifa_doses",
+     "label": {
+      "hi": "आई एफ ए खुराक का रिकॉर्ड",
+      "en": "IFA dose record"
+     },
+     "relevant": "${syrup_given} = 'yes'",
+     "children": [
+      {
+       "type": "date",
+       "name": "dose_date",
+       "label": {
+        "hi": "खुराक की तारीख",
+        "en": "Dose date"
+       },
+       "required": true,
+       "constraint": ". <= today()",
+       "constraint_message": {
+        "hi": "तारीख आज से आगे की नहीं हो सकती",
+        "en": "The date cannot be in the future"
+       }
+      },
+      {
+       "type": "integer",
+       "name": "dose_ml",
+       "label": {
+        "hi": "खुराक (मिलीलीटर)",
+        "en": "Dose (ml)"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "calculate",
+   "name": "children_count",
+   "calculate": "count(${child_name})"
+  },
+  {
+   "type": "note",
+   "name": "summary_note",
+   "label": {
+    "hi": "धन्यवाद, यह दौरा पूरा हुआ",
+    "en": "Thank you, visit complete"
+   }
+  }
+ ],
+ "choices": {
+  "district": [
+   {
+    "value": "patna",
+    "label": {
+     "hi": "पटना",
+     "en": "Patna"
+    }
+   },
+   {
+    "value": "gaya",
+    "label": {
+     "hi": "गया",
+     "en": "Gaya"
+    }
+   },
+   {
+    "value": "muzaffarpur",
+    "label": {
+     "hi": "मुज़फ़्फ़रपुर",
+     "en": "Muzaffarpur"
+    }
+   }
+  ],
+  "block": [
+   {
+    "value": "danapur",
+    "label": {
+     "hi": "दानापुर",
+     "en": "Danapur"
+    },
+    "props": {
+     "district": "patna"
+    }
+   },
+   {
+    "value": "paliganj",
+    "label": {
+     "hi": "पालीगंज",
+     "en": "Paliganj"
+    },
+    "props": {
+     "district": "patna"
+    }
+   },
+   {
+    "value": "bodh_gaya",
+    "label": {
+     "hi": "बोधगया",
+     "en": "Bodh Gaya"
+    },
+    "props": {
+     "district": "gaya"
+    }
+   },
+   {
+    "value": "sherghati",
+    "label": {
+     "hi": "शेरघाटी",
+     "en": "Sherghati"
+    },
+    "props": {
+     "district": "gaya"
+    }
+   },
+   {
+    "value": "motipur",
+    "label": {
+     "hi": "मोतीपुर",
+     "en": "Motipur"
+    },
+    "props": {
+     "district": "muzaffarpur"
+    }
+   },
+   {
+    "value": "kanti",
+    "label": {
+     "hi": "कांटी",
+     "en": "Kanti"
+    },
+    "props": {
+     "district": "muzaffarpur"
+    }
+   }
+  ],
+  "yes_no": [
+   {
+    "value": "yes",
+    "label": {
+     "hi": "हाँ",
+     "en": "Yes"
+    }
+   },
+   {
+    "value": "no",
+    "label": {
+     "hi": "नहीं",
+     "en": "No"
+    }
+   }
+  ],
+  "sex": [
+   {
+    "value": "girl",
+    "label": {
+     "hi": "लड़की",
+     "en": "Girl"
+    }
+   },
+   {
+    "value": "boy",
+    "label": {
+     "hi": "लड़का",
+     "en": "Boy"
+    }
+   }
+  ],
+  "ifa_form": [
+   {
+    "value": "syrup",
+    "label": {
+     "hi": "आई एफ ए सिरप",
+     "en": "IFA syrup"
+    }
+   },
+   {
+    "value": "pink",
+    "label": {
+     "hi": "आई एफ ए गुलाबी गोली",
+     "en": "IFA pink tablet"
+    }
+   },
+   {
+    "value": "blue",
+    "label": {
+     "hi": "आई एफ ए नीली गोली",
+     "en": "IFA blue tablet"
+    }
+   }
+  ],
+  "symptom": [
+   {
+    "value": "pallor",
+    "label": {
+     "hi": "हथेली या आँखें पीली",
+     "en": "Pale palms or eyes"
+    }
+   },
+   {
+    "value": "fatigue",
+    "label": {
+     "hi": "जल्दी थक जाता है",
+     "en": "Tires easily"
+    }
+   },
+   {
+    "value": "breathless",
+    "label": {
+     "hi": "साँस फूलना",
+     "en": "Breathlessness"
+    }
+   },
+   {
+    "value": "none",
+    "label": {
+     "hi": "कोई लक्षण नहीं",
+     "en": "No symptoms"
+    }
+   }
+  ]
+ }
+}

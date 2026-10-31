@@ -1,0 +1,925 @@
+{
+ "synth": {
+  "form_id": "synth",
+  "version": "1",
+  "title": {
+   "default": "synth"
+  },
+  "languages": [
+   "default"
+  ],
+  "default_language": "default",
+  "choices": {},
+  "nodes": [
+   {
+    "type": "calculate",
+    "name": "a",
+    "calculate": "${b} + 1"
+   },
+   {
+    "type": "calculate",
+    "name": "b",
+    "calculate": "${x} * 2"
+   },
+   {
+    "type": "integer",
+    "name": "x",
+    "label": {
+     "default": "x"
+    }
+   },
+   {
+    "type": "select_one",
+    "name": "show_r",
+    "label": {
+     "default": "show"
+    },
+    "choices_ref": "yn"
+   },
+   {
+    "type": "group",
+    "name": "g",
+    "relevant": "${x} > 5",
+    "children": [
+     {
+      "type": "calculate",
+      "name": "gc",
+      "calculate": "${x} + 100"
+     },
+     {
+      "type": "integer",
+      "name": "gq",
+      "label": {
+       "default": "gq"
+      },
+      "required": true
+     }
+    ]
+   },
+   {
+    "type": "calculate",
+    "name": "gate",
+    "calculate": "if(${x} > 5, 'open', 'shut')"
+   },
+   {
+    "type": "group",
+    "name": "h",
+    "relevant": "${gate} = 'open'",
+    "children": [
+     {
+      "type": "calculate",
+      "name": "hc",
+      "calculate": "1"
+     },
+     {
+      "type": "integer",
+      "name": "hq",
+      "label": {
+       "default": "hq"
+      },
+      "required": true
+     }
+    ]
+   },
+   {
+    "type": "repeat",
+    "name": "r",
+    "relevant": "${show_r} = 'yes'",
+    "children": [
+     {
+      "type": "integer",
+      "name": "rv",
+      "label": {
+       "default": "rv"
+      },
+      "constraint": ". < 10",
+      "constraint_message": {
+       "default": "rv under ten"
+      }
+     },
+     {
+      "type": "calculate",
+      "name": "rc",
+      "calculate": "${rv} * 2"
+     },
+     {
+      "type": "calculate",
+      "name": "rn",
+      "calculate": "position()"
+     },
+     {
+      "type": "repeat",
+      "name": "rr",
+      "children": [
+       {
+        "type": "integer",
+        "name": "rrv",
+        "label": {
+         "default": "rrv"
+        },
+        "required": true
+       },
+       {
+        "type": "calculate",
+        "name": "rrc",
+        "calculate": "${rrv} + ${rv}"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "calculate",
+    "name": "rsum",
+    "calculate": "sum(${rv})"
+   },
+   {
+    "type": "calculate",
+    "name": "rcount",
+    "calculate": "count(${rv})"
+   },
+   {
+    "type": "integer",
+    "name": "e1",
+    "label": {
+     "default": "e1"
+    },
+    "relevant": "${x} | 1",
+    "required": true
+   },
+   {
+    "type": "integer",
+    "name": "e2",
+    "label": {
+     "default": "e2"
+    },
+    "constraint": "${x} | 1"
+   },
+   {
+    "type": "calculate",
+    "name": "e3",
+    "calculate": "${x} | 1"
+   },
+   {
+    "type": "select_multiple",
+    "name": "sm",
+    "label": {
+     "default": "sm"
+    },
+    "choices_ref": "yn"
+   },
+   {
+    "type": "text",
+    "name": "sm_note",
+    "label": {
+     "default": "n"
+    },
+    "relevant": "selected(${sm}, 'no')",
+    "required": true
+   }
+  ]
+ },
+ "quirk": {
+  "form_id": "quirk",
+  "version": "1",
+  "title": {
+   "default": "quirk"
+  },
+  "languages": [
+   "default"
+  ],
+  "default_language": "default",
+  "choices": {},
+  "nodes": [
+   {
+    "type": "integer",
+    "name": "x",
+    "label": {
+     "default": "x"
+    }
+   },
+   {
+    "type": "repeat",
+    "name": "R",
+    "relevant": "${gate} != 'open'",
+    "children": [
+     {
+      "type": "integer",
+      "name": "v",
+      "label": {
+       "default": "v"
+      }
+     },
+     {
+      "type": "calculate",
+      "name": "rc",
+      "calculate": "${v} * 2"
+     }
+    ]
+   },
+   {
+    "type": "calculate",
+    "name": "gate",
+    "calculate": "if(${x} > 5, 'open', 'shut')"
+   }
+  ]
+ },
+ "cases": [
+  {
+   "name": "amb valid visit",
+   "spec": "amb",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "district": "patna",
+    "block": "danapur",
+    "asha_name": "Sunita",
+    "household_children": 2
+   },
+   "repeats": {
+    "children": [
+     {
+      "child_name": "A",
+      "child_age_months": 30,
+      "ifa_form": "syrup",
+      "syrup_given": "yes",
+      "symptoms": "pallor",
+      "referral_note": "pale",
+      "ifa_doses": [
+       {
+        "dose_date": "2026-10-01",
+        "dose_ml": 1
+       },
+       {
+        "dose_date": "2026-10-08"
+       }
+      ]
+     },
+     {
+      "child_name": "B",
+      "child_age_months": 40,
+      "ifa_form": "pink",
+      "tablet_taken": "yes"
+     }
+    ]
+   },
+   "failures": [],
+   "settled": {
+    "data": {
+     "district": "patna",
+     "block": "danapur",
+     "asha_name": "Sunita",
+     "household_children": 2,
+     "children_count": 2
+    },
+    "repeats": {
+     "children": [
+      {
+       "child_name": "A",
+       "child_age_months": 30,
+       "ifa_form": "syrup",
+       "syrup_given": "yes",
+       "symptoms": "pallor",
+       "referral_note": "pale",
+       "ifa_doses": [
+        {
+         "dose_date": "2026-10-01",
+         "dose_ml": 1
+        },
+        {
+         "dose_date": "2026-10-08"
+        }
+       ],
+       "child_age_years": 2
+      },
+      {
+       "child_name": "B",
+       "child_age_months": 40,
+       "ifa_form": "pink",
+       "tablet_taken": "yes",
+       "child_age_years": 3
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "amb every kind of failure",
+   "spec": "amb",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "household_children": 11
+   },
+   "repeats": {
+    "children": [
+     {
+      "child_age_months": 70,
+      "ifa_form": "syrup",
+      "syrup_given": "yes",
+      "symptoms": "pallor",
+      "ifa_doses": [
+       {
+        "dose_date": "2026-12-25"
+       },
+       {
+        "dose_ml": 2
+       }
+      ]
+     },
+     {
+      "child_name": "B",
+      "child_age_months": 5,
+      "ifa_form": "pink"
+     },
+     {
+      "child_name": "C",
+      "ifa_form": "syrup"
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "district",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "block",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "asha_name",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "household_children",
+     "rule": "constraint",
+     "message": "कृपया शून्य से दस के बीच की संख्या डालें"
+    },
+    {
+     "question": "children[1]/child_name",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "children[1]/child_age_months",
+     "rule": "constraint",
+     "message": "उम्र छह से उनसठ महीने के बीच होनी चाहिए"
+    },
+    {
+     "question": "children[1]/ifa_doses[1]/dose_date",
+     "rule": "constraint",
+     "message": "तारीख आज से आगे की नहीं हो सकती"
+    },
+    {
+     "question": "children[1]/ifa_doses[2]/dose_date",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "children[2]/child_age_months",
+     "rule": "constraint",
+     "message": "उम्र छह से उनसठ महीने के बीच होनी चाहिए"
+    },
+    {
+     "question": "children[3]/child_age_months",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "children[3]/syrup_given",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "household_children": 11,
+     "children_count": 3
+    },
+    "repeats": {
+     "children": [
+      {
+       "child_age_months": 70,
+       "ifa_form": "syrup",
+       "syrup_given": "yes",
+       "symptoms": "pallor",
+       "ifa_doses": [
+        {
+         "dose_date": "2026-12-25"
+        },
+        {
+         "dose_ml": 2
+        }
+       ],
+       "child_age_years": 5
+      },
+      {
+       "child_name": "B",
+       "child_age_months": 5,
+       "ifa_form": "pink",
+       "child_age_years": 0
+      },
+      {
+       "child_name": "C",
+       "ifa_form": "syrup",
+       "child_age_years": "NaN"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "amb hidden raw answers are kept",
+   "spec": "amb",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "district": "gaya",
+    "block": "bodh_gaya",
+    "asha_name": "x",
+    "household_children": 1
+   },
+   "repeats": {
+    "children": [
+     {
+      "child_name": "A",
+      "child_age_months": 50,
+      "ifa_form": "pink",
+      "syrup_given": "yes",
+      "symptoms": "fever",
+      "referral_note": "stale",
+      "ifa_doses": [
+       {
+        "dose_date": "2026-10-01"
+       },
+       {}
+      ]
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "children[1]/ifa_doses[2]/dose_date",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "district": "gaya",
+     "block": "bodh_gaya",
+     "asha_name": "x",
+     "household_children": 1,
+     "children_count": 1
+    },
+    "repeats": {
+     "children": [
+      {
+       "child_name": "A",
+       "child_age_months": 50,
+       "ifa_form": "pink",
+       "syrup_given": "yes",
+       "symptoms": "fever",
+       "referral_note": "stale",
+       "ifa_doses": [
+        {
+         "dose_date": "2026-10-01"
+        },
+        {}
+       ],
+       "child_age_years": 4
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "amb client calculates are discarded",
+   "spec": "amb",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "district": "patna",
+    "block": "danapur",
+    "asha_name": "x",
+    "household_children": 1,
+    "children_count": 99
+   },
+   "repeats": {
+    "children": [
+     {
+      "child_name": "A",
+      "child_age_months": 30,
+      "child_age_years": 9,
+      "ifa_form": "pink",
+      "tablet_taken": "no"
+     }
+    ]
+   },
+   "failures": [],
+   "settled": {
+    "data": {
+     "district": "patna",
+     "block": "danapur",
+     "asha_name": "x",
+     "household_children": 1,
+     "children_count": 1
+    },
+    "repeats": {
+     "children": [
+      {
+       "child_name": "A",
+       "child_age_months": 30,
+       "ifa_form": "pink",
+       "tablet_taken": "no",
+       "child_age_years": 2
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "amb select_multiple as a list",
+   "spec": "amb",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "district": "patna",
+    "block": "danapur",
+    "asha_name": "x",
+    "household_children": 1
+   },
+   "repeats": {
+    "children": [
+     {
+      "child_name": "A",
+      "child_age_months": 20,
+      "symptoms": [
+       "pallor",
+       "fatigue"
+      ],
+      "referral_note": "r"
+     }
+    ]
+   },
+   "failures": [],
+   "settled": {
+    "data": {
+     "district": "patna",
+     "block": "danapur",
+     "asha_name": "x",
+     "household_children": 1,
+     "children_count": 1
+    },
+    "repeats": {
+     "children": [
+      {
+       "child_name": "A",
+       "child_age_months": 20,
+       "symptoms": "pallor fatigue",
+       "referral_note": "r",
+       "child_age_years": 1
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "amb nothing answered",
+   "spec": "amb",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {},
+   "repeats": {},
+   "failures": [
+    {
+     "question": "district",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "block",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "asha_name",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "household_children",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "children_count": 0
+    },
+    "repeats": {
+     "children": []
+    }
+   }
+  },
+  {
+   "name": "synth open and visible",
+   "spec": "synth",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 8,
+    "show_r": "yes",
+    "sm": [
+     "no",
+     "yes"
+    ]
+   },
+   "repeats": {
+    "r": [
+     {
+      "rv": 3,
+      "rr": [
+       {
+        "rrv": 1
+       },
+       {}
+      ]
+     },
+     {
+      "rv": 12,
+      "rr": [
+       {
+        "rrv": 5
+       }
+      ]
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "e3",
+     "rule": "error",
+     "message": "calculate '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "gq",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "hq",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "r[1]/rr[2]/rrv",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "r[2]/rv",
+     "rule": "constraint",
+     "message": "rv under ten"
+    },
+    {
+     "question": "e1",
+     "rule": "error",
+     "message": "relevant '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "e1",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "sm_note",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 8,
+     "show_r": "yes",
+     "sm": "no yes",
+     "a": 17,
+     "b": 16,
+     "gc": 108,
+     "gate": "open",
+     "hc": 1,
+     "rsum": 15,
+     "rcount": 2
+    },
+    "repeats": {
+     "r": [
+      {
+       "rv": 3,
+       "rr": [
+        {
+         "rrv": 1,
+         "rrc": 4
+        },
+        {
+         "rrc": "NaN"
+        }
+       ],
+       "rc": 6,
+       "rn": 1
+      },
+      {
+       "rv": 12,
+       "rr": [
+        {
+         "rrv": 5,
+         "rrc": 17
+        }
+       ],
+       "rc": 24,
+       "rn": 2
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "synth hidden hides calculates",
+   "spec": "synth",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 2,
+    "show_r": "no",
+    "gq": 7,
+    "hq": 8,
+    "sm": "yes"
+   },
+   "repeats": {
+    "r": [
+     {
+      "rv": 3,
+      "rc": 99,
+      "rr": [
+       {
+        "rrv": 1
+       }
+      ]
+     },
+     {
+      "rv": 4
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "e3",
+     "rule": "error",
+     "message": "calculate '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "e1",
+     "rule": "error",
+     "message": "relevant '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "e1",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 2,
+     "show_r": "no",
+     "gq": 7,
+     "hq": 8,
+     "sm": "yes",
+     "a": 5,
+     "b": 4,
+     "gate": "shut",
+     "rsum": 7,
+     "rcount": 2
+    },
+    "repeats": {
+     "r": [
+      {
+       "rv": 3,
+       "rr": [
+        {
+         "rrv": 1
+        }
+       ]
+      },
+      {
+       "rv": 4
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "synth empty",
+   "spec": "synth",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {},
+   "repeats": {},
+   "failures": [
+    {
+     "question": "e3",
+     "rule": "error",
+     "message": "calculate '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "e1",
+     "rule": "error",
+     "message": "relevant '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "e1",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "a": "NaN",
+     "b": "NaN",
+     "gate": "shut",
+     "rsum": 0,
+     "rcount": 0
+    },
+    "repeats": {
+     "r": []
+    }
+   }
+  },
+  {
+   "name": "quirk: hidden repeat keeps a calculate computed before it hid",
+   "spec": "quirk",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 8
+   },
+   "repeats": {
+    "R": [
+     {
+      "v": 3
+     }
+    ]
+   },
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 8,
+     "gate": "open"
+    },
+    "repeats": {
+     "R": [
+      {
+       "v": 3,
+       "rc": 6
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "synth stale client calculates",
+   "spec": "synth",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 3,
+    "a": 1000,
+    "gc": 5,
+    "gate": "open"
+   },
+   "repeats": {},
+   "failures": [
+    {
+     "question": "e3",
+     "rule": "error",
+     "message": "calculate '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "e1",
+     "rule": "error",
+     "message": "relevant '${x} | 1' could not be evaluated: the union operator is not supported"
+    },
+    {
+     "question": "e1",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 3,
+     "a": 7,
+     "b": 6,
+     "gate": "shut",
+     "rsum": 0,
+     "rcount": 0
+    },
+    "repeats": {
+     "r": []
+    }
+   }
+  }
+ ]
+}
