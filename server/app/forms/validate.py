@@ -32,6 +32,16 @@ CALCULATES are recomputed to a fixed point, so declaration order does not matter
 are re-evaluated pass after pass until no value changes, at most (calculates + 1) passes.
 Task 18's JavaScript engine MUST use the same rule so phone and server agree.
 
+HIDDEN NODES AND CROSS-ROW AGGREGATES (Task 18's engine must match this exactly)
+    * Neither a hidden question nor a hidden repeat's rows are blanked. Their raw
+      answers stay visible to other expressions, and to count()/sum() over a repeated
+      field, which see every row of the repeat whether or not the repeat is relevant.
+    * A hidden repeat's rows are skipped for calculation and validation, so their
+      calculates are left unset (a calculate whose own `relevant` is false is unset too).
+      If relevance flips between fixed-point passes, a value computed in an earlier pass
+      is cleared in the next pass the calculate is hidden, not kept.
+    Deferred: whether aggregates should exclude hidden rows. Not changed, only recorded.
+
 EVALUATION-TIME ERRORS never escape as exceptions (a crash here would be a 500 and a
 lost visit; Task 11 stores the submission regardless). They are reported as rule "error",
 distinct from "required"/"constraint", so a supervisor can tell a broken form from a wrong
@@ -44,7 +54,10 @@ answer; `message` carries the expression and the reason:
     A constraint that merely references an omitted field does not error; omitted fields
     read as empty, so it simply evaluates true or false.
     The one thing raised besides a naive clock: `CalculateCycleError`, when calculates do
-    not settle (a dependency cycle). A cyclic form should never have been publishable.
+    not settle (a dependency cycle). A cyclic form should never have been publishable:
+    compile.py refuses it at publish time; this is defence in depth for forms published
+    before that guard or specs that arrive another way. (Cycles that settle at NaN do not
+    reach here, which is why the compile-time check is the main guard.)
 
 INPUT SHAPE
     data     top-level answers, name -> value.

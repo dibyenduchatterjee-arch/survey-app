@@ -31,6 +31,13 @@ CHOICE FILTER
     is validated with `expr.parse_choice_filter()` (bare names allowed) and emitted
     exactly as validated; plain `parse()` still rejects it.
 
+CALCULATE CYCLES
+    The dependency graph of the calculates (each one's `${field}` references in its
+    formula and its `relevant`, restricted to other calculates) must be acyclic, or
+    compilation raises `FormCompileError` naming the fields in the cycle. Without this a
+    cycle such as a = ${b} + 1, b = ${a} + 1 settles quietly at NaN on both the phone
+    and the server. validate.py keeps its own CalculateCycleError as defence in depth.
+
 LANGUAGES
     `languages` and `default_language` are never empty: a form with no itext
     translations gets `["default"]` / `"default"`, and its labels are keyed
@@ -367,6 +374,44 @@ class _Compiler:
         return out
 
 
+_REF = re.compile(r"\$\{(" + _NAME + r")\}")
+
+
+def _calculates(nodes: list[dict], out: dict[str, set[str]] | None = None) -> dict[str, set[str]]:
+    out = {} if out is None else out
+    for n in nodes:
+        if "calculate" in n:
+            out[n["name"]] = set(_REF.findall(n["calculate"] + " " + n.get("relevant", "")))
+        _calculates(n.get("children", []), out)
+    return out
+
+
+def _check_calculate_cycles(nodes: list[dict]) -> None:
+    graph = _calculates(nodes)
+    graph = {k: [d for d in sorted(v) if d in graph] for k, v in graph.items()}
+    state: dict[str, int] = {}  # 1 = on the current path, 2 = finished
+    path: list[str] = []
+
+    def visit(name: str) -> None:
+        state[name] = 1
+        path.append(name)
+        for dep in graph[name]:
+            if state.get(dep) == 1:
+                cycle = path[path.index(dep):] + [dep]
+                raise FormCompileError(
+                    "calculations refer to each other in a cycle: " + " -> ".join(cycle)
+                    + "; check the calculation and relevant columns of these rows"
+                )
+            if dep not in state:
+                visit(dep)
+        path.pop()
+        state[name] = 2
+
+    for name in graph:
+        if name not in state:
+            visit(name)
+
+
 def compile_spec(xform_xml: str) -> dict:
     """Compile XForm XML into the JSON form spec; see the module docstring."""
     try:
@@ -376,6 +421,7 @@ def compile_spec(xform_xml: str) -> dict:
     c = _Compiler(root)
     langs = c.texts.langs or ["default"]
     nodes = c.nodes(c.data, "/" + _local(c.data.tag), top=True)
+    _check_calculate_cycles(nodes)
     choices = c.choices()
     for qname, ref in c.refs:
         if ref not in choices:

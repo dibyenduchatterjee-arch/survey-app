@@ -275,3 +275,45 @@ def test_a_missing_choice_list_is_refused_not_left_dangling(xml):
     assert bad != xml
     with pytest.raises(FormCompileError, match="child_sex"):
         compile_spec(bad)
+
+
+def _with_calculates(*rows):
+    """The AMB fixture with extra top-level calculate rows (name, formula) appended."""
+    import io
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(FIX / "amb_asha_visit.xlsx")
+    ws = wb["survey"]
+    header = [c.value for c in ws[1]]
+    for name, formula in rows:
+        row = [None] * len(header)
+        row[header.index("type")] = "calculate"
+        row[header.index("name")] = name
+        row[header.index("calculation")] = formula
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return to_xform(buf.getvalue())
+
+
+def test_a_calculate_cycle_is_refused_and_names_the_fields():
+    # unseeded, so it would settle at NaN and publish silently without the guard
+    with pytest.raises(FormCompileError, match="cyc_a -> cyc_b -> cyc_a"):
+        compile_spec(_with_calculates(("cyc_a", "${cyc_b} + 1"), ("cyc_b", "${cyc_a} + 1")))
+
+
+def test_a_calculate_that_refers_to_itself_is_refused():
+    with pytest.raises(FormCompileError, match="selfie -> selfie"):
+        compile_spec(_with_calculates(("selfie", "${selfie} + 1")))
+
+
+def test_a_longer_calculate_cycle_is_refused():
+    with pytest.raises(FormCompileError) as e:
+        compile_spec(_with_calculates(("c1", "${c2}"), ("c2", "${c3}"), ("c3", "${c1}")))
+    assert all(n in str(e.value) for n in ("c1", "c2", "c3"))
+
+
+def test_calculates_that_chain_without_a_cycle_compile(spec):
+    out = compile_spec(_with_calculates(("late", "${early} + 1"), ("early", "${household_children}")))
+    assert find(out["nodes"], "late")["calculate"] == "${early} + 1"
