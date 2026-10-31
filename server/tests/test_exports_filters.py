@@ -111,11 +111,11 @@ def main_csvs(z: zipfile.ZipFile, *form_ids: str) -> dict[str, bytes]:
 
 
 def test_a_date_range_includes_both_boundary_days_and_excludes_the_days_outside(local, db, world):
-    add_sub(db, world, "a1", uid(1), at("2026-10-04", "23:59:59"))  # just before
-    add_sub(db, world, "a1", uid(2), at("2026-10-05", "00:00:00"))  # first instant of date_from
-    add_sub(db, world, "a1", uid(3), at("2026-10-06"))
-    add_sub(db, world, "a1", uid(4), at("2026-10-07", "23:59:59"))  # last second of date_to
-    add_sub(db, world, "a1", uid(5), at("2026-10-08", "00:00:00"))  # first instant after
+    add_sub(db, world, "a1", uid(1), ist("2026-10-04", "23:59:59"))  # just before
+    add_sub(db, world, "a1", uid(2), ist("2026-10-05", "00:00:00"))  # first instant of date_from
+    add_sub(db, world, "a1", uid(3), ist("2026-10-06", "12:00:00"))
+    add_sub(db, world, "a1", uid(4), ist("2026-10-07", "23:59:59"))  # last second of date_to
+    add_sub(db, world, "a1", uid(5), ist("2026-10-08", "00:00:00"))  # first instant after
     job_id, job = export(local, world["sup"], form_id="a1", date_from="2026-10-05", date_to="2026-10-07")
     assert job["status"] == "done" and job["row_count"] == 3
     r = local.get(f"/api/exports/{job_id}/download", headers=world["sup"])
