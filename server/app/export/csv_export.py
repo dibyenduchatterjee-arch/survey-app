@@ -15,7 +15,7 @@ FILES      `build_csvs()` returns {filename: bytes}, the main file first:
 
 COLUMNS    Main:   uuid, submitted_by, received_at, status, failures, then the form's questions
                    in form order (groups are transparent; repeats and notes are not columns).
-                   `submitted_by` is the user id. A geopoint `q` becomes q_lat, q_lon,
+                   `submitted_by` is the username (the numeric id if the user row is gone). A geopoint `q` becomes q_lat, q_lon,
                    q_accuracy. A media question's cell is the file's name in the media zip.
            Child:  parent_uuid, [<ancestor>_row_index for each enclosing repeat, outermost
                    first], row_index, then the repeat's questions. A top-level repeat is
@@ -33,8 +33,13 @@ SAFETY     A text value that starts with = + - @ (or a tab or CR) is prefixed wi
            shows it instead of running it. Real numbers (int/float) are written untouched, so
            -1 stays a number; a text answer "-1" is prefixed, which is the safe direction.
 
-GEOPOINT   Read as the ODK string "lat lon [altitude [accuracy]]", or a dict with
-           lat/latitude, lon/lng/longitude, accuracy. Anything else leaves the cells blank.
+GEOPOINT   PINNED WIRE FORMAT: the ODK string "lat lon altitude accuracy", space-separated,
+           decimal degrees and metres; altitude and accuracy may be omitted ("lat lon").
+           A dict with lat/latitude, lon/lng/longitude, accuracy is also tolerated. No
+           value (None or "") gives three blank cells: GPS not captured. Anything else -
+           wrong token count, non-numeric, lat outside +-90, lon outside +-180, negative
+           accuracy - raises GeopointFormatError naming the submission and question,
+           never blank cells.
 
 The repeat rows are read through the submissions' own session (the models carry no
 relationship), one query per 500 submissions. No web framework is imported here.
@@ -50,7 +55,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
-from app.db.models import RepeatRow, Submission
+from app.db.models import RepeatRow, Submission, User
 from app.export.media import media_by_submission, media_name
 
 BOM = b"\xef\xbb\xbf"
@@ -123,41 +128,49 @@ def _text(value: Any) -> str:
     return _safe(str(value))
 
 
-def _coord(x: Any) -> str:
-    """A coordinate or accuracy as written by the device, or blank if it is not a number."""
-    if x is None or isinstance(x, bool):
-        return ""
+class GeopointFormatError(ValueError):
+    """A stored geopoint is not in the pinned wire format. Names the submission and question."""
+
+
+def _coord(x: Any, lo: float, hi: float) -> str | None:
+    if isinstance(x, bool) or x is None:
+        return None
     try:
-        float(x)
+        v = float(x)
     except (TypeError, ValueError):
-        return ""
-    return str(x)
+        return None
+    return str(x) if lo <= v <= hi else None
 
 
-def _geo(value: Any) -> list[str]:
-    """[lat, lon, accuracy] as strings; three blanks for anything unreadable."""
+def _geo(value: Any, where: str) -> list[str]:
+    """[lat, lon, accuracy]. No value at all is blank (no GPS captured); a malformed one raises."""
+    if value is None or value == "":
+        return ["", "", ""]
     lat = lon = acc = None
     if isinstance(value, str):
         parts = value.split()
-        if len(parts) >= 2:
+        if 2 <= len(parts) <= 4:
             lat, lon = parts[0], parts[1]
-            acc = parts[3] if len(parts) >= 4 else None
+            acc = parts[3] if len(parts) == 4 else None
     elif isinstance(value, dict):
         lat = value.get("lat", value.get("latitude"))
         lon = value.get("lon", value.get("lng", value.get("longitude")))
         acc = value.get("accuracy")
-    lat, lon = _coord(lat), _coord(lon)
-    if not lat or not lon:
-        return ["", "", ""]
-    return [lat, lon, _coord(acc)]
+    lat, lon = _coord(lat, -90, 90), _coord(lon, -180, 180)
+    accuracy = _coord(acc, 0, float("inf")) if acc is not None else ""
+    if lat is None or lon is None or accuracy is None:
+        raise GeopointFormatError(
+            f"{where}: geopoint {value!r} is not 'lat lon [altitude [accuracy]]'"
+        )
+    return [lat, lon, accuracy]
 
 
-def _cells(questions: list[dict], data: dict, media: dict[str, str]) -> list[str]:
+def _cells(questions: list[dict], data: dict, media: dict[str, str], uuid: str) -> list[str]:
     row: list[str] = []
     for q in questions:
         name = q["name"]
         if q["type"] == "geopoint":
-            row += _geo(data.get(name))
+            row += _geo(data.get(name), f"submission {uuid}, question {name}")
         elif q["type"] in ("image", "audio", "video", "file"):
             row.append(media.get(name, ""))
         else:
@@ -197,6 +210,21 @@ def _repeat_rows(submissions: Sequence[Submission]) -> dict[tuple[int, str], lis
     return found
 
 
+def _usernames(submissions: Sequence[Submission]) -> dict[int, str]:
+    found: dict[int, str] = {}
+    sessions: dict[int, tuple] = {}
+    for s in submissions:
+        sess = object_session(s)
+        if sess is not None:
+            sessions.setdefault(id(sess), (sess, set()))[1].add(s.submitted_by)
+    for sess, ids in sessions.values():
+        ids = list(ids)
+        for i in range(0, len(ids), _CHUNK):
+            for u in sess.scalars(select(User).where(User.id.in_(ids[i : i + _CHUNK]))):
+                found[u.id] = u.username
+    return found
+
+
 # ---- output ---------------------------------------------------------------------------------------
 
 
@@ -214,13 +242,14 @@ def build_csvs(spec: dict, submissions: Sequence[Submission]) -> dict[str, bytes
     main_q = _questions(spec["nodes"])
     stored = _repeat_rows(submissions)
     media = media_by_submission(submissions)
+    users = _usernames(submissions)
 
     main_rows: list[list[str]] = []
     for s in submissions:
         names = {m.question_name: media_name(s.uuid, m) for m in media[s.id]}
         main_rows.append(
-            [s.uuid, _text(s.submitted_by), _text(s.received_at), _text(s.status), _failures(s)]
-            + _cells(main_q, s.data_json or {}, names)
+            [s.uuid, _text(users.get(s.submitted_by, str(s.submitted_by))), _text(s.received_at), _text(s.status), _failures(s)]
+            + _cells(main_q, s.data_json or {}, names, s.uuid)
         )
     files = {f"{form_id}.csv": _encode(_META + _columns(main_q), main_rows)}
 
@@ -232,7 +261,7 @@ def build_csvs(spec: dict, submissions: Sequence[Submission]) -> dict[str, bytes
         for s in submissions:
             names = {m.question_name: media_name(s.uuid, m) for m in media[s.id]}
             for keys, data in _walk_rows(stored, s, path):
-                rows.append([s.uuid, *keys, *_cells(questions, data, names)])
+                rows.append([s.uuid, *keys, *_cells(questions, data, names, s.uuid)])
         files[f"{form_id}_{'_'.join(path)}.csv"] = _encode(header, rows)
     return files
 

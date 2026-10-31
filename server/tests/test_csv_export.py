@@ -139,7 +139,7 @@ def test_a_missing_geopoint_leaves_the_three_cells_blank(spec, make):
 
 def test_metadata_cells(spec, make):
     row = dicts(build_csvs(spec, [make(U1, {"household_children": 2})])[MAIN])[0]
-    assert row["uuid"] == U1 and row["submitted_by"] == "1" and row["status"] == "received"
+    assert row["uuid"] == U1 and row["submitted_by"] == "asha1" and row["status"] == "received"
     assert row["received_at"].startswith("20") and row["household_children"] == "2"
     assert row["failures"] == ""
 
@@ -283,12 +283,48 @@ def test_a_submission_without_media_has_a_blank_cell_and_an_empty_zip(spec, make
     assert zipfile.ZipFile(io.BytesIO(build_media_zip([s]))).namelist() == []
 
 
-def test_a_tampered_media_file_fails_loudly_rather_than_exporting_garbage(with_photo, media_root):
-    from cryptography.exceptions import InvalidTag
-
+def test_a_tampered_media_file_is_skipped_and_listed_but_the_rest_still_arrives(
+        db, make, media_root, with_photo):
+    s2 = make(U2)
+    (media_root / U2).mkdir()
+    (media_root / U2 / "1.jpg").write_bytes(encrypt_bytes(JPEG))
+    db.add(MediaFile(submission_id=s2.id, question_name="household_photo", filename="1.jpg",
+                     content_type="image/jpeg", size=len(JPEG), storage_path=f"{U2}/1.jpg", sha256="0" * 64))
+    db.commit()
     p = media_root / U1 / "1.jpg"
     b = bytearray(p.read_bytes())
     b[-1] ^= 1
     p.write_bytes(bytes(b))
-    with pytest.raises(InvalidTag):
-        build_media_zip([with_photo])
+    z = zipfile.ZipFile(io.BytesIO(build_media_zip([with_photo, s2])))
+    assert z.read(f"{U2}_household_photo.jpg") == JPEG
+    assert f"{U1}_household_photo.jpg" not in z.namelist()
+    report = z.read("export_errors.txt").decode()
+    assert U1 in report and "household_photo" in report and U2 not in report
+
+
+def test_a_missing_media_file_is_skipped_and_listed(with_photo, media_root):
+    (media_root / U1 / "1.jpg").unlink()
+    z = zipfile.ZipFile(io.BytesIO(build_media_zip([with_photo])))
+    assert z.namelist() == ["export_errors.txt"]
+    assert U1 in z.read("export_errors.txt").decode()
+
+
+def test_a_clean_bundle_has_no_error_manifest(with_photo):
+    assert "export_errors.txt" not in zipfile.ZipFile(io.BytesIO(build_media_zip([with_photo]))).namelist()
+
+
+def test_submitted_by_is_the_username(spec, make):
+    assert dicts(build_csvs(spec, [make(U1)])[MAIN])[0]["submitted_by"] == "asha1"
+
+
+@pytest.mark.parametrize("bad", ["somewhere", "25.6", "a b", "25 85 1 2 3", "95 85", "25 190", "25 85 1 -2"])
+def test_a_malformed_geopoint_raises_rather_than_going_blank(spec, make, bad):
+    from app.export.csv_export import GeopointFormatError
+
+    with pytest.raises(GeopointFormatError, match=U1):
+        build_csvs(spec, [make(U1, {"visit_location": bad})])
+
+
+def test_geopoint_without_altitude_or_accuracy_is_valid(spec, make):
+    row = dicts(build_csvs(spec, [make(U1, {"visit_location": "25.6 85.1"})])[MAIN])[0]
+    assert (row["visit_location_lat"], row["visit_location_accuracy"]) == ("25.6", "")

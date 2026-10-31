@@ -6,9 +6,11 @@ deliberately not in the path. In the export a file is named
 cell, so the analyst can join a row to its picture. `media_name()` is the single place that
 string is built; both the CSV and the zip call it.
 
-A file that is missing on disk, or whose ciphertext fails authentication, raises: a CSV cell
-naming a file that is not in the bundle (or a damaged picture handed over as genuine) is
-worse than an export that stops.
+A file that is missing on disk, or whose ciphertext fails authentication, is SKIPPED: never
+exported as garbage and never allowed to fail the whole export. The zip then carries
+`export_errors.txt` naming each submission uuid and question that could not be read. The CSV
+cell for such a file still holds its expected name (the CSV does not read files), so the
+manifest is how an analyst learns that entry is absent.
 
 Not pure in one respect: media rows are read through the submissions' own session, because
 the models carry no relationship from Submission to MediaFile.
@@ -19,6 +21,7 @@ import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
+from cryptography.exceptions import InvalidTag
 from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
@@ -52,11 +55,31 @@ def media_by_submission(submissions: Sequence[Submission]) -> dict[int, list[Med
     return found
 
 
+ERRORS_FILE = "export_errors.txt"
+
+
 def build_media_zip(submissions: Sequence[Submission]) -> bytes:
+    """Every readable file, decrypted. An unreadable one is skipped and listed in export_errors.txt."""
     root = Path(get_settings().media_root)
     buf = io.BytesIO()
+    skipped: list[str] = []
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for s in submissions:
             for m in media_by_submission([s])[s.id]:
-                z.writestr(media_name(s.uuid, m), decrypt_bytes((root / m.storage_path).read_bytes()))
+                try:
+                    data = decrypt_bytes((root / m.storage_path).read_bytes())
+                except (OSError, InvalidTag) as e:
+                    if isinstance(e, FileNotFoundError):
+                        why = "file missing"
+                    elif isinstance(e, InvalidTag):
+                        why = "failed authentication (corrupt or tampered)"
+                    else:
+                        why = "unreadable"
+                    skipped.append(f"{s.uuid}\t{m.question_name}\t{media_name(s.uuid, m)}\t{why}")
+                    continue
+                z.writestr(media_name(s.uuid, m), data)
+        if skipped:
+            head = "These media files could not be read and are NOT in this bundle.\n"
+            head += "submission_uuid\tquestion\texpected_name\treason\n"
+            z.writestr(ERRORS_FILE, head + "\n".join(skipped) + "\n")
     return buf.getvalue()
