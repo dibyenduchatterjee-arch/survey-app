@@ -1,35 +1,52 @@
-// Offline sync: bootstrap (forms and datasets down) and the upload queue (answers up).
+// Offline sync, Drive-only: bootstrap (form specs down from Drive) and the upload queue
+// (answers up to Google Sheets, photos up to Drive). There is no server.
 //
 // What this file guarantees, because an ASHA's day of household visits depends on it:
 //
-//   * A queued submission leaves the device in exactly two ways: the server
-//     confirmed it (200 or 201 with OUR uuid in the receipt), or the server
-//     definitively refused it and the full refusal, answers and photos were first
-//     written to the rejection record (db.js `rejected` store) where the app and a
-//     supervisor can see it. Every other outcome, a 5xx, a timeout, a dropped
-//     connection, a captive portal, a 401, a failed write, leaves it queued.
-//   * Uploads are one at a time, oldest first, and one bad submission never
-//     blocks the ones behind it.
-//   * The client uuid is the idempotency key, so a reply lost in transit is
-//     harmless: the next attempt returns 200 with the original receipt.
+//   * A queued submission leaves the device in exactly two ways: it is confirmed in the
+//     project's spreadsheet (its row is there, or was already there), or Google
+//     definitively refused it and the full refusal, answers and photos were first written
+//     to the rejection record (db.js `rejected` store). Every other outcome (a 5xx, a 429
+//     that outlasts the retries, a dropped connection, an expired sign-in, a failed local
+//     write) leaves it queued.
+//   * Uploads are one at a time, oldest first, with jittered exponential backoff on
+//     429 and 5xx.
+//   * A forced re-sign-in touches nothing in the queue. Nothing in this file writes to the
+//     queue except dequeue-after-success.
 //
-// `fetchImpl` and `store` are parameters so the logic is testable in Node.
+// IDEMPOTENCY WITHOUT A SERVER. Appending to a sheet twice makes two rows, and a dropped
+// connection mid-append is exactly when that happens. So:
+//   1. Before appending, the tab's first column is read and the submission is skipped if its
+//      uuid is already there.
+//   2. The uuid is column 1 of every tab (`uuid`, or `parent_uuid` on a repeat tab), so a
+//      duplicate that slips through is easy to find and delete later.
+//   3. The ORDER makes a half-finished submission recoverable: photos, then repeat rows
+//      (each checked on its own key: parent uuid + row indexes), and the main row LAST.
+//      The main row's presence therefore means everything before it landed.
+// Check-then-append still has a small race window (two devices syncing the same uuid in the
+// same second, or a lost reply read before the row becomes visible). Column 1 is the safety
+// net for that; it is not airtight.
+//
+// `drive`, `store`, `getUser`, `sleep` and `random` are parameters so the logic is testable
+// in Node with no network.
 
 import * as defaultStore from './db.js';
-import { makeAuthFetch } from './auth.js';
+import * as driveModule from './drive.js';
 
-// Definitively-refused submissions go to db.js's own `rejected` store, which no
-// dataset refresh ever writes to.
-
-export const BACKOFF_BASE_MS = 5_000;
+export const BACKOFF_BASE_MS = 5_000;       // between whole sync runs, after a failed run
 export const BACKOFF_CAP_MS = 300_000;
 export const SYNC_INTERVAL_MS = 60_000;
+const RETRY_BASE_MS = 1_000;                // between attempts on one Google call
+const RETRY_CAP_MS = 30_000;
+const MAX_ATTEMPTS = 5;
 const BATCH = 200;
-const MAX_CONSECUTIVE_SERVER_ERRORS = 3;
-const DATASET_NAME = /^[A-Za-z0-9_-]{1,150}$/;
-const RETRYABLE_4XX = new Set([408, 425, 429]);
+const MAX_CONSECUTIVE_KEEPS = 3;
+// Statuses that mean "Google will never accept this", so retrying cannot help.
+const REJECT_STATUSES = new Set([400, 403, 404, 413, 422]);
+// A 403 with one of these reasons is Google's rate limiter, not a permission problem.
+const QUOTA_403 = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded|dailyLimitExceeded|RATE_LIMIT|RESOURCE_EXHAUSTED/i;
 
-const defaultFetch = () => globalThis.fetch.bind(globalThis);
+const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 // ---- shared state ----------------------------------------------------------------
 
@@ -47,36 +64,160 @@ export function backoffDelay(failures) {
   return Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (failures - 1));
 }
 
-// ---- building the request --------------------------------------------------------
+// Old call shape was fn(fetchImpl, {store}); the new one is fn({store, drive, ...}).
+// A function or nothing in the first slot is the legacy fetchImpl: ignored.
+function normalise(a, b) {
+  const first = a && typeof a === 'object' ? a : null;
+  return first || (b && typeof b === 'object' ? b : {});
+}
+
+// ---- the Drive layer -------------------------------------------------------------
+
+const colLetter = n => { let s = ''; for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
+
+// Reads the first `n` columns of a tab (header included) as strings. drive.js has no read
+// primitive yet, so this is the fallback; a `readColumns` exported by drive.js wins.
+async function fallbackReadColumns(spreadsheetId, tab, n) {
+  const token = await (await import('./googleauth.js')).getAccessToken();
+  const range = `'${String(tab).replace(/'/g, "''")}'!A:${colLetter(n)}`;
+  let res;
+  try {
+    res = await globalThis.fetch(`${SHEETS}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?majorDimension=ROWS`,
+      { headers: { Authorization: 'Bearer ' + token } });
+  } catch (e) {
+    throw new driveModule.DriveError('Network error: ' + (e && e.message), { retryable: true, cause: e });
+  }
+  if (!res.ok) {
+    let text = ''; try { text = await res.text(); } catch { /* ignore */ }
+    throw new driveModule.DriveError(`Google API ${res.status} reading ${tab}`, {
+      status: res.status, retryable: res.status === 429 || res.status >= 500, body: text,
+    });
+  }
+  const j = await res.json();
+  return (j.values || []).map(r => r.map(String));
+}
+
+const defaultDrive = () => ({
+  listProjects: driveModule.listProjects,
+  listForms: driveModule.listForms,
+  readSpec: driveModule.readSpec,
+  uploadMedia: driveModule.uploadMedia,
+  findOrCreateSpreadsheet: driveModule.findOrCreateSpreadsheet,
+  ensureTab: driveModule.ensureTab,
+  appendRow: driveModule.appendRow,
+  readColumns: driveModule.readColumns || fallbackReadColumns,
+});
+
+async function defaultGetUser() {
+  return (await import('./googleauth.js')).currentUser();
+}
+
+async function defaultRootFolder() {
+  try { return (await import('../config.js')).config.rootFolderId; } catch { return undefined; }
+}
+
+// ---- retry and error classification ----------------------------------------------
+
+const isAuth = e => !!e && (e.code === 'needs_signin' || e.status === 401);
+const isQuota403 = e => !!e && e.status === 403 && QUOTA_403.test(String(e.body || e.message || ''));
+const isTransient = e => !!e && !isAuth(e) && (e.retryable === true || e.status === 429 || e.status >= 500 || isQuota403(e));
+const isRefusal = e => !!e && !isAuth(e) && !isTransient(e) && REJECT_STATUSES.has(e.status);
+
+class Exhausted extends Error {
+  constructor(cause) { super('Google kept failing: ' + ((cause && cause.message) || cause)); this.cause = cause; this.exhausted = true; }
+}
+class Skip extends Error {}
+
+function makeRetry({ sleep, random, maxAttempts }) {
+  return async fn => {
+    let last;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try { return await fn(); } catch (e) {
+        if (!isTransient(e)) throw e;
+        last = e;
+        if (attempt === maxAttempts) break;
+        const ceiling = Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
+        let wait = ceiling * (0.5 + random() * 0.5);          // jitter: 76 phones must not retry in step
+        if (e.retryAfterMs) wait = Math.max(wait, e.retryAfterMs);
+        await sleep(wait);
+      }
+    }
+    throw new Exhausted(last);
+  };
+}
+
+function config(o) {
+  return {
+    store: o.store || defaultStore,
+    drive: o.drive || defaultDrive(),
+    getUser: o.getUser || defaultGetUser,
+    retry: makeRetry({
+      sleep: o.sleep || (ms => new Promise(r => setTimeout(r, ms))),
+      random: o.random || Math.random,
+      maxAttempts: o.maxAttempts || MAX_ATTEMPTS,
+    }),
+  };
+}
+
+// ---- layout of the spreadsheet ---------------------------------------------------
+
+const META = ['_gps', '_started_at', '_finished_at', '_device_id', '_submitted_by', '_form_version'];
+
+// Questions that become columns: groups are transparent; repeats and notes are not columns.
+function questions(nodes) {
+  const out = [];
+  for (const n of nodes || []) {
+    if (n.type === 'group') out.push(...questions(n.children));
+    else if (n.type !== 'repeat' && n.type !== 'note') out.push(n);
+  }
+  return out;
+}
+
+// Every repeat, nested ones included: [{ path: ['children','doses'], node }].
+function repeats(nodes, path = []) {
+  const out = [];
+  for (const n of nodes || []) {
+    if (n.type === 'group') out.push(...repeats(n.children, path));
+    else if (n.type === 'repeat') {
+      out.push({ path: [...path, n.name], node: n });
+      out.push(...repeats(n.children, [...path, n.name]));
+    }
+  }
+  return out;
+}
+
+// Tab names: Sheets forbids [ ] * ? : / \ and caps at 100 characters.
+const tabName = (formId, path = []) => [formId, ...path].join('_').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 100);
+
+// Rows of the repeat at `path` for one submission: [{ keys: [outer idx..., idx], data }].
+function repeatRows(sub, path) {
+  let level = (Array.isArray(sub.repeats && sub.repeats[path[0]]) ? sub.repeats[path[0]] : [])
+    .map((data, i) => ({ keys: [i + 1], data: data || {} }));
+  for (const name of path.slice(1)) {
+    const next = [];
+    for (const { keys, data } of level) {
+      const inner = data[name];
+      if (Array.isArray(inner)) inner.forEach((d, i) => next.push({ keys: [...keys, i + 1], data: d || {} }));
+    }
+    level = next;
+  }
+  return level;
+}
+
+function cell(v) {
+  if (v === undefined || v === null) return '';
+  if (Array.isArray(v)) return v.map(String).join(' ');
+  if (typeof v === 'object') return JSON.stringify(v);
+  return v;
+}
+
+function gpsCell(item) {
+  return Number.isFinite(item.gps_lat) && Number.isFinite(item.gps_lon) ? `${item.gps_lat} ${item.gps_lon}` : '';
+}
+
+const keyOf = cells => cells.map(c => String(c).trim().toLowerCase()).join('|');
 
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'audio/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'video/mp4': 'mp4', 'video/webm': 'webm' };
-
-function buildBody(item, media) {
-  // queued_at and user_id are the device's own bookkeeping; the server has no use for them.
-  const { queued_at, user_id, ...wire } = item; // eslint-disable-line no-unused-vars
-  const fd = new FormData();
-  fd.set('submission', JSON.stringify(wire));
-  for (const m of media) {
-    const ext = EXT[m.blob && m.blob.type] || 'bin';
-    fd.set(m.question, m.blob, `${m.question}.${ext}`);
-  }
-  return fd;
-}
-
-async function readJson(res) {
-  try { return await res.json(); } catch { return null; }
-}
-
-function describeDetail(detail) {
-  if (typeof detail === 'string') return { code: null, message: detail };
-  if (Array.isArray(detail)) {
-    return { code: null, message: detail.map(d => (d && d.msg) || JSON.stringify(d)).join('; ') };
-  }
-  if (detail && typeof detail === 'object') {
-    return { code: detail.code || null, message: detail.message || JSON.stringify(detail) };
-  }
-  return { code: null, message: '' };
-}
 
 // ---- the rejection record --------------------------------------------------------
 
@@ -84,16 +225,15 @@ export function listRejected({ store = defaultStore } = {}) {
   return store.listRejected();
 }
 
-function recordRejection(store, item, media, status, detail) {
+function recordRejection(store, item, media, err) {
   const { queued_at, ...submission } = item; // eslint-disable-line no-unused-vars
-  const { code, message } = describeDetail(detail);
   return store.putRejected({            // resolves after the commit
     uuid: item.uuid,
     form_id: item.form_id,
     version: item.version,
-    status,
-    code,
-    message,
+    status: err.status,
+    code: null,
+    message: String(err.message || '').slice(0, 500),
     rejected_at: new Date().toISOString(),
     submission,
     media: media.map(m => ({ question: m.question, blob: m.blob })),
@@ -101,7 +241,7 @@ function recordRejection(store, item, media, status, detail) {
 }
 
 // Puts a refused submission back on the queue, answers and photos included, for
-// when the cause has been fixed (an assignment added, a form version restored).
+// when the cause has been fixed (access granted, folder restored).
 export async function retryRejected(uuid, { store = defaultStore } = {}) {
   const rec = await store.getRejected(uuid);
   if (!rec) throw new Error('No rejected submission with that id');
@@ -113,89 +253,112 @@ export async function retryRejected(uuid, { store = defaultStore } = {}) {
 
 // ---- uploading -------------------------------------------------------------------
 
-function classify(res, body, uuid) {
-  const s = res.status;
-  if (s === 200 || s === 201) {
-    // A captive portal or proxy can answer 200 with a page. Only OUR receipt counts.
-    // The server canonicalises uuids to lower case, so compare that way.
-    return body && typeof body.uuid === 'string' && body.uuid.toLowerCase() === String(uuid).toLowerCase()
-      ? (s === 201 ? 'created' : 'replay') : 'retry';
+// One submission, start to finish. Throws on any failure; returns 'created' or 'replay'.
+async function sendOne(item, spec, media, user, ctx, sheets) {
+  const { drive, retry } = ctx;
+  const project = spec._project;
+  const ssKey = project.id;
+  if (!sheets.has(ssKey)) {
+    sheets.set(ssKey, await retry(() => drive.findOrCreateSpreadsheet(project.id, `${project.name} - data`)));
   }
-  if (s === 401) return 'auth';
-  if (s === 202) return 'retry';                       // attachments still outstanding
-  if (s === 429) return 'throttled';
-  if (s >= 500) return 'server';
-  if (s >= 400 && !RETRYABLE_4XX.has(s)) {
-    // Only a refusal in the server's own shape is a refusal. A bare 403 from a
-    // captive portal or proxy says nothing about this submission.
-    return body && body.detail !== undefined ? 'reject' : 'retry';
+  const ss = sheets.get(ssKey);
+
+  // Main tab first: uuid is column 1.
+  const qs = questions(spec.nodes);
+  const mainTab = tabName(spec.form_id);
+  await retry(() => drive.ensureTab(ss, mainTab, ['uuid', ...qs.map(q => q.name), ...META]));
+  const seen = await retry(() => drive.readColumns(ss, mainTab, 1));
+  const uuidKey = keyOf([item.uuid]);
+  if (seen.some(r => keyOf([r[0] ?? '']) === uuidKey)) return 'replay';
+
+  // 1. photos
+  const links = {};
+  for (const m of media) {
+    const ext = EXT[m.blob && m.blob.type] || 'bin';
+    const up = await retry(() => drive.uploadMedia(project.id, `${item.uuid}_${m.question}.${ext}`, m.blob));
+    links[m.question] = up.link;
   }
-  return 'retry';
+  const answer = (data, name) => (name in links ? links[name] : cell(data[name]));
+
+  // 2. repeat rows, each checked on its own key so a half-written set is completed, not repeated
+  for (const { path, node } of repeats(spec.nodes)) {
+    const rows = repeatRows(item, path);
+    if (!rows.length) continue;
+    const rqs = questions(node.children);
+    const keyCols = ['parent_uuid', ...path.slice(0, -1).map(p => `${p}_row_index`), 'row_index'];
+    const tab = tabName(spec.form_id, path);
+    await retry(() => drive.ensureTab(ss, tab, [...keyCols, ...rqs.map(q => q.name)]));
+    const have = new Set((await retry(() => drive.readColumns(ss, tab, keyCols.length))).map(r => keyOf(r.slice(0, keyCols.length))));
+    for (const { keys, data } of rows) {
+      if (have.has(keyOf([item.uuid, ...keys]))) continue;
+      const row = { parent_uuid: item.uuid, row_index: keys[keys.length - 1] };
+      path.slice(0, -1).forEach((p, i) => { row[`${p}_row_index`] = keys[i]; });
+      for (const q of rqs) row[q.name] = answer(data, q.name);
+      await retry(() => drive.appendRow(ss, tab, row));
+    }
+  }
+
+  // 3. the main row, last
+  const row = { uuid: item.uuid };
+  for (const q of qs) row[q.name] = answer(item.data || {}, q.name);
+  Object.assign(row, {
+    _gps: gpsCell(item),
+    _started_at: item.started_at || '',
+    _finished_at: item.finished_at || '',
+    _device_id: item.device_id || '',
+    _submitted_by: (typeof item.user_id === 'string' && item.user_id.includes('@') ? item.user_id : user.email) || '',
+    _form_version: String(item.version || spec.version),
+  });
+  await retry(() => drive.appendRow(ss, mainTab, row));
+  return 'created';
 }
 
-async function run(fetchImpl, store) {
+async function run(ctx) {
+  const { store, getUser } = ctx;
   const out = { uploaded: 0, replayed: 0, failed: 0, rejected: 0, skipped: 0, remaining: 0, authRequired: false, retryInMs: 0 };
-  const session = await store.getSession();
-  if (!session || session.needs_login || !session.access_token) {
+  const items = await store.peekQueue(BATCH);
+  if (!items.length) return out;                       // an empty queue touches nothing
+
+  const user = await getUser().catch(() => null);
+  if (!user || !user.email) {
     out.authRequired = true;
     out.remaining = await store.queueLength();
     return out;
   }
-  const authed = makeAuthFetch(fetchImpl, { store });
-  const items = await store.peekQueue(BATCH);
-  let serverErrors = 0;
+  const me = String(user.email).toLowerCase();
+  const sheets = new Map();
+  let keeps = 0;
   let hadFailure = false;
 
   for (const item of items) {
-    // A submission stamped for another user must not go up under this user's token.
-    if (item.user_id !== undefined && session.user && item.user_id !== session.user.id) { out.skipped++; continue; }
+    // A submission stamped with another person's email must not go up under this login.
+    if (typeof item.user_id === 'string' && item.user_id.includes('@') && item.user_id.toLowerCase() !== me) { out.skipped++; continue; }
 
-    let media, res, body;
+    let media = [];
     try {
+      const spec = await store.getForm(item.form_id, String(item.version));
+      if (!spec || !spec._project || !spec._project.id) throw new Skip();   // cannot route it yet: keep it
       media = await store.getMedia(item.uuid);
-      res = await authed('/api/submissions', { method: 'POST', body: buildBody(item, media) });
-      body = await readJson(res);
-    } catch {
-      // No network, a stalled connection, or a local read/write error. Whatever it
-      // was, the submission is still queued. Stop: the next item would fail the same way.
-      out.failed++; hadFailure = true;
-      break;
-    }
-
-    const verdict = classify(res, body, item.uuid);
-    if (verdict === 'created' || verdict === 'replay') {
-      try {
-        await store.dequeue(item.uuid);
-      } catch {
-        // Still queued; the next run replays it, the server answers 200, and it goes then.
-        out.failed++; hadFailure = true;
-        break;
-      }
-      serverErrors = 0;
+      const verdict = await sendOne(item, spec, media, user, ctx, sheets);
+      await store.dequeue(item.uuid);                  // only after the row is confirmed
+      keeps = 0;
       if (verdict === 'created') out.uploaded++; else out.replayed++;
-    } else if (verdict === 'reject') {
-      try {
-        // The record is committed BEFORE the queue entry is removed. If it cannot be
-        // written, the submission stays where it is.
-        await recordRejection(store, item, media, res.status, body.detail);
-        await store.dequeue(item.uuid);
-        out.rejected++;
-      } catch {
-        out.failed++; hadFailure = true;
+    } catch (e) {
+      if (e instanceof Skip) { out.skipped++; continue; }
+      if (isAuth(e)) { out.authRequired = true; break; }        // only a new sign-in helps; queue untouched
+      if (isRefusal(e)) {
+        try {
+          // The record is committed BEFORE the queue entry goes. If it cannot be written, the
+          // submission stays where it is.
+          await recordRejection(store, item, media, e);
+          await store.dequeue(item.uuid);
+          out.rejected++;
+        } catch { out.failed++; hadFailure = true; }
+        continue;
       }
-    } else if (verdict === 'auth') {
-      out.authRequired = true;       // refreshed once already; only a new login helps
-      break;
-    } else if (verdict === 'throttled') {
       out.failed++; hadFailure = true;
-      break;
-    } else if (verdict === 'server') {
-      out.failed++; hadFailure = true;
-      // One poisoned submission must not starve the rest, but a server that is
-      // truly down should not be hammered either.
-      if (++serverErrors >= MAX_CONSECUTIVE_SERVER_ERRORS) break;
-    } else {
-      out.failed++; hadFailure = true;
+      if (e && e.exhausted) break;                     // Google is throttling or down: stop for now
+      if (++keeps >= MAX_CONSECUTIVE_KEEPS) break;     // a local error or an odd one: keep, move on, cap
     }
   }
 
@@ -211,106 +374,52 @@ async function run(fetchImpl, store) {
 
 // Uploads what is queued. Concurrent callers (an `online` event racing the timer)
 // share one run, so one submission is never in flight twice.
-export function syncOnce(fetchImpl = defaultFetch(), { store = defaultStore } = {}) {
+export function syncOnce(a, b) {
   if (state.running) return state.running;
-  const p = run(fetchImpl, store).finally(() => { if (state.running === p) state.running = null; });
+  const p = run(config(normalise(a, b))).finally(() => { if (state.running === p) state.running = null; });
   state.running = p;
   return p;
 }
 
 // ---- bootstrap -------------------------------------------------------------------
 
-const enc = encodeURIComponent;
-
-// A dataset's key on the device: its project and its name (two projects may share a name).
-export const datasetKey = (projectId, name) => `${projectId}/${name}`;
-
-// Downloads the caller's assigned forms, every dataset they can see and the client
-// config. Returns { forms, datasets, config, errors }; config is {} if it failed. Each form
-// version is stored under its own [form_id, version] key and nothing is ever
-// deleted or replaced, so a draft in progress finishes on the version it started
-// on. Drafts are not read or written here at all.
-export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultStore } = {}) {
-  const authed = makeAuthFetch(fetchImpl, { store });
+// Reads every granted project's *.spec.json and stores each (form_id, version) it has not
+// seen. A stored version is NEVER replaced: a draft in progress finishes on the version it
+// started on, and a new version sits beside the old one. Each stored spec is tagged with
+// `_project: {id, name}`, which is how a queued submission finds its spreadsheet.
+// Returns { forms, datasets, config, errors } (datasets and config kept empty for callers
+// that still read them). Throws only if the project list itself cannot be read.
+export async function bootstrap(a, b) {
+  const o = normalise(a, b);
+  const { store, drive, retry } = config(o);
+  const rootFolderId = o.rootFolderId || await defaultRootFolder();
   const out = { forms: [], datasets: [], config: {}, errors: [] };
 
-  const listRes = await authed('/api/forms');
-  if (!listRes.ok) throw new Error(`Could not list forms (${listRes.status})`);
-  const list = await listRes.json();
-  if (!Array.isArray(list)) throw new Error('Form list was not a list');
+  const projects = await retry(() => drive.listProjects(rootFolderId));
+  if (!Array.isArray(projects)) throw new Error('Project list was not a list');
 
-  for (const f of list) {
-    if (!f || !f.current_version) continue; // nothing published yet
-    const version = String(f.current_version);
+  for (const project of projects) {
+    let files;
     try {
-      let spec = await store.getForm(f.form_id, version);
-      let downloaded = false;
-      if (!spec) {
-        const res = await authed(`/api/forms/${enc(f.form_id)}/versions/${enc(version)}/spec`);
-        if (!res.ok) throw new Error(`spec download failed (${res.status})`);
-        spec = await res.json();
-        if (!spec || spec.form_id !== f.form_id || String(spec.version) !== version) {
-          throw new Error('spec does not match the form list entry');
-        }
-        await store.putForm(spec);
-        downloaded = true;
-      }
-      out.forms.push({ form_id: f.form_id, version, downloaded });
+      files = await retry(() => drive.listForms(project.id));
     } catch (e) {
-      out.errors.push({ form_id: f.form_id, version, error: String((e && e.message) || e) });
+      out.errors.push({ project: project.name, error: String((e && e.message) || e) });
+      continue;
     }
-  }
-
-  // Client settings (max_media_bytes, the one media size cap). Forms work without
-  // it, so a failure is recorded and bootstrap carries on.
-  try {
-    const res = await authed('/api/config');
-    if (!res.ok) throw new Error(`config download failed (${res.status})`);
-    const cfg = await res.json();
-    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('config was not an object');
-    out.config = cfg;
-  } catch (e) {
-    out.errors.push({ config: true, error: String((e && e.message) || e) });
-  }
-
-  // Phase 1 has no pulldata-style external lookups (a Phase 2 item), so nothing in
-  // a spec says which datasets it needs. Take every dataset the caller can see.
-  // Two projects can each hold a dataset called "villages", so a dataset is always
-  // addressed, fetched and stored by project AND name.
-  let listed = [];
-  try {
-    const res = await authed('/api/datasets');
-    if (res.status === 404 || res.status === 405) {
-      out.errors.push({ dataset: '*', error: 'server has no dataset listing (GET /api/datasets)' });
-    } else if (!res.ok) {
-      throw new Error(`dataset list failed (${res.status})`);
-    } else {
-      const body = await res.json();
-      if (!Array.isArray(body)) throw new Error('dataset list was not a list');
-      for (const d of body) {
-        const name = d && d.name;
-        if (typeof name !== 'string' || !DATASET_NAME.test(name)) continue;
-        if (!Number.isSafeInteger(d.project_id) || d.project_id < 0) {
-          out.errors.push({ dataset: name, error: 'dataset listing has no project' });
-          continue;
+    for (const file of files) {
+      if (!/\.spec\.json$/i.test(file.name || '')) continue;
+      try {
+        const spec = await retry(() => drive.readSpec(file.id));
+        if (!spec || typeof spec.form_id !== 'string' || !spec.version || !Array.isArray(spec.nodes)) {
+          throw new Error('not a form spec');
         }
-        listed.push({ projectId: d.project_id, name });
+        const version = String(spec.version);
+        const have = await store.getForm(spec.form_id, version);
+        if (!have) await store.putForm({ ...spec, version, _project: { id: project.id, name: project.name } });
+        out.forms.push({ form_id: spec.form_id, version, project: project.name, downloaded: !have });
+      } catch (e) {
+        out.errors.push({ project: project.name, file: file.name, error: String((e && e.message) || e) });
       }
-    }
-  } catch (e) {
-    out.errors.push({ dataset: '*', error: String((e && e.message) || e) });
-  }
-  for (const { projectId, name } of listed) {
-    const key = datasetKey(projectId, name);
-    try {
-      const res = await authed(`/api/datasets/${projectId}/${enc(name)}`);
-      if (!res.ok) throw new Error(`dataset download failed (${res.status})`);
-      const data = await res.json();
-      if (!data || !Array.isArray(data.rows)) throw new Error('dataset had no rows');
-      await store.putDataset(key, data.rows);
-      out.datasets.push(key);
-    } catch (e) {
-      out.errors.push({ dataset: key, error: String((e && e.message) || e) });  // the old copy stays
     }
   }
   return out;
@@ -318,9 +427,11 @@ export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultSto
 
 // ---- the background loop ---------------------------------------------------------
 
-export function startSync({ fetchImpl = defaultFetch(), store = defaultStore, intervalMs = SYNC_INTERVAL_MS } = {}) {
+export function startSync(options = {}) {
   if (state.active) return;
   state.active = true;
+  const o = normalise(options);
+  const intervalMs = o.intervalMs || SYNC_INTERVAL_MS;
 
   const tick = async reconnected => {
     if (!state.active) return;
@@ -332,10 +443,10 @@ export function startSync({ fetchImpl = defaultFetch(), store = defaultStore, in
         // wait for the `online` event; the timer below is only a safety net
       } else {
         // Upload first: getting the day's work off the phone matters more than new forms.
-        const r = await syncOnce(fetchImpl, { store });
+        const r = await syncOnce(o);
         if (r.retryInMs) delay = r.retryInMs;
         if ((reconnected || !state.bootstrapped) && !r.authRequired) {
-          try { await bootstrap(fetchImpl, { store }); state.bootstrapped = true; } catch { /* next time */ }
+          try { await bootstrap(o); state.bootstrapped = true; } catch { /* next time */ }
         }
       }
     } catch { /* never let the loop die */ }
