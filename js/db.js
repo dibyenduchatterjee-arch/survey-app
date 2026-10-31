@@ -3,41 +3,61 @@
 // Everything an enumerator enters lives ONLY here until a connection appears,
 // so durability is the first requirement of this file.
 //
-// Database "evac-survey", version 1. Stores and keys (Task 20 depends on these):
+// Database "evac-survey", version 2. Stores and keys (Task 20 depends on these):
 //   forms    keyPath [form_id, version]
 //   preload  keyPath name                     { name, rows }
 //   drafts   keyPath id                       index by_updated(updated_at)
 //   queue    keyPath uuid                     index by_queued(queued_at)
 //   media    keyPath [uuid, question]         { uuid, question, blob }
 //   session  keyPath id                       singleton, id 'current'
+//   rejected keyPath uuid                     submissions the server definitively refused (v2)
+//                                             kept with answers and photos so they can be retried;
+//                                             never touched by dataset refreshes
 //
 // Invariant: a queue record and its media records are written, and removed,
 // inside ONE transaction. A crash or error can never leave media without a
 // submission, or a submission pointing at media that was never stored.
 
 export const DB_NAME = 'evac-survey';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
+const LEGACY_REJECTED = '_rejected_submissions'; // v1 builds kept these in preload
 const SESSION_ID = 'current';
 
 let dbPromise = null;
 let seq = 0;
 
-function onUpgrade(db) {
-  db.createObjectStore('forms', { keyPath: ['form_id', 'version'] });
-  db.createObjectStore('preload', { keyPath: 'name' });
-  const drafts = db.createObjectStore('drafts', { keyPath: 'id' });
-  drafts.createIndex('by_updated', 'updated_at');
-  const queue = db.createObjectStore('queue', { keyPath: 'uuid' });
-  queue.createIndex('by_queued', 'queued_at');
-  db.createObjectStore('media', { keyPath: ['uuid', 'question'] });
-  db.createObjectStore('session', { keyPath: 'id' });
+function onUpgrade(db, tx, oldVersion) {
+  if (oldVersion < 1) {
+    db.createObjectStore('forms', { keyPath: ['form_id', 'version'] });
+    db.createObjectStore('preload', { keyPath: 'name' });
+    const drafts = db.createObjectStore('drafts', { keyPath: 'id' });
+    drafts.createIndex('by_updated', 'updated_at');
+    const queue = db.createObjectStore('queue', { keyPath: 'uuid' });
+    queue.createIndex('by_queued', 'queued_at');
+    db.createObjectStore('media', { keyPath: ['uuid', 'question'] });
+    db.createObjectStore('session', { keyPath: 'id' });
+  }
+  if (oldVersion < 2) {
+    const rejected = db.createObjectStore('rejected', { keyPath: 'uuid' });
+    if (oldVersion >= 1) {
+      // Carry across anything an earlier build parked in preload, inside this same
+      // upgrade transaction: if anything fails, the whole upgrade rolls back.
+      const preload = tx.objectStore('preload');
+      const get = preload.get(LEGACY_REJECTED);
+      get.onsuccess = () => {
+        const rec = get.result;
+        if (rec && Array.isArray(rec.rows)) for (const row of rec.rows) if (row && row.uuid) rejected.put(row);
+        if (rec) preload.delete(LEGACY_REJECTED);
+      };
+    }
+  }
 }
 
 export function openDB() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => onUpgrade(req.result);
+    req.onupgradeneeded = e => onUpgrade(req.result, req.transaction, e.oldVersion);
     req.onblocked = () => reject(new Error('Database is blocked by another open tab'));
     req.onerror = () => reject(classifyError(req.error));
     req.onsuccess = () => {
@@ -210,6 +230,16 @@ export const queueLength = () => read('queue', s => s.count());
 
 // Media for one queued submission: [{ uuid, question, blob }, ...]
 export const getMedia = uuid => read('media', s => s.getAll(mediaRange(uuid))).then(v => v || []);
+
+// ---- rejected submissions ----
+// rec: { uuid, form_id, version, status, code, message, rejected_at, submission, media: [{question, blob}] }
+export function putRejected(rec) {
+  if (!rec || typeof rec.uuid !== 'string' || !rec.uuid) return Promise.reject(new Error('putRejected needs a uuid'));
+  return write('rejected', s => s.put(rec));
+}
+export const listRejected = () => read('rejected', s => s.getAll()).then(v => v || []);
+export const getRejected = uuid => read('rejected', s => s.get(uuid));
+export const deleteRejected = uuid => write('rejected', s => s.delete(uuid));
 
 // ---- session ----
 export function putSession(s) {

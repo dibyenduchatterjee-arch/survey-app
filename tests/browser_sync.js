@@ -159,3 +159,54 @@ export async function test_the_app_shell_loads_with_the_network_disabled() {
     for (const name of await caches.keys()) await caches.delete(name);
   }
 }
+
+export async function test_upgrading_from_v1_carries_parked_rejections_into_the_rejected_store() {
+  await db.deleteDB();
+  // Build a genuine version-1 database holding what the earlier build parked in preload.
+  await new Promise((resolve, reject) => {
+    const req = indexedDB.open('evac-survey', 1);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      d.createObjectStore('forms', { keyPath: ['form_id', 'version'] });
+      d.createObjectStore('preload', { keyPath: 'name' });
+      d.createObjectStore('drafts', { keyPath: 'id' }).createIndex('by_updated', 'updated_at');
+      d.createObjectStore('queue', { keyPath: 'uuid' }).createIndex('by_queued', 'queued_at');
+      d.createObjectStore('media', { keyPath: ['uuid', 'question'] });
+      d.createObjectStore('session', { keyPath: 'id' });
+      const tx = req.transaction;
+      tx.objectStore('preload').put({ name: '_rejected_submissions', rows: [{ uuid: 'old1', status: 403, submission: { uuid: 'old1' }, media: [{ question: 'p', blob: photo('OLD') }] }] });
+      tx.objectStore('preload').put({ name: 'blocks', rows: [{ a: 1 }] });
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+  });
+  const list = await db.listRejected();
+  eq(list.map(r => r.uuid), ['old1']);
+  eq(await list[0].media[0].blob.text(), 'OLD');
+  eq(await db.getDataset('_rejected_submissions'), undefined, 'legacy copy should be gone');
+  eq(await db.getDataset('blocks'), [{ a: 1 }], 'real datasets must be untouched by the upgrade');
+}
+
+export async function test_a_dataset_refresh_leaves_rejected_records_in_real_indexeddb() {
+  await fresh();
+  await db.enqueue(sub('rj'), { p: photo('KEEP') });
+  const refuse = async () => json(403, { detail: { code: 'not_assigned', message: 'no', retain_on_device: true } });
+  const r = await sync.syncOnce(refuse);
+  eq(r.rejected, 1);
+  const bootFetch = async url => {
+    const u = String(url);
+    if (u === '/api/forms') return json(200, []);
+    if (u === '/api/datasets') return json(200, [{ name: 'blocks', version: 1 }]);
+    if (u === '/api/datasets/blocks') return json(200, { name: 'blocks', version: 1, rows: [{ a: 1 }] });
+    return json(404, {});
+  };
+  await sync.bootstrap(bootFetch);
+  await sync.bootstrap(bootFetch);
+  eq(await db.getDataset('blocks'), [{ a: 1 }]);
+  const [rec] = await sync.listRejected();
+  eq(rec.uuid, 'rj');
+  eq(await rec.media[0].blob.text(), 'KEEP');
+  await sync.retryRejected('rj');
+  eq(await db.queueLength(), 1);
+  eq((await db.listRejected()).length, 0);
+}
