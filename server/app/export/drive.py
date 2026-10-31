@@ -95,6 +95,14 @@ class DriveUploader:
 
         return call_with_retry(create, f"Drive upload of {filename}", self._sleep)["id"]
 
+    def download(self, file_id: str) -> bytes:
+        """The file's bytes exactly as stored (a CSV keeps its byte-order mark)."""
+
+        def get() -> bytes:
+            return self._client.files().get_media(fileId=file_id, supportsAllDrives=True).execute()
+
+        return call_with_retry(get, f"Drive download of {file_id}", self._sleep)
+
 
 def build_google_client(settings: Any, api: str = "drive") -> Any:
     """A googleapiclient service ("drive" or "sheets") authenticated as the service account.

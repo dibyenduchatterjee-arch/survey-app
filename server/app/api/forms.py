@@ -21,10 +21,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.core import audit
+from app.core.access import granted_to, has_form_grant
 from app.core.config import Settings, get_settings
 from app.core.rbac import current_user, require_role
-from app.db.models import Assignment, Dataset, Form, FormVersion, User
+from app.db.models import Dataset, Form, FormVersion, User
 from app.db.session import get_session
+from app.forms.autometa import inject_auto_metadata
 from app.forms.compile import FormCompileError, compile_spec
 from app.forms.expr import UnsupportedExpression
 from app.forms.xlsform import XLSFormError, to_xform
@@ -112,7 +114,7 @@ def upload_form(
     # Everything that can fail on bad input runs before the first database write.
     try:
         xform_xml = to_xform(data)
-        spec = compile_spec(xform_xml)
+        spec = inject_auto_metadata(compile_spec(xform_xml))
     except XLSFormError as e:
         raise HTTPException(
             status_code=422, detail={"error": "invalid_xlsform", "messages": e.messages}
@@ -226,11 +228,7 @@ def list_forms(
         .order_by(Form.id)
     )
     if user.role == "enumerator":  # never learns that other forms exist
-        query = query.where(
-            select(Assignment.id)
-            .where(Assignment.form_id == Form.id, Assignment.user_id == user.id)
-            .exists()
-        )
+        query = query.where(granted_to(user.id))
     return [
         FormSummary(form_id=fid, title=title, current_version=ver)
         for fid, title, ver in db.execute(query).all()
@@ -254,12 +252,7 @@ def get_spec(
     if row is None or row.published_at is None:  # never served before it is published
         raise not_found
     if user.role == "enumerator":
-        assigned = db.scalar(
-            select(Assignment.id).where(
-                Assignment.user_id == user.id, Assignment.form_id == form.id
-            )
-        )
-        if assigned is None:
+        if not has_form_grant(db, user.id, form.id):
             raise not_found
     return row.json_spec
 

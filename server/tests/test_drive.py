@@ -37,6 +37,7 @@ class FakeDrive:
         self.failures = list(failures)
         self.created = []
         self.attempts = 0
+        self.failures_on_get = []
 
     def files(self):
         return self
@@ -50,6 +51,14 @@ class FakeDrive:
                     raise f
             self.created.append((body, media_body.getbytes(0, media_body.size()), media_body.mimetype()))
             return {"id": f"file-{len(self.created)}"}
+
+        return _Exec(run)
+
+    def get_media(self, fileId, supportsAllDrives):
+        def run():
+            if self.failures_on_get:
+                raise self.failures_on_get.pop(0)
+            return self.created[int(fileId.split("-")[1]) - 1][1]
 
         return _Exec(run)
 

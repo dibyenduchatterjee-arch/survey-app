@@ -329,12 +329,40 @@ def test_export_writes_an_audit_row(wired, as_, form, submissions, db):
     assert row.detail_json == {"form_id": "amb_asha_visit"}
 
 
-def test_download_gives_the_drive_link_for_a_finished_job(wired, as_, form, submissions):
+def test_download_streams_the_csv_bytes_with_the_bom_intact(wired, as_, form, submissions, drive):
     _, h = as_("supervisor")
     job_id = start(wired, h).json()["job_id"]
     r = wired.get(f"/api/exports/{job_id}/download", headers=h)
     assert r.status_code == 200
-    assert r.json() == {"drive_file_id": "file-1", "url": "https://drive.google.com/file/d/file-1/view"}
+    assert r.content == drive.created[0][1] and r.content.startswith(b"\xef\xbb\xbf")
+    assert r.headers["content-type"] == "text/csv; charset=utf-8"
+    cd = r.headers["content-disposition"]
+    assert cd.startswith("attachment") and "amb_asha_visit_" in cd and cd.endswith('.csv"')
+    assert "docs.google.com" not in r.text and "drive.google.com" not in r.text
+
+
+def test_download_works_for_admin_and_the_drive_id_stays_in_the_status(wired, as_, form, submissions):
+    _, h = as_("admin")
+    job_id = start(wired, h).json()["job_id"]
+    assert wired.get(f"/api/exports/{job_id}/download", headers=h).status_code == 200
+    got = wired.get(f"/api/exports/{job_id}", headers=h).json()
+    assert got["drive_file_id"] == "file-1" and got["drive_url"].endswith("/file-1/view")
+
+
+def test_download_needs_a_login_and_a_staff_role(wired, as_, form, submissions):
+    _, sh = as_("supervisor")
+    job_id = start(wired, sh).json()["job_id"]
+    assert wired.get(f"/api/exports/{job_id}/download").status_code == 401
+    _, eh = as_("enumerator")
+    assert wired.get(f"/api/exports/{job_id}/download", headers=eh).status_code == 403
+
+
+def test_a_drive_failure_while_streaming_is_a_502_without_secrets(wired, as_, form, submissions, drive):
+    _, h = as_("supervisor")
+    job_id = start(wired, h).json()["job_id"]
+    drive.failures_on_get = [http_error(404, "gone")]
+    r = wired.get(f"/api/exports/{job_id}/download", headers=h)
+    assert r.status_code == 502 and "404" in r.json()["detail"]
 
 
 def test_download_of_a_failed_job_is_409_with_the_reason(wired, as_, form, submissions, drive):

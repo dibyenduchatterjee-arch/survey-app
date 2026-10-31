@@ -1,11 +1,13 @@
 """Submission routes: HTTP in, HTTP out. The intake rules live in app.intake.submissions."""
 
 import math
+from pathlib import Path
 import uuid as uuidlib
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from cryptography.exceptions import InvalidTag
 from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
 from pydantic import (
@@ -21,7 +23,9 @@ from starlette.datastructures import UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.access import staff_can_see_form
 from app.core.config import get_settings
+from app.core.crypto import decrypt_bytes
 from app.core.rbac import require_role
 from app.db.models import Form, FormVersion, MediaFile, RepeatRow, Submission, User
 from app.db.session import get_session
@@ -286,3 +290,43 @@ def get_submission(
         likely_duplicates=[d.uuid for d in likely_duplicates(db, s)] if user.role in _staff else [],
     )
 
+
+
+_staff_only = require_role("admin", "supervisor")
+
+
+@router.get("/submissions/{uuid}/media/{question_name}")
+def get_media(
+    uuid: str = PathParam(max_length=64),
+    question_name: str = PathParam(max_length=150),
+    user: User = Depends(_staff_only),
+    db: Session = Depends(get_session),
+) -> Response:
+    """The decrypted file, inline, for the console. Staff only.
+
+    Every miss is the same 404 body: no such submission, no such media, a form this user may
+    not see, an unreadable file. Nothing reveals which.
+    """
+    not_found = HTTPException(status_code=404, detail="Media not found")
+    try:
+        uid = str(uuidlib.UUID(uuid))
+    except ValueError:
+        raise not_found from None
+    row = db.execute(
+        select(MediaFile, FormVersion.form_id)
+        .join(Submission, MediaFile.submission_id == Submission.id)
+        .join(FormVersion, Submission.form_version_id == FormVersion.id)
+        .where(Submission.uuid == uid, MediaFile.question_name == question_name)
+    ).first()
+    if row is None or not staff_can_see_form(db, user, row[1]):
+        raise not_found
+    m = row[0]
+    try:
+        data = decrypt_bytes((Path(get_settings().media_root) / m.storage_path).read_bytes())
+    except (OSError, InvalidTag):
+        raise not_found from None
+    return Response(
+        content=data,
+        media_type=m.content_type,
+        headers={"Content-Disposition": "inline", "X-Content-Type-Options": "nosniff"},
+    )

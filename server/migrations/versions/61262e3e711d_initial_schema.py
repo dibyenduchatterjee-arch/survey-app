@@ -5,6 +5,7 @@ Revises:
 Create Date: 2026-10-31 06:48:22.622834
 
 """
+from datetime import datetime, timezone
 from typing import Sequence, Union
 
 from alembic import op
@@ -57,16 +58,45 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['actor_user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_table('projects',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('name', sa.String(length=150), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('name')
+    )
+    # Every form belongs to a project; this one is where forms land unless told otherwise.
+    op.execute(
+        sa.text("INSERT INTO projects (name, created_at) VALUES ('Default project', :now)").bindparams(
+            now=datetime.now(timezone.utc)
+        )
+    )
     op.create_table('forms',
     sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('project_id', sa.Integer(), nullable=False),
     sa.Column('form_id', sa.String(length=150), nullable=False),
     sa.Column('title', sa.String(length=255), nullable=False),
     sa.Column('created_by', sa.Integer(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['created_by'], ['users.id'], ),
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('form_id')
     )
+    with op.batch_alter_table('forms', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_forms_project_id'), ['project_id'], unique=False)
+
+    op.create_table('project_members',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('project_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('project_members', schema=None) as batch_op:
+        batch_op.create_index('uq_project_member', ['project_id', 'user_id'], unique=True)
+        batch_op.create_index(batch_op.f('ix_project_members_user_id'), ['user_id'], unique=False)
     op.create_table('refresh_tokens',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
@@ -210,7 +240,16 @@ def downgrade() -> None:
 
     op.drop_table('assignments')
     op.drop_table('refresh_tokens')
+    with op.batch_alter_table('project_members', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_project_members_user_id'))
+        batch_op.drop_index('uq_project_member')
+
+    op.drop_table('project_members')
+    with op.batch_alter_table('forms', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_forms_project_id'))
+
     op.drop_table('forms')
+    op.drop_table('projects')
     op.drop_table('audit_log')
     op.drop_table('users')
     op.drop_table('datasets')

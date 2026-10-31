@@ -2,7 +2,7 @@
 
 POST /api/exports {form_id}          -> 202 {job_id}; the work runs in a FastAPI BackgroundTask
 GET  /api/exports/{job_id}           -> the job: status, drive_file_id, sheet_id, row_count, error
-GET  /api/exports/{job_id}/download  -> {drive_file_id, url} once the job is done
+GET  /api/exports/{job_id}/download  -> the main CSV itself, streamed once the job is done
 
 Supervisor and admin only. A job's status moves pending -> running -> done | failed, and a failed
 job keeps its error text and is never deleted: the person who asked needs to see why.
@@ -11,6 +11,16 @@ The Google clients arrive through dependencies (`get_drive_uploader`, `get_sheet
 background task opens its own session through `get_job_session`, so tests substitute all three and
 nothing reaches Google. Missing Google settings are a 503 at request time that names the setting.
 
+DOWNLOAD IS GATED BY US, NOT BY DRIVE. The route fetches the file from Drive with the service
+account and streams the bytes to the authenticated caller, so a login plus our role check is the
+only way in. The Drive id and url stay in the job status as information, never as the access path:
+a Drive link would depend on Drive sharing, which this app does not control.
+
+DOWNLOAD IS GATED BY US, NOT BY DRIVE. The route fetches the file from Drive with the service
+account and streams the bytes to the authenticated caller, so a login plus our role check is the
+only way in. The Drive id and url stay in the job status as information, never as the access path:
+a Drive link would depend on Drive sharing, which this app does not control.
+
 The CSV files are uploaded exactly as `build_csvs` produced them (UTF-8 with BOM); only the Sheet
 rows are decoded from them.
 """
@@ -18,18 +28,21 @@ rows are decoded from them.
 import csv
 import io
 import logging
+import re
 import zipfile
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import audit
+from app.core.access import staff_can_see_form
+from app.core.access import staff_can_see_form
 from app.core.config import Settings, get_settings
 from app.core.rbac import require_role
 from app.db.models import ExportJob, Form, FormVersion, Submission, User
@@ -95,14 +108,10 @@ class JobOut(BaseModel):
     status: str
     requested_at: datetime
     drive_file_id: str | None
+    drive_url: str | None  # information only; access is through /download
     sheet_id: str | None
     row_count: int | None
     error: str | None
-
-
-class DownloadOut(BaseModel):
-    drive_file_id: str
-    url: str
 
 
 def _job_out(job: ExportJob, form_id: str) -> JobOut:
@@ -113,6 +122,7 @@ def _job_out(job: ExportJob, form_id: str) -> JobOut:
         status=job.status,
         requested_at=at,
         drive_file_id=job.drive_file_id,
+        drive_url=f"https://drive.google.com/file/d/{job.drive_file_id}/view" if job.drive_file_id else None,
         sheet_id=job.sheet_id,
         row_count=job.row_count,
         error=job.error,
@@ -247,13 +257,28 @@ def get_export(job_id: int, _: User = Depends(_staff), db: Session = Depends(get
     return _job_out(job, form_id)
 
 
-@router.get("/exports/{job_id}/download", response_model=DownloadOut)
-def download_export(job_id: int, _: User = Depends(_staff), db: Session = Depends(get_session)) -> DownloadOut:
-    """The export lives in Drive, not on this server, so 'download' is the Drive link."""
-    job, _form = _load(db, job_id)
+@router.get("/exports/{job_id}/download")
+def download_export(
+    job_id: int,
+    user: User = Depends(_staff),
+    uploader: DriveUploader = Depends(get_drive_uploader),
+    db: Session = Depends(get_session),
+) -> Response:
+    """Stream the main CSV, byte for byte (the BOM is what makes Devanagari open in Excel)."""
+    job, form_key = _load(db, job_id)
+    if not staff_can_see_form(db, user, job.form_id):
+        raise HTTPException(status_code=404, detail="Export job not found")
     if job.status != "done" or not job.drive_file_id:
         detail = job.error if job.status == "failed" and job.error else f"Export is {job.status}, not done"
         raise HTTPException(status_code=409, detail=detail)
-    return DownloadOut(
-        drive_file_id=job.drive_file_id, url=f"https://drive.google.com/file/d/{job.drive_file_id}/view"
+    try:
+        data = uploader.download(job.drive_file_id)
+    except GoogleError as e:
+        raise HTTPException(status_code=502, detail=_error_text(e)) from None
+    stamp = job.requested_at.strftime("%Y%m%dT%H%M%SZ")
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", form_key)  # a header value, never raw text
+    return Response(
+        content=data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe}_{stamp}.csv"'},
     )

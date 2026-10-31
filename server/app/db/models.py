@@ -21,6 +21,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy import event, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, object_session, relationship
 from sqlalchemy.types import DateTime, TypeDecorator
 
@@ -87,10 +88,37 @@ class User(Base):
     last_login_at: Mapped[datetime | None]
 
 
+DEFAULT_PROJECT_NAME = "Default project"
+
+
+class Project(Base):
+    """A named group of 1..N forms. Assigning a user to a project grants every form in it."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(150), unique=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class ProjectMember(Base):
+    """The grant: this user may fill every form that is (or later becomes) part of the project."""
+
+    __tablename__ = "project_members"
+    __table_args__ = (Index("uq_project_member", "project_id", "user_id", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+
+
 class Form(Base):
     __tablename__ = "forms"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Every form belongs to exactly one project; a form created without one is put in the
+    # default project by the before_insert hook below.
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     form_id: Mapped[str] = mapped_column(String(150), unique=True)
     title: Mapped[str] = mapped_column(String(255))
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
@@ -278,3 +306,16 @@ class RefreshToken(Base):
     expires_at: Mapped[datetime]
     revoked_at: Mapped[datetime | None]
     replaced_by: Mapped[int | None] = mapped_column(ForeignKey("refresh_tokens.id"))
+
+
+@event.listens_for(Form, "before_insert")
+def _default_project(mapper, connection, target: Form) -> None:
+    """A form created without a project goes to the default project (created on first need)."""
+    if target.project_id is not None:
+        return
+    pid = connection.execute(select(Project.id).where(Project.name == DEFAULT_PROJECT_NAME)).scalar()
+    if pid is None:
+        pid = connection.execute(
+            Project.__table__.insert().values(name=DEFAULT_PROJECT_NAME, created_at=utcnow())
+        ).inserted_primary_key[0]
+    target.project_id = pid

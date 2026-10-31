@@ -27,7 +27,16 @@ from sqlalchemy.orm import Session
 from app.core import audit
 from app.core.rbac import require_role
 from app.core.security import hash_password
-from app.db.models import Assignment, AuditLog, Form, RefreshToken, User
+from app.db.models import (
+    DEFAULT_PROJECT_NAME,
+    Assignment,
+    AuditLog,
+    Form,
+    Project,
+    ProjectMember,
+    RefreshToken,
+    User,
+)
 from app.db.session import get_session
 
 router = APIRouter(prefix="/api", tags=["admin"])
@@ -346,6 +355,259 @@ def delete_assignment(
     detail = {"user_id": row.user_id, "form_id": form_key}
     db.delete(row)
     audit.record(db, admin_user.id, "assignment.delete", "assignment", assignment_id, request, detail)
+    db.commit()
+    return Response(status_code=204)
+
+
+# ---- projects --------------------------------------------------------------
+#
+# A project holds 1..N forms; every form is in exactly one. Assigning a user to a project
+# grants every form in it, including forms added later (see app.core.access). Admin and
+# supervisor only.
+
+
+class ProjectCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=150)
+
+
+class ProjectOut(BaseModel):
+    id: int
+    name: str
+    form_count: int
+    member_count: int
+
+
+class ProjectFormOut(BaseModel):
+    form_id: str
+    title: str
+
+
+class ProjectMemberOut(BaseModel):
+    user_id: int
+    username: str
+    full_name: str
+    role: str
+
+
+class ProjectDetail(ProjectOut):
+    forms: list[ProjectFormOut]
+    members: list[ProjectMemberOut]
+
+
+class MemberAdd(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: int
+
+
+def _project(db: Session, project_id: int) -> Project:
+    p = db.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return p
+
+
+def _project_out(db: Session, p: Project) -> ProjectOut:
+    forms = db.scalar(select(func.count()).select_from(Form).where(Form.project_id == p.id)) or 0
+    members = (
+        db.scalar(select(func.count()).select_from(ProjectMember).where(ProjectMember.project_id == p.id)) or 0
+    )
+    return ProjectOut(id=p.id, name=p.name, form_count=forms, member_count=members)
+
+
+def _members(db: Session, project_id: int) -> list[ProjectMemberOut]:
+    rows = db.execute(
+        select(User.id, User.username, User.full_name, User.role)
+        .join(ProjectMember, ProjectMember.user_id == User.id)
+        .where(ProjectMember.project_id == project_id)
+        .order_by(ProjectMember.id)
+    ).all()
+    return [ProjectMemberOut(user_id=i, username=u, full_name=f, role=r) for i, u, f, r in rows]
+
+
+@router.post("/projects", response_model=ProjectOut, status_code=201)
+def create_project(
+    body: ProjectCreate,
+    request: Request,
+    user: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
+) -> ProjectOut:
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="A project needs a name")
+    p = Project(name=name)
+    db.add(p)
+    try:
+        db.flush()
+        audit.record(db, user.id, "project.create", "project", p.id, request, {"name": name})
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A project with that name already exists") from None
+    return _project_out(db, p)
+
+
+@router.get("/projects", response_model=list[ProjectOut])
+def list_projects(
+    _: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+) -> list[ProjectOut]:
+    return [_project_out(db, p) for p in db.scalars(select(Project).order_by(Project.id))]
+
+
+@router.get("/projects/{project_id}", response_model=ProjectDetail)
+def get_project(
+    project_id: int, _: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+) -> ProjectDetail:
+    p = _project(db, project_id)
+    forms = db.execute(
+        select(Form.form_id, Form.title).where(Form.project_id == p.id).order_by(Form.id)
+    ).all()
+    return ProjectDetail(
+        **_project_out(db, p).model_dump(),
+        forms=[ProjectFormOut(form_id=f, title=t) for f, t in forms],
+        members=_members(db, p.id),
+    )
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectOut)
+def rename_project(
+    project_id: int,
+    body: ProjectCreate,
+    request: Request,
+    user: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
+) -> ProjectOut:
+    p = _project(db, project_id)
+    old, p.name = p.name, body.name.strip()
+    try:
+        audit.record(db, user.id, "project.update", "project", p.id, request, {"name": {"from": old, "to": p.name}})
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A project with that name already exists") from None
+    return _project_out(db, p)
+
+
+def _form_by_key(db: Session, form_id: str) -> Form:
+    form = db.scalar(select(Form).where(Form.form_id == form_id))
+    if form is None:
+        raise HTTPException(status_code=404, detail="Form not found")
+    return form
+
+
+@router.put("/projects/{project_id}/forms/{form_id}", response_model=ProjectOut)
+def add_form_to_project(
+    project_id: int,
+    form_id: str,
+    request: Request,
+    user: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
+) -> ProjectOut:
+    """Put the form in this project (moving it from whichever project it was in)."""
+    p = _project(db, project_id)
+    form = _form_by_key(db, form_id)
+    previous = form.project_id
+    form.project_id = p.id
+    audit.record(
+        db, user.id, "project.form_add", "project", p.id, request,
+        {"form_id": form.form_id, "from_project_id": previous},
+    )
+    db.commit()
+    return _project_out(db, p)
+
+
+@router.delete("/projects/{project_id}/forms/{form_id}", status_code=204)
+def remove_form_from_project(
+    project_id: int,
+    form_id: str,
+    request: Request,
+    user: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
+) -> Response:
+    """Take the form out: it returns to the default project, as every form is in exactly one."""
+    p = _project(db, project_id)
+    form = _form_by_key(db, form_id)
+    if form.project_id != p.id:
+        raise HTTPException(status_code=404, detail="That form is not in this project")
+    if p.name == DEFAULT_PROJECT_NAME:
+        raise HTTPException(
+            status_code=409,
+            detail="This is the default project; move the form into another project instead",
+        )
+    default = db.scalar(select(Project).where(Project.name == DEFAULT_PROJECT_NAME))
+    if default is None:
+        default = Project(name=DEFAULT_PROJECT_NAME)
+        db.add(default)
+        db.flush()
+    form.project_id = default.id
+    audit.record(db, user.id, "project.form_remove", "project", p.id, request, {"form_id": form.form_id})
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/projects/{project_id}/members", response_model=list[ProjectMemberOut])
+def list_project_members(
+    project_id: int, _: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+) -> list[ProjectMemberOut]:
+    _project(db, project_id)
+    return _members(db, project_id)
+
+
+@router.post("/projects/{project_id}/members", response_model=ProjectMemberOut, status_code=201)
+def add_project_member(
+    project_id: int,
+    body: MemberAdd,
+    request: Request,
+    user: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
+) -> ProjectMemberOut:
+    """Assign a user to the project: they may fill every form in it, now and later."""
+    _project(db, project_id)
+    member = db.get(User, body.user_id)
+    if member is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    dup = HTTPException(status_code=409, detail="That user is already assigned to this project")
+    if db.scalar(
+        select(ProjectMember.id).where(
+            ProjectMember.project_id == project_id, ProjectMember.user_id == body.user_id
+        )
+    ) is not None:
+        raise dup
+    db.add(ProjectMember(project_id=project_id, user_id=body.user_id))
+    try:
+        db.flush()
+        audit.record(
+            db, user.id, "project.member_add", "project", project_id, request, {"user_id": body.user_id}
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise dup from None
+    return ProjectMemberOut(
+        user_id=member.id, username=member.username, full_name=member.full_name, role=member.role
+    )
+
+
+@router.delete("/projects/{project_id}/members/{user_id}", status_code=204)
+def remove_project_member(
+    project_id: int,
+    user_id: int,
+    request: Request,
+    user: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
+) -> Response:
+    _project(db, project_id)
+    row = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id, ProjectMember.user_id == user_id
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="That user is not assigned to this project")
+    db.delete(row)
+    audit.record(db, user.id, "project.member_remove", "project", project_id, request, {"user_id": user_id})
     db.commit()
     return Response(status_code=204)
 

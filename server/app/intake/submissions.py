@@ -43,9 +43,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import audit
+from app.core.access import has_form_grant
 from app.core.config import get_settings
 from app.core.crypto import encrypt_bytes
-from app.db.models import Assignment, Form, FormVersion, MediaFile, RepeatRow, Submission, User
+from app.db.models import Form, FormVersion, MediaFile, RepeatRow, Submission, User
 from app.forms.validate import Failure, validate_submission
 
 
@@ -258,6 +259,37 @@ def validation_clock(finished_at: datetime | None, received_at: datetime) -> tup
     )
 
 
+def _fill_auto_fields(spec: dict, data: dict, user: User, meta: SubmissionMeta) -> dict:
+    """Server side of the automatic metadata (app.forms.autometa).
+
+    `_submitted_by` is ALWAYS the authenticated account's username, whatever the payload says.
+    A blank `_started_at`, `_finished_at` or `_device_id` is filled from the device-reported
+    envelope. Only fields the spec flags `auto` are touched; a question the form's author
+    happened to give one of these names is left alone.
+    """
+    auto = {n["name"] for n in _walk(spec.get("nodes", [])) if n.get("auto")}
+    if not auto:
+        return data
+    data = dict(data)
+    if "_submitted_by" in auto:
+        data["_submitted_by"] = user.username
+    backfill = {
+        "_started_at": meta.started_at.isoformat() if meta.started_at else None,
+        "_finished_at": meta.finished_at.isoformat() if meta.finished_at else None,
+        "_device_id": meta.device_id,
+    }
+    for name, value in backfill.items():
+        if name in auto and value and data.get(name) in (None, ""):
+            data[name] = value
+    return data
+
+
+def _walk(nodes: list[dict]):
+    for n in nodes:
+        yield n
+        yield from _walk(n.get("children", []))
+
+
 def _validate(spec: dict, data: dict, repeats: dict, now: datetime | None = None) -> list[Failure]:
     try:
         failures = validate_submission(spec, data, repeats, now or datetime.now(UTC))
@@ -294,8 +326,7 @@ def resolve_form_version(
     form = db.scalar(select(Form).where(Form.form_id == form_id))
     if user.role == "enumerator" and (
         form is None
-        or db.scalar(select(Assignment.id).where(Assignment.user_id == user.id, Assignment.form_id == form.id))
-        is None
+        or not has_form_grant(db, user.id, form.id)
     ):
         raise IntakeRefused(403, "not_assigned", "Forbidden")  # unknown and unassigned look the same
     fv = (
@@ -436,11 +467,7 @@ def store_submission(
     existing = _existing(db, uid)
     if existing is not None and existing.submitted_by == user.id:
         return _attach_new_media(db, existing, user, media, request), False
-    if user.role == "enumerator" and db.scalar(
-        select(Assignment.id).where(
-            Assignment.user_id == user.id, Assignment.form_id == form_version.form_id
-        )
-    ) is None:
+    if user.role == "enumerator" and not has_form_grant(db, user.id, form_version.form_id):
         raise IntakeRefused(403, "not_assigned", "Forbidden")
     if existing is not None:
         return _replay(existing, user)  # someone else's id: 409, nothing revealed
@@ -450,7 +477,7 @@ def store_submission(
     sniffed = _check_media(media, form_version.json_spec)
 
     spec = form_version.json_spec
-    data = _normalise(data)
+    data = _fill_auto_fields(spec, _normalise(data), user, meta)
     repeats = {name: [_normalise(r) for r in rows] for name, rows in repeats.items()}
     received_at = datetime.now(UTC)  # the server's clock, never the device's
     now, clock_failure = validation_clock(meta.finished_at, received_at)

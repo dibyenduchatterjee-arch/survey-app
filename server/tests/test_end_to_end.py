@@ -173,6 +173,6 @@ def test_the_whole_path_from_admin_to_drive(client, db, tmp_path, monkeypatch):
         assert all(z.read(n) == JPEG for n in z.namelist())
         assert {r["household_photo"] for r in main_rows} == set(z.namelist())
 
-    # and the supervisor is handed a Drive link
+    # and the supervisor downloads the same bytes through the app, not a Drive link
     dl = client.get(f"/api/exports/{job['job_id']}/download", headers=sup)
-    assert dl.status_code == 200 and dl.json()["drive_file_id"] == "file-1"
+    assert dl.status_code == 200 and dl.content == main_bytes
