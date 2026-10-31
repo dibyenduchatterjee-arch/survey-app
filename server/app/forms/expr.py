@@ -18,10 +18,18 @@ SUPPORTED
     concat() number() int() today() now() coalesce() position() indexed-repeat()
     Precedence, lowest to highest: or, and, comparison, + -, * div mod, unary -.
     All binary operators are left-associative. `not` is a function, as in XPath.
+    DIFFERS FROM REAL XPATH: = != < <= > >= are ONE level here, left-associative,
+    where XPath puts = and != below the relational operators. `3 = 3 > 2` is
+    (3 = 3) > 2, which is false here and true in XPath. Unary minus binds tighter
+    than * (`-1 + 2` is 1). Pinned by corpus cases.
 
 TYPE RULES (every one of these is pinned by a case in the corpus)
     Values are None, str, bool, int, float, date or datetime. A list value is a
     repeat: one entry per row.
+    * Digits and whitespace are ASCII only everywhere: the Devanagari answer "१२" is
+      not a number (NaN) and a Devanagari digit in an expression is unsupported.
+      Only space, tab, CR and LF separate selected() choices or are trimmed by
+      number(); a no-break space is an ordinary character.
     * Unanswered (None, missing, "") reads as the empty string.
     * To string: numbers print without a trailing ".0"; booleans "true"/"false";
       dates in ISO form; NaN "NaN".
@@ -170,8 +178,13 @@ _FUNCTIONS: dict[str, tuple[int, int | None, tuple[int, ...]]] = {
 
 # ---------------------------------------------------------------- tokenizer
 
-_REF = re.compile(r"\$\{\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*\}")
-_NUMBER = re.compile(r"\d+(?:\.\d*)?|\.\d+")
+_REF = re.compile(r"\$\{\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*\}", re.ASCII)
+# Every digit and whitespace test is ASCII-only: Python's \d and str.isdigit() accept
+# Devanagari and Arabic-Indic digits, JavaScript's do not.
+_ASCII_DIGITS = "0123456789"
+_ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+_SPACE = " \t\r\n"
+_NUMBER = re.compile(r"\d+(?:\.\d*)?|\.\d+", re.ASCII)
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]*")
 _WORD_OPERATORS = {"and", "or", "div", "mod"}
 _REJECTED_CHARS = {
@@ -190,7 +203,7 @@ def _tokenize(expr: str) -> list[tuple[str, Any]]:
     i, n = 0, len(expr)
     while i < n:
         ch = expr[i]
-        if ch.isspace():
+        if ch in _SPACE:
             i += 1
         elif ch == "$":
             m = _REF.match(expr, i)
@@ -206,11 +219,12 @@ def _tokenize(expr: str) -> list[tuple[str, Any]]:
                 raise UnsupportedExpression(expr, "unterminated string literal")
             tokens.append(("str", expr[i + 1 : end]))
             i = end + 1
-        elif ch.isdigit() or (ch == "." and i + 1 < n and expr[i + 1].isdigit()):
+        elif ch in _ASCII_DIGITS or (ch == "." and i + 1 < n and expr[i + 1] in _ASCII_DIGITS):
             m = _NUMBER.match(expr, i)
-            assert m
+            if not m:
+                raise UnsupportedExpression(expr, f"malformed number at position {i}")
             i = m.end()
-            if i < n and (expr[i].isalpha() or expr[i] == "_"):
+            if i < n and expr[i] in _ASCII_LETTERS:
                 raise UnsupportedExpression(expr, f"malformed number near {expr[m.start():i + 1]!r}")
             tokens.append(("num", float(m.group())))
         elif ch == ".":
@@ -218,9 +232,10 @@ def _tokenize(expr: str) -> list[tuple[str, Any]]:
                 raise UnsupportedExpression(expr, "the parent step '..' is not supported")
             tokens.append(("cur", "."))
             i += 1
-        elif ch.isalpha() or ch == "_":
+        elif ch in _ASCII_LETTERS:
             m = _NAME.match(expr, i)
-            assert m
+            if not m:
+                raise UnsupportedExpression(expr, f"unexpected character {ch!r}")
             if expr.startswith("::", m.end()):
                 raise UnsupportedExpression(expr, "XPath axes are not supported")
             tokens.append(("name", m.group()))
@@ -401,9 +416,9 @@ def parse(expression: str) -> Node:
 
 # ---------------------------------------------------------------- coercion
 
-_NUMERIC = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)")
-_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_ISO_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?")
+_NUMERIC = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)", re.ASCII)
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+_ISO_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?", re.ASCII)
 NAN = float("nan")
 
 
@@ -429,7 +444,7 @@ def to_number(v: Any) -> float:
     if v is None:
         return NAN
     if isinstance(v, str):
-        s = v.strip()
+        s = v.strip(_SPACE)
         if _NUMERIC.fullmatch(s):
             return float(s)
         if _ISO_DATE.fullmatch(s):
@@ -541,6 +556,19 @@ def _nodeset(ctx: Context, name: str) -> list[Any]:
     return [] if _is_empty(raw) else [raw]
 
 
+def _tokens(text: str) -> list[str]:
+    """Split a select_multiple answer on ASCII whitespace only (a no-break space is not a separator)."""
+    return [t for t in re.split(r"[ \t\r\n]+", text) if t]
+
+
+def _plain_sum(numbers: list[float]) -> float:
+    """Left-to-right addition, exactly what a JavaScript loop does (no compensated summation)."""
+    total = 0.0
+    for x in numbers:
+        total += x
+    return total
+
+
 def _run(node: Node, ctx: Context) -> Any:
     if isinstance(node, Num):
         return node.value
@@ -578,15 +606,15 @@ def _call(node: Call, ctx: Context) -> Any:
     if name == "not":
         return not to_boolean(arg(0))
     if name == "selected":
-        return to_string(arg(1)) in to_string(arg(0)).split()
+        return to_string(arg(1)) in _tokens(to_string(arg(0)))
     if name == "count-selected":
-        return float(len(to_string(arg(0)).split()))
+        return float(len(_tokens(to_string(arg(0)))))
     if name == "count":
         return float(len(_nodeset(ctx, args[0].name)))  # type: ignore[attr-defined]
     if name == "sum":
         rows = [r for r in _nodeset(ctx, args[0].name) if not _is_empty(r)]  # type: ignore[attr-defined]
         numbers = [to_number(r) for r in rows]
-        return NAN if any(math.isnan(x) for x in numbers) else math.fsum(numbers)
+        return NAN if any(math.isnan(x) for x in numbers) else _plain_sum(numbers)
     if name == "string-length":
         text = to_string(_run(Current(), ctx) if not args else arg(0))
         return float(len(text))

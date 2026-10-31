@@ -1443,6 +1443,248 @@
   "repeat_index": 1
  },
  {
+  "name": "devanagari_digit_answer_is_not_a_number",
+  "expr": "${age} = 12",
+  "values": {
+   "age": "१२"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "A Hindi keyboard types these. Python's \\d and float() would accept them; JavaScript does not, so both must say NaN."
+ },
+ {
+  "name": "devanagari_digit_answer_number_is_nan",
+  "expr": "number(${age})",
+  "values": {
+   "age": "१२"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "arabic_indic_digit_answer_number_is_nan",
+  "expr": "number(${age})",
+  "values": {
+   "age": "٣"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "devanagari_digit_answer_fails_range_rule",
+  "expr": "${age} >= 6 and ${age} <= 59",
+  "values": {
+   "age": "१२"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "devanagari_digit_date_is_nan",
+  "expr": "${d} < today()",
+  "values": {
+   "d": "२०२६-०३-१५"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "number_trims_only_ascii_whitespace",
+  "expr": "number(' 7')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN",
+  "note": "A no-break space is not trimmed."
+ },
+ {
+  "name": "number_trims_tab_and_newline",
+  "expr": "number('\t7\n')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 7
+ },
+ {
+  "name": "selected_no_break_space_is_not_a_separator",
+  "expr": "selected(${s}, 'pallor')",
+  "values": {
+   "s": "pallor fatigue"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "Only space, tab, CR and LF separate choices."
+ },
+ {
+  "name": "selected_tab_separates",
+  "expr": "selected(${s}, 'fatigue')",
+  "values": {
+   "s": "pallor\tfatigue"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "count_selected_no_break_space_is_one_token",
+  "expr": "count-selected(${s})",
+  "values": {
+   "s": "pallor fatigue"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1
+ },
+ {
+  "name": "sum_decimals_plain_addition",
+  "expr": "sum(${w})",
+  "values": {
+   "w": [
+    0.1,
+    0.2,
+    0.3
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0.6000000000000001,
+  "note": "Plain left-to-right addition, as a JavaScript loop does. Not math.fsum, which gives 0.6."
+ },
+ {
+  "name": "add_decimals_float_artifact",
+  "expr": "0.1 + 0.2",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0.30000000000000004
+ },
+ {
+  "name": "unary_minus_binds_tighter_than_plus",
+  "expr": "-1 + 2",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1,
+  "note": "If unary minus bound looser than +, this would be -3."
+ },
+ {
+  "name": "unary_minus_after_minus",
+  "expr": "2 - -1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3
+ },
+ {
+  "name": "unary_minus_binds_tighter_than_comparison",
+  "expr": "-1 < 0",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "negative_zero_is_zero",
+  "expr": "-0",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "negative_zero_prints_as_zero",
+  "expr": "concat(-0)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "0"
+ },
+ {
+  "name": "product_negative_zero_is_zero",
+  "expr": "0 * -1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "boolean_vs_string_compares_as_booleans",
+  "expr": "${a} = true()",
+  "values": {
+   "a": "false"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "A boolean on either side compares as booleans, and the non-empty string 'false' is true."
+ },
+ {
+  "name": "boolean_vs_empty_string",
+  "expr": "${a} = false()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "true_plus_one_is_two",
+  "expr": "true() + 1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 2
+ },
+ {
+  "name": "strings_equal_only_as_strings",
+  "expr": "'1.0' = '1'",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "Two strings never compare numerically."
+ },
+ {
+  "name": "string_vs_number_equal_numerically",
+  "expr": "'1.0' = 1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "date_string_vs_date_string_is_a_string_compare",
+  "expr": "${a} = '2026-3-15'",
+  "values": {
+   "a": "2026-03-15"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "chained_comparison_is_one_left_associative_level",
+  "expr": "3 = 3 > 2",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "Real XPath gives true (relational binds tighter than =). Here it is (3 = 3) > 2, and true as a number is 1. Deliberate; JavaScript must match this, not XPath."
+ },
+ {
+  "name": "chained_comparison_left_to_right",
+  "expr": "1 < 2 = 2",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
   "name": "unsupported_instance_lookup",
   "expr": "instance('x')/root/item[./name = ${a}]/label",
   "unsupported": true,
@@ -1619,6 +1861,38 @@
  {
   "name": "unsupported_number_glued_to_letters",
   "expr": "1a > 0",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_devanagari_digit_literal",
+  "expr": "१२ > 1",
+  "unsupported": true,
+  "note": "Digits in expressions are ASCII only."
+ },
+ {
+  "name": "unsupported_devanagari_digit_after_operator",
+  "expr": "${a} > १",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_hindi_bare_name",
+  "expr": "आयु > 1",
+  "unsupported": true,
+  "note": "A Hindi author writing a bare field name gets a clean refusal, not a crash."
+ },
+ {
+  "name": "unsupported_superscript_digit",
+  "expr": "2² + 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_no_break_space_in_expression",
+  "expr": "1 + 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_true_is_not_a_bare_name",
+  "expr": "true",
   "unsupported": true
  }
 ]
