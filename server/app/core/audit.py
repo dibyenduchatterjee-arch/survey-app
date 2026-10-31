@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from app.api.auth import client_ip
+from app.core.clientip import client_ip
 from app.core.config import get_settings
 from app.db.models import AuditLog
 
@@ -36,7 +36,7 @@ def record(
     request: Request,
     detail: dict[str, Any] | None = None,
 ) -> None:
-    """Add one audit row and commit it.
+    """Add one audit row to the caller's transaction (flushed, never committed).
 
     The IP is resolved with the same `client_ip` the login rate limiter uses, so the
     two records agree about who the caller was.
@@ -54,4 +54,4 @@ def record(
             detail_json=None if detail is None else _scrub(detail),
         )
     )
-    db.commit()
+    db.flush()  # the caller owns the commit, so this row shares its transaction

@@ -405,12 +405,12 @@ def test_client_ip_joins_separate_header_lines():
 def test_warns_once_about_a_private_peer_when_proxy_trust_is_off(caplog, monkeypatch):
     import logging
 
-    from app.api import auth
+    from app.core import clientip
 
-    monkeypatch.setattr(auth, "_warned_unconfigured_proxy", False)
-    with caplog.at_level(logging.WARNING, logger="app.api.auth"):
-        auth.client_ip(_Req(host="10.0.0.1"), _settings())
-        auth.client_ip(_Req(host="127.0.0.1"), _settings())
+    monkeypatch.setattr(clientip, "_warned_unconfigured_proxy", False)
+    with caplog.at_level(logging.WARNING, logger="app.core.clientip"):
+        clientip.client_ip(_Req(host="10.0.0.1"), _settings())
+        clientip.client_ip(_Req(host="127.0.0.1"), _settings())
     warnings = [r for r in caplog.records if "TRUST_PROXY_HEADERS" in r.getMessage()]
     assert len(warnings) == 1
     assert "rate-limit bucket" in warnings[0].getMessage()
@@ -419,12 +419,12 @@ def test_warns_once_about_a_private_peer_when_proxy_trust_is_off(caplog, monkeyp
 def test_no_proxy_warning_for_a_public_peer_or_when_trust_is_on(caplog, monkeypatch):
     import logging
 
-    from app.api import auth
+    from app.core import clientip
 
-    monkeypatch.setattr(auth, "_warned_unconfigured_proxy", False)
-    with caplog.at_level(logging.WARNING, logger="app.api.auth"):
-        auth.client_ip(_Req(host="8.8.8.8"), _settings())
-        auth.client_ip(_Req("203.0.113.9", host="10.0.0.1"), _settings(trust_proxy_headers=True))
+    monkeypatch.setattr(clientip, "_warned_unconfigured_proxy", False)
+    with caplog.at_level(logging.WARNING, logger="app.core.clientip"):
+        clientip.client_ip(_Req(host="8.8.8.8"), _settings())
+        clientip.client_ip(_Req("203.0.113.9", host="10.0.0.1"), _settings(trust_proxy_headers=True))
     assert not caplog.records
 
 

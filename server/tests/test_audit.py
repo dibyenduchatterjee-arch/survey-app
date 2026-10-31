@@ -93,3 +93,17 @@ def test_actor_may_be_none_and_overlong_user_agent_is_truncated(db):
 def test_missing_user_agent_is_stored_as_null(db, actor):
     record(db, actor, "a.b", "user", actor, _Req(ua=None))
     assert db.query(AuditLog).one().user_agent is None
+
+
+def test_audit_row_rolls_back_with_the_callers_transaction(db, actor, request_stub):
+    record(db, actor, "form.publish", "form_version", 9, request_stub)
+    assert db.query(AuditLog).count() == 1  # visible inside the transaction
+    db.rollback()
+    assert db.query(AuditLog).count() == 0  # a rolled-back change leaves no audit row
+
+
+def test_audit_row_is_persisted_by_the_callers_commit(db, actor, request_stub):
+    record(db, actor, "form.publish", "form_version", 9, request_stub)
+    db.commit()
+    db.rollback()
+    assert db.query(AuditLog).count() == 1
