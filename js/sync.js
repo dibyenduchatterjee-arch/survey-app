@@ -222,6 +222,9 @@ export function syncOnce(fetchImpl = defaultFetch(), { store = defaultStore } = 
 
 const enc = encodeURIComponent;
 
+// A dataset's key on the device: its project and its name (two projects may share a name).
+export const datasetKey = (projectId, name) => `${projectId}/${name}`;
+
 // Downloads the caller's assigned forms, every dataset they can see and the client
 // config. Returns { forms, datasets, config, errors }; config is {} if it failed. Each form
 // version is stored under its own [form_id, version] key and nothing is ever
@@ -272,7 +275,9 @@ export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultSto
 
   // Phase 1 has no pulldata-style external lookups (a Phase 2 item), so nothing in
   // a spec says which datasets it needs. Take every dataset the caller can see.
-  let names = [];
+  // Two projects can each hold a dataset called "villages", so a dataset is always
+  // addressed, fetched and stored by project AND name.
+  let listed = [];
   try {
     const res = await authed('/api/datasets');
     if (res.status === 404 || res.status === 405) {
@@ -282,21 +287,30 @@ export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultSto
     } else {
       const body = await res.json();
       if (!Array.isArray(body)) throw new Error('dataset list was not a list');
-      names = body.map(d => (typeof d === 'string' ? d : d && d.name)).filter(n => typeof n === 'string' && DATASET_NAME.test(n));
+      for (const d of body) {
+        const name = d && d.name;
+        if (typeof name !== 'string' || !DATASET_NAME.test(name)) continue;
+        if (!Number.isSafeInteger(d.project_id) || d.project_id < 0) {
+          out.errors.push({ dataset: name, error: 'dataset listing has no project' });
+          continue;
+        }
+        listed.push({ projectId: d.project_id, name });
+      }
     }
   } catch (e) {
     out.errors.push({ dataset: '*', error: String((e && e.message) || e) });
   }
-  for (const name of names) {
+  for (const { projectId, name } of listed) {
+    const key = datasetKey(projectId, name);
     try {
-      const res = await authed(`/api/datasets/${enc(name)}`);
+      const res = await authed(`/api/datasets/${projectId}/${enc(name)}`);
       if (!res.ok) throw new Error(`dataset download failed (${res.status})`);
       const data = await res.json();
       if (!data || !Array.isArray(data.rows)) throw new Error('dataset had no rows');
-      await store.putDataset(name, data.rows);
-      out.datasets.push(name);
+      await store.putDataset(key, data.rows);
+      out.datasets.push(key);
     } catch (e) {
-      out.errors.push({ dataset: name, error: String((e && e.message) || e) });  // the old copy stays
+      out.errors.push({ dataset: key, error: String((e && e.message) || e) });  // the old copy stays
     }
   }
   return out;

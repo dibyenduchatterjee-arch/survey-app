@@ -695,10 +695,12 @@ function bootstrapRoutes(extra = {}) {
     'GET /api/forms/amb_asha_visit/versions/2026103101/spec': json(200, SPEC_V1),
     'GET /api/forms/anganwadi/versions/2026103001/spec': json(200, SPEC_F2),
     'GET /api/config': json(200, { max_media_bytes: 1048576 }),
-    'GET /api/datasets': json(200, [{ name: 'asha_list', version: 1 }, { name: 'blocks', version: 1 }, { name: 'centres', version: 3 }]),
-    'GET /api/datasets/asha_list': json(200, { name: 'asha_list', version: 1, rows: [{ id: '1', name: 'सीता' }] }),
-    'GET /api/datasets/blocks': json(200, { name: 'blocks', version: 1, rows: [{ a: '1' }] }),
-    'GET /api/datasets/centres': json(200, { name: 'centres', version: 3, rows: [{ c: 'x' }] }),
+    'GET /api/datasets': json(200, [
+      { name: 'asha_list', version: 1, project_id: 1 }, { name: 'blocks', version: 1, project_id: 1 }, { name: 'centres', version: 3, project_id: 2 },
+    ]),
+    'GET /api/datasets/1/asha_list': json(200, { name: 'asha_list', version: 1, project_id: 1, rows: [{ id: '1', name: 'सीता' }] }),
+    'GET /api/datasets/1/blocks': json(200, { name: 'blocks', version: 1, project_id: 1, rows: [{ a: '1' }] }),
+    'GET /api/datasets/2/centres': json(200, { name: 'centres', version: 3, project_id: 2, rows: [{ c: 'x' }] }),
     ...extra,
   };
 }
@@ -714,11 +716,11 @@ test("bootstrap stores every assigned form spec and its referenced datasets", as
   assert.ok(await store.getForm('amb_asha_visit', '2026103101'));
   assert.ok(await store.getForm('anganwadi', '2026103001'));
   assert.equal((await store.listForms()).length, 2, 'an unpublished form is not stored');
-  assert.equal((await store.getDataset('asha_list'))[0].name, 'सीता');
-  assert.ok(await store.getDataset('blocks'));
-  assert.ok(await store.getDataset('centres'));
+  assert.equal((await store.getDataset(sync.datasetKey(1, 'asha_list')))[0].name, 'सीता');
+  assert.ok(await store.getDataset(sync.datasetKey(1, 'blocks')));
+  assert.ok(await store.getDataset(sync.datasetKey(2, 'centres')));
   assert.equal(r.forms.length, 2);
-  assert.deepEqual([...r.datasets].sort(), ['asha_list', 'blocks', 'centres']);
+  assert.deepEqual([...r.datasets].sort(), ['1/asha_list', '1/blocks', '2/centres']);
   assert.deepEqual(r.errors, []);
 });
 
@@ -764,11 +766,11 @@ test("a draft started on an old version still reports that version on submit", a
 test("one failing dataset does not abort the rest and keeps the copy already on the device", async () => {
   const store = memStore();
   await loggedIn(store);
-  await store.putDataset('blocks', [{ a: 'old' }]);
-  const f = scriptedFetch(bootstrapRoutes({ 'GET /api/datasets/blocks': json(500, { detail: 'x' }) }));
+  await store.putDataset(sync.datasetKey(1, 'blocks'), [{ a: 'old' }]);
+  const f = scriptedFetch(bootstrapRoutes({ 'GET /api/datasets/1/blocks': json(500, { detail: 'x' }) }));
   const r = await sync.bootstrap(f, { store });
-  assert.deepEqual(await store.getDataset('blocks'), [{ a: 'old' }]);
-  assert.ok(await store.getDataset('asha_list'));
+  assert.deepEqual(await store.getDataset(sync.datasetKey(1, 'blocks')), [{ a: 'old' }]);
+  assert.ok(await store.getDataset(sync.datasetKey(1, 'asha_list')));
   assert.equal(r.errors.length, 1);
 });
 
@@ -801,11 +803,38 @@ test("bootstrap downloads every dataset the server lists, whatever the specs say
   const store = memStore();
   await loggedIn(store);
   const r = await sync.bootstrap(scriptedFetch(bootstrapRoutes({
-    'GET /api/datasets': json(200, [{ name: 'only_listed', version: 1 }]),
-    'GET /api/datasets/only_listed': json(200, { name: 'only_listed', version: 1, rows: [{ k: 'v' }] }),
+    'GET /api/datasets': json(200, [{ name: 'only_listed', version: 1, project_id: 4 }]),
+    'GET /api/datasets/4/only_listed': json(200, { name: 'only_listed', version: 1, project_id: 4, rows: [{ k: 'v' }] }),
   })), { store });
-  assert.deepEqual(r.datasets, ['only_listed']);
-  assert.deepEqual(await store.getDataset('only_listed'), [{ k: 'v' }]);
+  assert.deepEqual(r.datasets, ['4/only_listed']);
+  assert.deepEqual(await store.getDataset(sync.datasetKey(4, 'only_listed')), [{ k: 'v' }]);
+});
+
+test("two projects' datasets with the same name coexist on one device", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const f = scriptedFetch(bootstrapRoutes({
+    'GET /api/datasets': json(200, [
+      { name: 'villages', version: 1, project_id: 3 }, { name: 'villages', version: 7, project_id: 9 },
+    ]),
+    'GET /api/datasets/3/villages': json(200, { name: 'villages', version: 1, project_id: 3, rows: [{ v: 'three' }] }),
+    'GET /api/datasets/9/villages': json(200, { name: 'villages', version: 7, project_id: 9, rows: [{ v: 'nine' }] }),
+  }));
+  const r = await sync.bootstrap(f, { store });
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual([...r.datasets].sort(), ['3/villages', '9/villages']);
+  assert.deepEqual(await store.getDataset(sync.datasetKey(3, 'villages')), [{ v: 'three' }]);
+  assert.deepEqual(await store.getDataset(sync.datasetKey(9, 'villages')), [{ v: 'nine' }]);
+});
+
+test("a listed dataset with no usable project is skipped and reported, never fetched by name alone", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const r = await sync.bootstrap(scriptedFetch(bootstrapRoutes({
+    'GET /api/datasets': json(200, [{ name: 'villages', version: 1 }, { name: 'blocks', version: 1, project_id: 'x' }]),
+  })), { store });
+  assert.deepEqual(r.datasets, []);
+  assert.equal(r.errors.filter(e => e.dataset).length, 2);
 });
 
 test("a server with no dataset listing is reported, not fatal, and forms still download", async () => {
@@ -834,7 +863,7 @@ test("a config fetch failure is recorded and bootstrap carries on", async () => 
     assert.deepEqual(r.config, {});
     assert.ok(r.errors.some(e => e.config), 'config error should be recorded');
     assert.equal(r.forms.length, 2, 'forms must still download');
-    assert.ok(await store.getDataset('asha_list'), 'datasets must still download');
+    assert.ok(await store.getDataset(sync.datasetKey(1, 'asha_list')), 'datasets must still download');
   }
 });
 

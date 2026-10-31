@@ -489,7 +489,7 @@ function refreshServer({ forms, failList = false, failSpecFor = null, datasets =
     const m = u.match(/\/api\/forms\/([^/]+)\/versions\/([^/]+)\/spec$/);
     if (m) return m[1] === failSpecFor ? jsonRes(500, {}) : jsonRes(200, formSpec(m[1], m[2]));
     if (u.endsWith('/api/config')) return jsonRes(200, { max_media_bytes: 100000 });
-    if (u.endsWith('/api/datasets')) return jsonRes(200, datasets.map(name => ({ name })));
+    if (u.endsWith('/api/datasets')) return jsonRes(200, datasets.map(name => ({ name, version: 1, project_id: 1 })));
     if (/\/api\/datasets\//.test(u)) return jsonRes(200, { rows: [{ a: 1 }] });
     return jsonRes(404, {});
   };
