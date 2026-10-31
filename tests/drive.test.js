@@ -20,13 +20,13 @@ function rig(handler, extra = {}) {
 
 test("requests carry the bearer token", async () => {
   const { drive, calls } = rig(() => res({ files: [] }));
-  await drive.listProjects("ROOT");
+  await drive.listProjectsIn("ROOT");
   assert.equal(calls[0].headers.Authorization, "Bearer TOK");
 });
 
-test("listProjects returns only folders inside the root", async () => {
+test("listProjectsIn returns only folders inside the root", async () => {
   const { drive, calls } = rig(() => res({ files: [{ id: "p1", name: "Anaemia" }] }));
-  const out = await drive.listProjects("ROOT");
+  const out = await drive.listProjectsIn("ROOT");
   assert.deepEqual(out, [{ id: "p1", name: "Anaemia" }]);
   const q = new URL(calls[0].url).searchParams.get("q");
   assert.match(q, /'ROOT' in parents/);
@@ -59,7 +59,7 @@ test("readSpec fetches alt=media and parses JSON", async () => {
 
 test("a 429 is retried with exponential backoff, then succeeds", async () => {
   const { drive, calls, sleeps } = rig((c, i) => (i < 3 ? res({ error: {} }, 429) : res({ files: [] })), { jitter: () => 1 });
-  await drive.listProjects("ROOT");
+  await drive.listProjectsIn("ROOT");
   assert.equal(calls.length, 3);
   assert.equal(sleeps.length, 2);
   assert.ok(sleeps[1] >= sleeps[0] * 1.5, `backoff should grow: ${sleeps}`);
@@ -67,14 +67,14 @@ test("a 429 is retried with exponential backoff, then succeeds", async () => {
 
 test("5xx is retried, and gives up with a clear error after the limit", async () => {
   const { drive, calls } = rig(() => res({}, 503));
-  await assert.rejects(() => drive.listProjects("ROOT"), e => e instanceof DriveError && e.status === 503 && e.retryable === true);
+  await assert.rejects(() => drive.listProjectsIn("ROOT"), e => e instanceof DriveError && e.status === 503 && e.retryable === true);
   assert.equal(calls.length, 5); // 1 + 4 retries
 });
 
 test("a network failure is retried and then surfaced, not swallowed", async () => {
   let n = 0;
   const drive = createDrive({ fetchImpl: async () => { n++; throw new TypeError("Failed to fetch"); }, getToken: async () => "T", sleep: async () => {}, maxRetries: 2, baseDelayMs: 1 });
-  await assert.rejects(() => drive.listProjects("R"), e => e instanceof DriveError && e.retryable === true);
+  await assert.rejects(() => drive.listProjectsIn("R"), e => e instanceof DriveError && e.retryable === true);
   assert.equal(n, 3);
 });
 
@@ -169,4 +169,54 @@ test("values starting with = are kept literal (RAW input, no formula injection)"
   const { drive, calls } = rig(() => res({}));
   await drive.appendRow("S1", "t", ["=HYPERLINK(\"x\")"]);
   assert.match(calls[0].url, /valueInputOption=RAW/);
+});
+
+// ---- Picker-granted projects -------------------------------------------------------
+
+function memStore(initial) {
+  let s = initial;
+  return {
+    async getSession() { return s && structuredClone(s); },
+    async putSession(v) { s = structuredClone({ ...v, id: "current" }); },
+    peek: () => s,
+  };
+}
+
+test("addProject records the picked folder; listProjects then shows it; sign-in data is untouched", async () => {
+  const store = memStore({ google: { access_token: "x" } });
+  const drive = createDrive({ fetchImpl: async () => { throw new Error("no network"); }, getToken: async () => "TOK", store, pickFolder: async tok => { assert.equal(tok, "TOK"); return { id: "F1", name: "Anaemia" }; } });
+  assert.deepEqual(await drive.listProjects(), []);
+  assert.deepEqual(await drive.addProject(), { id: "F1", name: "Anaemia" });
+  assert.deepEqual(await drive.listProjects(), [{ id: "F1", name: "Anaemia" }]);
+  assert.equal(store.peek().google.access_token, "x");
+});
+
+test("picking the same folder twice lists it once; cancel adds nothing; remove works", async () => {
+  const store = memStore();
+  let next = { id: "F1", name: "A" };
+  const drive = createDrive({ getToken: async () => "T", store, pickFolder: async () => next });
+  await drive.addProject(); await drive.addProject();
+  assert.equal((await drive.listProjects()).length, 1);
+  next = null;
+  assert.equal(await drive.addProject(), null);
+  assert.equal((await drive.listProjects()).length, 1);
+  await drive.removeProject("F1");
+  assert.deepEqual(await drive.listProjects(), []);
+});
+
+test("a Picker failure is thrown, not swallowed, and records nothing", async () => {
+  const store = memStore();
+  const drive = createDrive({ getToken: async () => "T", store, pickFolder: async () => { throw new DriveError("offline", { retryable: true }); } });
+  await assert.rejects(() => drive.addProject(), /offline/);
+  assert.deepEqual(await drive.listProjects(), []);
+});
+
+test("findOrCreateSpreadsheet: if a racing phone also created one, the oldest wins", async () => {
+  let gets = 0;
+  const { drive, calls } = rig((c) => {
+    if (c.method === "GET") { gets++; return gets === 1 ? res({ files: [] }) : res({ files: [{ id: "OLD" }, { id: "MINE" }] }); }
+    return res({ id: "MINE" });
+  });
+  assert.equal(await drive.findOrCreateSpreadsheet("P1", "Data"), "OLD");
+  assert.match(decodeURIComponent(calls[0].url), /orderBy=createdTime/);
 });

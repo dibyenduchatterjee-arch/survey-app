@@ -1,18 +1,22 @@
-// Google sign-in for the browser app: OAuth 2.0 authorization code flow with PKCE.
+// Google sign-in for the browser app, using Google Identity Services (GIS), token model.
 //
-// Every person signs in as himself, so NO credential ships in the app. The OAuth client
-// id (webapp/config.js) is configuration, not a secret. This file never handles a client
-// secret, API key or embedded refresh token, and never uses the implicit flow.
+// Why GIS and not an authorization-code exchange: Google's token endpoint demands a client
+// secret from "Web application" clients, and a secret cannot ship in a browser app. The GIS
+// token model hands a browser client an access token with no secret at all. Every person
+// signs in as himself; the OAuth client id (webapp/config.js) is configuration, not a secret.
+//
+// CONSEQUENCE: there is NO refresh token. An access token lasts about an hour. When it has
+// expired, getAccessToken() asks GIS for a new one silently (works while the Google session
+// and prior consent still exist); if that is not possible, e.g. after a long offline stretch,
+// it throws an Error with code 'needs_signin' and the app asks the person to sign in again.
+// Nothing queued is touched by this: callers must keep submissions until a send succeeds.
 //
 // Scopes, and why they are this narrow:
-//   drive.file     Access only to files this app creates, or that the user explicitly opens
-//                  with it. Full `drive` would let a bug or a stolen token read the user's
-//                  entire Drive; drive.file cannot. It also keeps the consent screen out of
-//                  Google's "restricted scope" verification.
+//   drive.file     Only files the app creates, or folders/files the user explicitly picks
+//                  with the Google Picker. Full `drive` or `drive.readonly` would expose a
+//                  person's whole personal Drive; drive.file cannot.
 //   spreadsheets   Read and append rows in the data spreadsheet.
-//   openid email profile   Needed only to learn who signed in (email, display name).
-// KNOWN LIMIT: drive.file may not let the app list a folder that was merely shared WITH the
-// user, because the app did not create it. See the task report; the scope is not widened here.
+//   openid email profile   Only to learn who signed in.
 //
 // Tokens are kept in IndexedDB (db.js session store, under the `google` key), never localStorage.
 
@@ -24,26 +28,9 @@ export const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
 ];
 
-const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
-const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo';
 const EXPIRY_MARGIN_MS = 60 * 1000;
-
-function b64url(bytes) {
-  let s = '';
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function randomString(bytes = 32) {
-  return b64url(globalThis.crypto.getRandomValues(new Uint8Array(bytes)));
-}
-
-// RFC 7636 S256: BASE64URL(SHA256(ASCII(verifier))).
-export async function pkceChallenge(verifier) {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-  return b64url(new Uint8Array(digest));
-}
 
 function authError(code, message, cause) {
   const e = new Error(message);
@@ -60,25 +47,40 @@ async function loadConfig() {
   }
 }
 
-// Default interactive step: open Google's page in a popup and wait for it to come back to
-// redirectUri (same origin as the app, so its location becomes readable). Injectable for tests.
-function popupAuthorize(redirectUri) {
-  return url => new Promise((resolve, reject) => {
-    const w = window.open(url, 'evac-google-signin', 'width=500,height=650');
-    if (!w) { reject(authError('popup_blocked', 'The sign-in window was blocked. Allow pop-ups and try again.')); return; }
-    const timer = setInterval(() => {
-      let href = '';
-      try { href = w.location.href; } catch { return; } // still on accounts.google.com
-      if (href.startsWith(redirectUri)) { clearInterval(timer); try { w.close(); } catch { /* ignore */ } resolve(href); }
-      else if (w.closed) { clearInterval(timer); reject(authError('cancelled', 'Sign-in was cancelled.')); }
-    }, 300);
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (typeof document === 'undefined') { reject(authError('no_browser', 'Google sign-in needs a browser.')); return; }
+    if (document.querySelector(`script[src="${src}"]`) && globalThis.google && globalThis.google.accounts) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(authError('offline', 'Could not reach Google. Check the connection and try again.'));
+    document.head.appendChild(s);
   });
 }
 
-export function createGoogleAuth({ config, fetchImpl, store, authorize, now = () => Date.now() } = {}) {
+// Default token request: GIS popup. prompt '' = silent when consent already exists, 'consent' = ask.
+// Resolves {access_token, expires_in}. Injectable for tests.
+function gisRequestToken(cfg) {
+  return async ({ prompt }) => {
+    await loadScript(GIS_SRC);
+    return new Promise((resolve, reject) => {
+      const client = globalThis.google.accounts.oauth2.initTokenClient({
+        client_id: cfg.googleClientId,
+        scope: SCOPES.join(' '),
+        callback: r => (r.error ? reject(authError(r.error === 'access_denied' ? 'denied' : 'needs_signin', 'Google sign-in failed: ' + r.error)) : resolve(r)),
+        error_callback: e => reject(authError('needs_signin', 'Google sign-in needs you: ' + (e && e.type || 'popup closed'))),
+      });
+      client.requestAccessToken({ prompt });
+    });
+  };
+}
+
+export function createGoogleAuth({ config, fetchImpl, store, requestToken, now = () => Date.now() } = {}) {
   const f = (...a) => (fetchImpl || globalThis.fetch).apply(globalThis, a);
   const getConfig = async () => config || loadConfig();
   const getStore = async () => store || (await import('./db.js'));
+  const request = async opts => (requestToken || gisRequestToken(await getConfig()))(opts);
   let refreshing = null;
 
   async function readGoogle() {
@@ -94,89 +96,45 @@ export function createGoogleAuth({ config, fetchImpl, store, authorize, now = ()
     await s.putSession(next);
   }
 
-  async function postToken(params) {
-    const res = await f(TOKEN_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(params).toString(),
-    });
-    let body = {};
-    try { body = await res.json(); } catch { /* non-JSON error */ }
-    return { ok: res.ok, status: res.status, body };
-  }
-
   async function signIn() {
-    const cfg = await getConfig();
-    const verifier = randomString(48);          // 64 chars, stays in this closure only
-    const state = randomString(16);
-    const url = new URL(AUTH_ENDPOINT);
-    url.search = new URLSearchParams({
-      client_id: cfg.googleClientId,
-      redirect_uri: cfg.redirectUri,
-      response_type: 'code',
-      scope: SCOPES.join(' '),
-      state,
-      code_challenge: await pkceChallenge(verifier),
-      code_challenge_method: 'S256',
-      access_type: 'offline',
-      prompt: 'consent',
-    }).toString();
-
-    const back = await (authorize || popupAuthorize(cfg.redirectUri))(url.toString());
-    const q = new URL(back).searchParams;
-    if (q.get('error')) throw authError('denied', 'Google sign-in failed: ' + q.get('error'));
-    if (q.get('state') !== state) throw authError('bad_state', 'Sign-in response had the wrong state; try again.');
-    const code = q.get('code');
-    if (!code) throw authError('no_code', 'Sign-in did not return a code.');
-
-    const t = await postToken({
-      grant_type: 'authorization_code',
-      code,
-      client_id: cfg.googleClientId,
-      redirect_uri: cfg.redirectUri,
-      code_verifier: verifier,
-    });
-    if (!t.ok) throw authError('token_failed', `Google refused the sign-in (${t.status} ${t.body.error || ''}).`);
-
-    const info = await f(USERINFO_ENDPOINT, { headers: { Authorization: 'Bearer ' + t.body.access_token } });
+    const t = await request({ prompt: 'consent' });
+    if (!t || !t.access_token) throw authError('token_failed', 'Google did not return a token.');
+    const info = await f(USERINFO_ENDPOINT, { headers: { Authorization: 'Bearer ' + t.access_token } });
     if (!info.ok) throw authError('userinfo_failed', 'Could not read the signed-in user.');
     const u = await info.json();
     const user = { email: u.email, name: u.name || u.email };
-    await writeGoogle({
-      access_token: t.body.access_token,
-      refresh_token: t.body.refresh_token,
-      expires_at: now() + (t.body.expires_in || 3600) * 1000,
-      user,
-    });
-    return { email: user.email, name: user.name, accessToken: t.body.access_token };
+    await writeGoogle({ access_token: t.access_token, expires_at: now() + Number(t.expires_in || 3600) * 1000, user });
+    return { email: user.email, name: user.name, accessToken: t.access_token };
   }
 
-  async function refresh(g) {
-    const cfg = await getConfig();
-    const t = await postToken({ grant_type: 'refresh_token', refresh_token: g.refresh_token, client_id: cfg.googleClientId });
-    if (!t.ok) {
-      if (t.status === 400 || t.status === 401) {          // refresh token revoked or expired: permanent
-        await writeGoogle(null);
-        throw authError('needs_signin', 'Your Google sign-in has expired. Sign in again.');
-      }
-      throw authError('refresh_failed', `Could not refresh the Google sign-in (${t.status}). Try again.`);
+  async function renew(g) {
+    let t;
+    try { t = await request({ prompt: '' }); }
+    catch (e) {
+      if (e && e.code) throw e;
+      throw authError('needs_signin', 'Your Google sign-in has expired. Sign in again.', e);
     }
-    const next = { ...g, access_token: t.body.access_token, expires_at: now() + (t.body.expires_in || 3600) * 1000 };
-    if (t.body.refresh_token) next.refresh_token = t.body.refresh_token;
-    await writeGoogle(next);
-    return next.access_token;
+    if (!t || !t.access_token) throw authError('needs_signin', 'Your Google sign-in has expired. Sign in again.');
+    await writeGoogle({ ...g, access_token: t.access_token, expires_at: now() + Number(t.expires_in || 3600) * 1000 });
+    return t.access_token;
   }
 
   async function getAccessToken() {
     const g = await readGoogle();
     if (!g) throw authError('needs_signin', 'Not signed in.');
     if (g.access_token && g.expires_at - EXPIRY_MARGIN_MS > now()) return g.access_token;
-    if (!g.refresh_token) throw authError('needs_signin', 'Your Google sign-in has expired. Sign in again.');
-    if (!refreshing) refreshing = refresh(g).finally(() => { refreshing = null; });
+    if (!refreshing) refreshing = renew(g).finally(() => { refreshing = null; });
     return refreshing;
   }
 
-  async function signOut() { await writeGoogle(null); }
+  // Forgets the token and user but keeps everything else in the session record.
+  async function signOut() {
+    const g = await readGoogle();
+    if (g && g.access_token) {
+      try { globalThis.google && globalThis.google.accounts.oauth2.revoke(g.access_token, () => {}); } catch { /* best effort */ }
+    }
+    await writeGoogle(null);
+  }
 
   async function currentUser() {
     const g = await readGoogle();
