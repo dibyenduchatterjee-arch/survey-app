@@ -1,0 +1,21 @@
+{
+  "name": "Evidence Action Survey",
+  "short_name": "EvAc Survey",
+  "description": "Offline survey data collection for Evidence Action field teams.",
+  "lang": "hi",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#1f2937",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%231f2937'/%3E%3Ctext x='256' y='330' font-family='sans-serif' font-size='220' font-weight='700' text-anchor='middle' fill='%23ffffff'%3EEvAc%3C/text%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
