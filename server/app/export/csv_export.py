@@ -38,8 +38,10 @@ GEOPOINT   PINNED WIRE FORMAT: the ODK string "lat lon altitude accuracy", space
            A dict with lat/latitude, lon/lng/longitude, accuracy is also tolerated. No
            value (None or "") gives three blank cells: GPS not captured. Anything else -
            wrong token count, non-numeric, lat outside +-90, lon outside +-180, negative
-           accuracy - raises GeopointFormatError naming the submission and question,
-           never blank cells.
+           accuracy - is a malformed value: that submission's three cells are blank AND a
+           line (submission uuid, question, reason) goes into an extra `export_errors.txt`
+           entry of the returned dict, which exists only when something was malformed. One
+           bad coordinate never costs the other rows (the same rule as unreadable media).
 
 The repeat rows are read through the submissions' own session (the models carry no
 relationship), one query per 500 submissions. No web framework is imported here.
@@ -59,6 +61,7 @@ from app.db.models import RepeatRow, Submission, User
 from app.export.media import media_by_submission, media_name
 
 BOM = b"\xef\xbb\xbf"
+ERRORS_FILE = "export_errors.txt"
 _META = ["uuid", "submitted_by", "received_at", "status", "failures"]
 _DANGEROUS = ("=", "+", "-", "@", "\t", "\r")
 _NOT_COLUMNS = {"note", "repeat"}
@@ -143,7 +146,8 @@ def _coord(x: Any, lo: float, hi: float) -> str | None:
 
 
 def _geo(value: Any, where: str) -> list[str]:
-    """[lat, lon, accuracy]. No value at all is blank (no GPS captured); a malformed one raises."""
+    """[lat, lon, accuracy]. No value at all is blank (no GPS captured); a malformed one raises
+    GeopointFormatError, which _cells catches at the row level."""
     if value is None or value == "":
         return ["", "", ""]
     lat = lon = acc = None
@@ -165,12 +169,17 @@ def _geo(value: Any, where: str) -> list[str]:
     return [lat, lon, accuracy]
 
 
-def _cells(questions: list[dict], data: dict, media: dict[str, str], uuid: str) -> list[str]:
+def _cells(questions: list[dict], data: dict, media: dict[str, str], uuid: str,
+           errors: list[str]) -> list[str]:
     row: list[str] = []
     for q in questions:
         name = q["name"]
         if q["type"] == "geopoint":
-            row += _geo(data.get(name), f"submission {uuid}, question {name}")
+            try:
+                row += _geo(data.get(name), f"submission {uuid}, question {name}")
+            except GeopointFormatError as e:
+                errors.append(f"{uuid}\t{name}\t{e}")  # this row's GPS only: blank, listed, carry on
+                row += ["", "", ""]
         elif q["type"] in ("image", "audio", "video", "file"):
             row.append(media.get(name, ""))
         else:
@@ -243,13 +252,14 @@ def build_csvs(spec: dict, submissions: Sequence[Submission]) -> dict[str, bytes
     stored = _repeat_rows(submissions)
     media = media_by_submission(submissions)
     users = _usernames(submissions)
+    errors: list[str] = []
 
     main_rows: list[list[str]] = []
     for s in submissions:
         names = {m.question_name: media_name(s.uuid, m) for m in media[s.id]}
         main_rows.append(
             [s.uuid, _text(users.get(s.submitted_by, str(s.submitted_by))), _text(s.received_at), _text(s.status), _failures(s)]
-            + _cells(main_q, s.data_json or {}, names, s.uuid)
+            + _cells(main_q, s.data_json or {}, names, s.uuid, errors)
         )
     files = {f"{form_id}.csv": _encode(_META + _columns(main_q), main_rows)}
 
@@ -261,8 +271,12 @@ def build_csvs(spec: dict, submissions: Sequence[Submission]) -> dict[str, bytes
         for s in submissions:
             names = {m.question_name: media_name(s.uuid, m) for m in media[s.id]}
             for keys, data in _walk_rows(stored, s, path):
-                rows.append([s.uuid, *keys, *_cells(questions, data, names, s.uuid)])
+                rows.append([s.uuid, *keys, *_cells(questions, data, names, s.uuid, errors)])
         files[f"{form_id}_{'_'.join(path)}.csv"] = _encode(header, rows)
+    if errors:
+        head = "These values were malformed; their cells are blank in the CSVs.\n"
+        head += "submission_uuid\tquestion\treason\n"
+        files[ERRORS_FILE] = BOM + (head + "\n".join(errors) + "\n").encode("utf-8")
     return files
 
 

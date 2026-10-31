@@ -318,11 +318,20 @@ def test_submitted_by_is_the_username(spec, make):
 
 
 @pytest.mark.parametrize("bad", ["somewhere", "25.6", "a b", "25 85 1 2 3", "95 85", "25 190", "25 85 1 -2"])
-def test_a_malformed_geopoint_raises_rather_than_going_blank(spec, make, bad):
-    from app.export.csv_export import GeopointFormatError
+def test_a_malformed_geopoint_is_blank_and_listed_and_other_rows_survive(spec, make, bad):
+    good = make(U2, {"visit_location": "25.6 85.1 0 4", "asha_name": "Sunita"})
+    files = build_csvs(spec, [make(U1, {"visit_location": bad, "asha_name": "Rani"}), good])
+    rows = dicts(files[MAIN])
+    assert (rows[0]["visit_location_lat"], rows[0]["visit_location_lon"],
+            rows[0]["visit_location_accuracy"]) == ("", "", "")
+    assert rows[0]["asha_name"] == "Rani"  # the rest of the row is intact
+    assert (rows[1]["visit_location_lat"], rows[1]["asha_name"]) == ("25.6", "Sunita")
+    report = files["export_errors.txt"].decode("utf-8-sig")
+    assert U1 in report and "visit_location" in report and U2 not in report
 
-    with pytest.raises(GeopointFormatError, match=U1):
-        build_csvs(spec, [make(U1, {"visit_location": bad})])
+
+def test_no_error_file_when_every_geopoint_is_fine(spec, make):
+    assert "export_errors.txt" not in build_csvs(spec, [make(U1, {"visit_location": "25.6 85.1"})])
 
 
 def test_geopoint_without_altitude_or_accuracy_is_valid(spec, make):
