@@ -4,8 +4,8 @@ Token and password primitives live in app.core.security; this module only wires
 them to HTTP and the database.
 """
 
-import hashlib
 import ipaddress
+import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -18,11 +18,15 @@ from app.core.ratelimit import RateLimited, RateLimiter
 from app.core.security import (
     create_access_token,
     dummy_verify,
+    hash_refresh_token,
     new_refresh_token,
     verify_password,
 )
 from app.db.models import RefreshToken, User
 from app.db.session import get_session
+
+logger = logging.getLogger(__name__)
+_warned_unconfigured_proxy = False
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -69,13 +73,27 @@ class LoginResponse(TokenPair):
     user: UserOut
 
 
-def _hash_token(plain: str) -> str:
-    # Same digest new_refresh_token() stores; recomputed here to look a token up.
-    return hashlib.sha256(plain.encode()).hexdigest()
-
-
 def _unauthorized(detail: str) -> HTTPException:
     return HTTPException(status_code=401, detail=detail)
+
+
+def _warn_if_unconfigured_proxy(peer: str) -> None:
+    """Once per process: a private or loopback peer with trust off usually means a proxy."""
+    global _warned_unconfigured_proxy
+    if _warned_unconfigured_proxy:
+        return
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return
+    if addr.is_private or addr.is_loopback:
+        _warned_unconfigured_proxy = True
+        logger.warning(
+            "Requests are arriving from a private or loopback address while "
+            "TRUST_PROXY_HEADERS is off. If a reverse proxy (Caddy, nginx) sits in front, "
+            "every client is sharing one login rate-limit bucket. Set TRUST_PROXY_HEADERS=true "
+            "(and TRUSTED_PROXY_HOPS if more than one proxy) in the environment."
+        )
 
 
 def client_ip(request: Request, settings: Settings) -> str:
@@ -88,8 +106,11 @@ def client_ip(request: Request, settings: Settings) -> str:
     """
     peer = request.client.host if request.client else "unknown"
     if not settings.trust_proxy_headers:
+        _warn_if_unconfigured_proxy(peer)
         return peer
-    header = request.headers.get("x-forwarded-for")
+    # A proxy may add its entry as a separate header line (HAProxy forwardfor), so
+    # read every line, in order, as one list; get() would return only the first line.
+    header = ",".join(request.headers.getlist("x-forwarded-for"))
     if not header:
         return peer
     parts = [p.strip() for p in header.split(",")]
@@ -165,7 +186,7 @@ def login(
     else:
         # Unknown or deactivated: do the same amount of work, then fail the same way.
         ok = dummy_verify(body.password)
-    if not ok or user is None:
+    if user is None or not user.is_active or not ok:
         raise _unauthorized(_INVALID_CREDENTIALS)
 
     now = datetime.now(UTC)
@@ -190,9 +211,8 @@ def refresh(
     settings: Settings = Depends(get_settings),
 ) -> TokenPair:
     now = datetime.now(UTC)
-    row = db.scalar(
-        select(RefreshToken).where(RefreshToken.token_hash == _hash_token(body.refresh_token))
-    )
+    digest = hash_refresh_token(body.refresh_token)
+    row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == digest))
     if row is None:
         raise _unauthorized(_INVALID_REFRESH)
     if row.replaced_by is not None:
@@ -235,7 +255,7 @@ def logout(body: RefreshRequest, db: Session = Depends(get_session)) -> Response
     db.execute(
         update(RefreshToken)
         .where(
-            RefreshToken.token_hash == _hash_token(body.refresh_token),
+            RefreshToken.token_hash == hash_refresh_token(body.refresh_token),
             RefreshToken.revoked_at.is_(None),
         )
         .values(revoked_at=datetime.now(UTC))

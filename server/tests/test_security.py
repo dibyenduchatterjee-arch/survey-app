@@ -197,3 +197,11 @@ def test_refresh_token_is_stored_only_as_a_hash():
 
 def test_refresh_tokens_are_unique():
     assert new_refresh_token()[0] != new_refresh_token()[0]
+
+
+def test_hash_refresh_token_is_the_stored_digest():
+    from app.core.security import hash_refresh_token, new_refresh_token
+
+    plain, digest = new_refresh_token()
+    assert hash_refresh_token(plain) == digest
+    assert hash_refresh_token("a") != hash_refresh_token("b")

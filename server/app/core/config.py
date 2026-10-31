@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     trusted_proxy_hops: int = Field(default=1, ge=1)
     refresh_token_days: int = Field(default=30, ge=1)
     login_rate_limit_per_username: int = Field(default=5, ge=1)
-    login_rate_limit_per_ip: int = Field(default=20, ge=1)
+    login_rate_limit_per_ip: int = Field(default=60, ge=1)
     login_rate_limit_window_seconds: int = Field(default=900, ge=1)
 
     @field_validator("jwt_secret")

@@ -135,7 +135,15 @@ def decode_access_token(token: str, *, now: datetime | None = None) -> TokenClai
     return TokenClaims(user_id=int(sub), role=role, exp=exp)
 
 
+def hash_refresh_token(plaintext: str) -> str:
+    """The stored form of a refresh token (sha256 hex digest).
+
+    The only place the digest is defined: creation and lookup both go through here.
+    """
+    return hashlib.sha256(plaintext.encode()).hexdigest()
+
+
 def new_refresh_token() -> tuple[str, str]:
-    """Return (plaintext, sha256 hex digest). Store only the digest."""
+    """Return (plaintext, digest). Store only the digest."""
     plain = secrets.token_urlsafe(32)  # 43 chars, 256 bits
-    return plain, hashlib.sha256(plain.encode()).hexdigest()
+    return plain, hash_refresh_token(plain)

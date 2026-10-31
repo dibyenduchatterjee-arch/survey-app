@@ -163,8 +163,12 @@ def test_rate_limit_is_per_username_not_global(client, user_factory):
     assert login(client, "ram").status_code == 200
 
 
-def test_rate_limit_also_applies_per_ip_across_usernames(client, user_factory):
+def test_rate_limit_also_applies_per_ip_across_usernames(client, user_factory, monkeypatch):
     from app.api import auth
+    from app.core.ratelimit import RateLimiter
+
+    # a small limit keeps the argon2 work in this test short
+    monkeypatch.setattr(auth, "ip_limiter", RateLimiter(10, 900))
 
     user_factory()
     # one address spraying many different usernames
@@ -185,8 +189,12 @@ def test_successful_login_clears_the_username_counter(client, user_factory):
 # --- only failures count; success clears both counters -----------------------------
 
 
-def test_successful_logins_do_not_count_toward_either_limit(client, user_factory):
+def test_successful_logins_do_not_count_toward_either_limit(client, user_factory, monkeypatch):
     from app.api import auth
+    from app.core.ratelimit import RateLimiter
+
+    # a small limit keeps the argon2 work in this test short
+    monkeypatch.setattr(auth, "ip_limiter", RateLimiter(10, 900))
 
     user_factory()
     for _ in range(auth.ip_limiter.limit + 5):  # more than either limit
@@ -196,8 +204,12 @@ def test_successful_logins_do_not_count_toward_either_limit(client, user_factory
         assert login(client, password="bad").status_code == 401
 
 
-def test_successful_login_does_not_reset_the_ip_counter(client, user_factory):
+def test_successful_login_does_not_reset_the_ip_counter(client, user_factory, monkeypatch):
     from app.api import auth
+    from app.core.ratelimit import RateLimiter
+
+    # a small limit keeps the argon2 work in this test short
+    monkeypatch.setattr(auth, "ip_limiter", RateLimiter(10, 900))
 
     user_factory()
     limit = auth.ip_limiter.limit
@@ -213,7 +225,10 @@ def test_successful_login_does_not_reset_the_ip_counter(client, user_factory):
 
 class _Req:
     def __init__(self, xff=None, host="10.0.0.1"):
-        self.headers = {"x-forwarded-for": xff} if xff is not None else {}
+        from starlette.datastructures import Headers
+
+        raw = [(b"x-forwarded-for", xff.encode())] if xff is not None else []
+        self.headers = Headers(raw=raw)
         self.client = type("C", (), {"host": host})()
 
 
@@ -227,7 +242,7 @@ def test_proxy_settings_default_to_off():
     s = _settings()
     assert s.trust_proxy_headers is False and s.trusted_proxy_hops == 1
     assert (s.refresh_token_days, s.login_rate_limit_per_username) == (30, 5)
-    assert (s.login_rate_limit_per_ip, s.login_rate_limit_window_seconds) == (20, 900)
+    assert (s.login_rate_limit_per_ip, s.login_rate_limit_window_seconds) == (60, 900)
 
 
 def test_forwarded_header_is_ignored_when_trust_is_off():
@@ -267,8 +282,12 @@ def _trust_proxy(_client, **kw):
     app.dependency_overrides[get_settings] = lambda: _settings(trust_proxy_headers=True, **kw)
 
 
-def test_forged_left_most_forwarded_value_does_not_escape_the_ip_limit(client, user_factory):
+def test_forged_left_most_forwarded_value_does_not_escape_the_ip_limit(client, user_factory, monkeypatch):
     from app.api import auth
+    from app.core.ratelimit import RateLimiter
+
+    # a small limit keeps the argon2 work in this test short
+    monkeypatch.setattr(auth, "ip_limiter", RateLimiter(10, 900))
 
     user_factory()
     _trust_proxy(client)
@@ -288,8 +307,12 @@ def test_forged_left_most_forwarded_value_does_not_escape_the_ip_limit(client, u
     assert r.status_code == 429
 
 
-def test_different_real_clients_behind_the_proxy_get_separate_ip_buckets(client, user_factory):
+def test_different_real_clients_behind_the_proxy_get_separate_ip_buckets(client, user_factory, monkeypatch):
     from app.api import auth
+    from app.core.ratelimit import RateLimiter
+
+    # a small limit keeps the argon2 work in this test short
+    monkeypatch.setattr(auth, "ip_limiter", RateLimiter(10, 900))
 
     user_factory()
     _trust_proxy(client)
@@ -307,8 +330,12 @@ def test_different_real_clients_behind_the_proxy_get_separate_ip_buckets(client,
     assert other.status_code == 200
 
 
-def test_ip_limit_is_shared_when_trust_is_off_despite_varying_headers(client, user_factory):
+def test_ip_limit_is_shared_when_trust_is_off_despite_varying_headers(client, user_factory, monkeypatch):
     from app.api import auth
+    from app.core.ratelimit import RateLimiter
+
+    # a small limit keeps the argon2 work in this test short
+    monkeypatch.setattr(auth, "ip_limiter", RateLimiter(10, 900))
 
     user_factory()
     for i in range(auth.ip_limiter.limit):
@@ -334,3 +361,82 @@ def test_refresh_token_lifetime_follows_the_setting(client, user_factory, db):
     assert login(client).status_code == 200
     row = db.scalars(select(RefreshToken)).one()
     assert row.expires_at - row.issued_at == timedelta(days=7)
+
+
+# --- review fixes ------------------------------------------------------------------
+
+
+def test_every_forwarded_for_header_line_is_read_not_just_the_first(client, user_factory, monkeypatch):
+    from app.api import auth
+    from app.core.ratelimit import RateLimiter
+
+    monkeypatch.setattr(auth, "ip_limiter", RateLimiter(5, 900))
+    user_factory()
+    _trust_proxy(client)
+    # HAProxy-style: the attacker's line comes first, the proxy appends its own line.
+    # The trusted entry is on the LAST line, and the same for every request.
+    for i in range(5):
+        r = client.post(
+            "/api/auth/login",
+            json={"username": f"u{i}", "password": "x"},
+            headers=[("X-Forwarded-For", f"10.9.9.{i}"), ("X-Forwarded-For", "203.0.113.9")],
+        )
+        assert r.status_code == 401
+    r = client.post(
+        "/api/auth/login",
+        json={"username": "sita", "password": PASSWORD},
+        headers=[("X-Forwarded-For", "10.9.9.99"), ("X-Forwarded-For", "203.0.113.9")],
+    )
+    assert r.status_code == 429
+
+
+def test_client_ip_joins_separate_header_lines():
+    from app.api.auth import client_ip
+
+    class Headers:
+        def getlist(self, name):
+            return ["6.6.6.6", "203.0.113.9"]
+
+    req = _Req()
+    req.headers = Headers()
+    assert client_ip(req, _settings(trust_proxy_headers=True)) == "203.0.113.9"
+
+
+def test_warns_once_about_a_private_peer_when_proxy_trust_is_off(caplog):
+    import logging
+
+    from app.api import auth
+
+    auth._warned_unconfigured_proxy = False
+    with caplog.at_level(logging.WARNING, logger="app.api.auth"):
+        auth.client_ip(_Req(host="10.0.0.1"), _settings())
+        auth.client_ip(_Req(host="127.0.0.1"), _settings())
+    warnings = [r for r in caplog.records if "TRUST_PROXY_HEADERS" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "rate-limit bucket" in warnings[0].getMessage()
+
+
+def test_no_proxy_warning_for_a_public_peer_or_when_trust_is_on(caplog):
+    import logging
+
+    from app.api import auth
+
+    auth._warned_unconfigured_proxy = False
+    with caplog.at_level(logging.WARNING, logger="app.api.auth"):
+        auth.client_ip(_Req(host="8.8.8.8"), _settings())
+        auth.client_ip(_Req("203.0.113.9", host="10.0.0.1"), _settings(trust_proxy_headers=True))
+    assert not caplog.records
+
+
+def test_deactivated_user_runs_dummy_verify_and_is_refused_even_if_it_said_yes(
+    client, user_factory, monkeypatch
+):
+    from app.api import auth
+
+    user_factory(is_active=False)
+    calls = []
+    monkeypatch.setattr(auth, "dummy_verify", lambda p: calls.append(p) or True)
+    r = login(client)
+    assert calls == [PASSWORD]
+    assert r.status_code == 401
+    assert r.json() == login(client, "nobody", "x").json()
