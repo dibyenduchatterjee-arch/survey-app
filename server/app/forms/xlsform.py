@@ -36,7 +36,7 @@ def to_xform(xlsx_bytes: bytes) -> str:
         raise XLSFormError([msg, *warnings]) from e
     except Exception as e:  # not a spreadsheet, corrupt zip, wrong shape: never a stack trace
         raise XLSFormError(
-            [f"This file could not be read as an XLSForm (.xlsx) spreadsheet: {e}"]
+            ["This file could not be read as an XLSForm (.xlsx) spreadsheet."]
         ) from e
     finally:
         if path is not None:

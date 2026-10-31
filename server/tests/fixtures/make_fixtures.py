@@ -23,7 +23,7 @@ SURVEY_HEADER = [
     "hint::hi (Hindi)", "hint::en (English)",
     "required", "relevant", "constraint",
     "constraint_message::hi (Hindi)", "constraint_message::en (English)",
-    "calculation", "choice_filter", "appearance",
+    "calculation", "choice_filter", "appearance", "repeat_count",
 ]
 
 CHOICES_HEADER = ["list_name", "name", "label::hi (Hindi)", "label::en (English)", "district"]
@@ -80,11 +80,15 @@ CHOICES = [
     ["sex", "boy", "लड़का", "Boy", None],
     ["ifa_form", "syrup", "आई एफ ए सिरप", "IFA syrup", None],
     ["ifa_form", "pink", "आई एफ ए गुलाबी गोली", "IFA pink tablet", None],
+    ["symptom", "pallor", "हथेली या आँखें पीली", "Pale palms or eyes", None],
+    ["symptom", "fatigue", "जल्दी थक जाता है", "Tires easily", None],
+    ["symptom", "breathless", "साँस फूलना", "Breathlessness", None],
+    ["symptom", "none", "कोई लक्षण नहीं", "No symptoms", None],
     ["ifa_form", "blue", "आई एफ ए नीली गोली", "IFA blue tablet", None],
 ]
 
 
-def amb_asha_visit():
+def amb_asha_visit(out=HERE):
     survey = [
         _s(type="start", name="start"),
         _s(type="end", name="end"),
@@ -105,7 +109,7 @@ def amb_asha_visit():
            cmsg_hi="कृपया शून्य से दस के बीच की संख्या डालें",
            cmsg_en="Enter a number from 0 to 10"),
         _s(type="begin repeat", name="children", label_hi="बच्चों की सूची",
-           label_en="Children roster"),
+           label_en="Children roster", repeat_count="${household_children}"),
         _s(type="text", name="child_name", label_hi="बच्चे का नाम",
            label_en="Child's name", required="yes"),
         _s(type="select_one sex", name="child_sex", label_hi="बच्चे का लिंग",
@@ -121,8 +125,18 @@ def amb_asha_visit():
            calculation="int(${child_age_months} div 12)"),
         _s(type="select_one ifa_form", name="ifa_form",
            label_hi="बच्चे को कौन सी आई एफ ए दी जाती है?",
-           label_en="Which IFA does the child receive?",
-           relevant="${child_age_months} >= 6"),
+           label_en="Which IFA does the child receive?"),
+        _s(type="select_multiple symptom", name="symptoms",
+           label_hi="इस दौरे में बच्चे में कौन से लक्षण दिखे?",
+           label_en="Which symptoms were seen during this visit?"),
+        _s(type="text", name="referral_note",
+           label_hi="स्वास्थ्य केंद्र भेजने की वजह लिखें",
+           label_en="Write the reason for referral",
+           relevant="selected(${symptoms}, 'pallor')"),
+        _s(type="select_one yes_no", name="tablet_taken",
+           label_hi="क्या बच्चे ने इस हफ़्ते गोली खाई?",
+           label_en="Did the child take the tablet this week?",
+           relevant="${ifa_form} != 'syrup' and ${child_age_years} >= 3"),
         _s(type="select_one yes_no", name="syrup_given", required="yes",
            label_hi="क्या बच्चे को आई एफ ए सिरप पिलाया गया?",
            label_en="Was the child given IFA syrup?",
@@ -143,33 +157,37 @@ def amb_asha_visit():
         _s(type="note", name="summary_note",
            label_hi="धन्यवाद, यह दौरा पूरा हुआ", label_en="Thank you, visit complete"),
     ]
-    _write(HERE / "amb_asha_visit.xlsx", survey, CHOICES,
+    _write(out / "amb_asha_visit.xlsx", survey, CHOICES,
            ["Anemia Mukt Bihar - ASHA home visit", "amb_asha_visit",
             "2026103101", "hi (Hindi)"])
 
 
-def broken_missing_choices():
+def broken_missing_choices(out=HERE):
     survey = [
         _s(type="select_one district", name="district", label_hi="ज़िला",
            label_en="District"),
         _s(type="text", name="note_text", label_hi="टिप्पणी", label_en="Note"),
     ]
     # the choices sheet exists but has no `district` list
-    _write(HERE / "broken_missing_choices.xlsx", survey, list(YES_NO),
+    _write(out / "broken_missing_choices.xlsx", survey, list(YES_NO),
            ["Broken form", "broken_form", "1", "hi (Hindi)"])
 
 
-def amb_unsupported_expr():
+def amb_unsupported_expr(out=HERE):
     survey = [
         _s(type="text", name="asha_name", label_hi="आशा का नाम", label_en="ASHA name"),
         _s(type="calculate", name="initial", calculation="substr(${asha_name}, 0, 1)"),
     ]
-    _write(HERE / "amb_unsupported_expr.xlsx", survey, list(YES_NO),
+    _write(out / "amb_unsupported_expr.xlsx", survey, list(YES_NO),
            ["Unsupported expression", "amb_unsupported_expr", "1", "hi (Hindi)"])
 
 
+def build_all(out=HERE):
+    amb_asha_visit(out)
+    broken_missing_choices(out)
+    amb_unsupported_expr(out)
+
+
 if __name__ == "__main__":
-    amb_asha_visit()
-    broken_missing_choices()
-    amb_unsupported_expr()
+    build_all()
     print("fixtures written to", HERE)
