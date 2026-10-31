@@ -41,8 +41,12 @@ export function questionList(spec) {
   const body = flattenNodes(spec).map(({ node, depth }) => {
     const ch = node.choices_ref && spec.choices && spec.choices[node.choices_ref];
     const kids = node.children ? ' (' + node.children.length + ')' : '';
+    // Indent through the CSSOM, not a style="" attribute: the Content-Security-Policy has no
+    // style-src-attr 'unsafe-inline', and el.style.x is not an inline-style attribute to it.
+    const nameCell = h('td', { class: 'q-name' }, h('code', { text: node.name }));
+    nameCell.style.paddingLeft = `${0.6 + depth * 1.2}rem`;
     return h('tr', { class: 'q-' + node.type },
-      h('td', { class: 'q-name', style: `padding-left:${0.6 + depth * 1.2}rem` }, h('code', { text: node.name })),
+      nameCell,
       h('td', { text: node.type + kids }),
       h('td', { class: 'q-label', lang: 'hi', text: labelOf(node, spec) }),
       h('td', { text: [node.required ? 'required' : '', node.relevant ? 'conditional' : '', ch ? ch.length + ' choices' : ''].filter(Boolean).join(', ') }));
