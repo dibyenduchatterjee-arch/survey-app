@@ -1,0 +1,1505 @@
+[
+ {
+  "name": "ref_number",
+  "expr": "${age}",
+  "values": {
+   "age": 12
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 12
+ },
+ {
+  "name": "ref_string",
+  "expr": "${name}",
+  "values": {
+   "name": "Sunita"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "Sunita"
+ },
+ {
+  "name": "ref_missing_is_empty_string",
+  "expr": "${nothing}",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "note": "Unanswered and unknown fields are the empty string, never an error."
+ },
+ {
+  "name": "ref_null_is_empty_string",
+  "expr": "${a}",
+  "values": {
+   "a": null
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "current_value_in_range",
+  "expr": ". >= 6 and . <= 59",
+  "values": {},
+  "current": 24,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "current_value_out_of_range",
+  "expr": ". >= 6 and . <= 59",
+  "values": {},
+  "current": 60,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "current_unanswered_equals_empty",
+  "expr": ". = ''",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "age_range_inside",
+  "expr": "${age} >= 6 and ${age} <= 59",
+  "values": {
+   "age": 6
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "age_range_upper_edge",
+  "expr": "${age} >= 6 and ${age} <= 59",
+  "values": {
+   "age": 59
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "age_range_below",
+  "expr": "${age} >= 6 and ${age} <= 59",
+  "values": {
+   "age": 5
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "age_range_above",
+  "expr": "${age} >= 6 and ${age} <= 59",
+  "values": {
+   "age": 60
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "age_range_unanswered_null",
+  "expr": "${age} >= 6 and ${age} <= 59",
+  "values": {
+   "age": null
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "Unanswered fails every relational comparison: an unanswered age is not in range."
+ },
+ {
+  "name": "age_range_unanswered_empty_string",
+  "expr": "${age} >= 6 and ${age} <= 59",
+  "values": {
+   "age": ""
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "eq_number_vs_string_is_numeric",
+  "expr": "${age} = '6'",
+  "values": {
+   "age": 6
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "If either side is a number, both are compared as numbers."
+ },
+ {
+  "name": "eq_leading_zero_string_vs_number",
+  "expr": "${code} = 6",
+  "values": {
+   "code": "06"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "eq_strings_case_sensitive",
+  "expr": "${s} = 'Yes'",
+  "values": {
+   "s": "yes"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "eq_strings_equal",
+  "expr": "${s} = 'Yes'",
+  "values": {
+   "s": "Yes"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "neq_strings",
+  "expr": "${s} != 'a'",
+  "values": {
+   "s": "b"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "eq_unanswered_equals_empty_string",
+  "expr": "${a} = ''",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "eq_unanswered_not_equal_zero",
+  "expr": "${a} = 0",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "Unanswered is NaN as a number, so it equals no number, not even zero."
+ },
+ {
+  "name": "neq_unanswered_is_true_against_number",
+  "expr": "${a} != 5",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "NaN != anything is true. A skip rule written with != shows the question when the field is unanswered."
+ },
+ {
+  "name": "relational_is_numeric_not_lexicographic",
+  "expr": "${a} < 10",
+  "values": {
+   "a": "9"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "relational_non_numeric_string_greater",
+  "expr": "${a} > 1",
+  "values": {
+   "a": "abc"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "relational_non_numeric_string_less",
+  "expr": "${a} < 1",
+  "values": {
+   "a": "abc"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "eq_booleans",
+  "expr": "(${a} > 1) = (${b} > 1)",
+  "values": {
+   "a": 5,
+   "b": 7
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "eq_number_nan_is_false",
+  "expr": "number('x') = number('x')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "neq_number_nan_is_true",
+  "expr": "number('x') != number('x')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "and_binds_tighter_than_or",
+  "expr": "1 = 1 or 1 = 2 and 1 = 2",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "or_second_branch",
+  "expr": "${a} = 1 or ${b} = 1",
+  "values": {
+   "a": 0,
+   "b": 1
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "or_both_false",
+  "expr": "${a} = 1 or ${b} = 1",
+  "values": {
+   "a": 0,
+   "b": 0
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "not_true_becomes_false",
+  "expr": "not(${a} = 1)",
+  "values": {
+   "a": 1
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "not_false_becomes_true",
+  "expr": "not(${a} = 1)",
+  "values": {
+   "a": 2
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "not_empty_string_is_true",
+  "expr": "not(${a})",
+  "values": {
+   "a": ""
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "not_unanswered_is_true",
+  "expr": "not(${a})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "not_string_zero_is_false",
+  "expr": "not(${a})",
+  "values": {
+   "a": "0"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "The string '0' is a non-empty string, so it is truthy. Only the number 0 is falsy."
+ },
+ {
+  "name": "not_number_zero_is_true",
+  "expr": "not(${a})",
+  "values": {
+   "a": 0
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "and_returns_boolean_of_operands",
+  "expr": "${a} and ${b}",
+  "values": {
+   "a": "x",
+   "b": 3
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "and_empty_operand_is_false",
+  "expr": "${a} and ${b}",
+  "values": {
+   "a": "x",
+   "b": ""
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "add_and_multiply_precedence",
+  "expr": "${a} + ${b} * 2",
+  "values": {
+   "a": 3,
+   "b": 4
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 11
+ },
+ {
+  "name": "parentheses_override_precedence",
+  "expr": "(1 + 2) * 3",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 9
+ },
+ {
+  "name": "subtract_left_associative",
+  "expr": "10 - 3 - 2",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 5
+ },
+ {
+  "name": "div_keyword",
+  "expr": "${a} div 4",
+  "values": {
+   "a": 10
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 2.5
+ },
+ {
+  "name": "mod_keyword",
+  "expr": "7 mod 3",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1
+ },
+ {
+  "name": "mod_takes_sign_of_dividend",
+  "expr": "-7 mod 3",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": -1,
+  "note": "Truncated remainder like XPath and JavaScript, not Python's floored %."
+ },
+ {
+  "name": "unary_minus",
+  "expr": "-${a}",
+  "values": {
+   "a": 5
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": -5
+ },
+ {
+  "name": "hyphen_without_spaces_after_ref",
+  "expr": "${a}-1",
+  "values": {
+   "a": 5
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 4
+ },
+ {
+  "name": "decimal_literal_starting_with_dot",
+  "expr": ".5 + .25",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0.75
+ },
+ {
+  "name": "arithmetic_with_unanswered_is_nan",
+  "expr": "${a} + 1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN",
+  "note": "NaN results are written as the string 'NaN' in this corpus."
+ },
+ {
+  "name": "div_by_zero_is_nan",
+  "expr": "${a} div 0",
+  "values": {
+   "a": 5
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN",
+  "note": "XPath gives Infinity; we give NaN so no comparison on it can be true."
+ },
+ {
+  "name": "div_by_zero_makes_comparison_false",
+  "expr": "${a} div ${b} > 1",
+  "values": {
+   "a": 5,
+   "b": 0
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "div_by_unanswered_is_nan",
+  "expr": "${a} div ${b}",
+  "values": {
+   "a": 5
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "mod_by_zero_is_nan",
+  "expr": "5 mod 0",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "whitespace_is_insignificant",
+  "expr": "  ${a}   >=   6 ",
+  "values": {
+   "a": 7
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "string_literal_double_quotes",
+  "expr": "${a} = \"x\"",
+  "values": {
+   "a": "x"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "if_true_branch",
+  "expr": "if(${wt} > 0, ${wt} div 2, 0)",
+  "values": {
+   "wt": 9
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 4.5
+ },
+ {
+  "name": "if_false_branch",
+  "expr": "if(${wt} > 0, ${wt} div 2, 0)",
+  "values": {
+   "wt": 0
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "if_unanswered_takes_else",
+  "expr": "if(${wt} > 0, ${wt} div 2, 0)",
+  "values": {
+   "wt": null
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "if_returns_strings",
+  "expr": "if(${a} = 1, 'yes', 'no')",
+  "values": {
+   "a": 2
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "no"
+ },
+ {
+  "name": "coalesce_first_non_empty",
+  "expr": "coalesce(${a}, ${b}, 'x')",
+  "values": {
+   "a": "",
+   "b": 5
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 5
+ },
+ {
+  "name": "coalesce_all_empty",
+  "expr": "coalesce(${a}, ${b})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "coalesce_treats_nan_as_empty",
+  "expr": "coalesce(number(${a}), 0)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "coalesce_keeps_zero",
+  "expr": "coalesce(${a}, 9)",
+  "values": {
+   "a": 0
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0,
+  "note": "Zero is an answer, not an absence."
+ },
+ {
+  "name": "selected_present",
+  "expr": "selected(${symptoms}, 'pallor')",
+  "values": {
+   "symptoms": "pallor fatigue"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "selected_absent",
+  "expr": "selected(${symptoms}, 'pallor')",
+  "values": {
+   "symptoms": "fatigue"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "selected_whole_token_only",
+  "expr": "selected(${s}, 'pall')",
+  "values": {
+   "s": "pallor"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "selected_unanswered",
+  "expr": "selected(${s}, 'pallor')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "selected_ignores_extra_whitespace",
+  "expr": "selected(${s}, 'pallor')",
+  "values": {
+   "s": "  pallor   fatigue "
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "count_repeat_non_empty",
+  "expr": "count(${children}) > 0",
+  "values": {
+   "children": [
+    "c1",
+    "c2"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "count_repeat_empty",
+  "expr": "count(${children}) > 0",
+  "values": {
+   "children": []
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "count_repeat_missing",
+  "expr": "count(${children})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "count_repeat_rows",
+  "expr": "count(${children})",
+  "values": {
+   "children": [
+    "c1",
+    "c2"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 2
+ },
+ {
+  "name": "count_scalar_answered",
+  "expr": "count(${a})",
+  "values": {
+   "a": "x"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1
+ },
+ {
+  "name": "count_scalar_unanswered",
+  "expr": "count(${a})",
+  "values": {
+   "a": ""
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "count_selected_three",
+  "expr": "count-selected(${s})",
+  "values": {
+   "s": "a b c"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3
+ },
+ {
+  "name": "count_selected_unanswered",
+  "expr": "count-selected(${s})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "sum_numbers",
+  "expr": "sum(${w})",
+  "values": {
+   "w": [
+    1.5,
+    2,
+    3
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 6.5
+ },
+ {
+  "name": "sum_skips_unanswered_rows",
+  "expr": "sum(${w})",
+  "values": {
+   "w": [
+    1,
+    "",
+    null,
+    2
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3
+ },
+ {
+  "name": "sum_numeric_strings",
+  "expr": "sum(${w})",
+  "values": {
+   "w": [
+    "1",
+    "2"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3
+ },
+ {
+  "name": "sum_non_numeric_is_nan",
+  "expr": "sum(${w})",
+  "values": {
+   "w": [
+    1,
+    "abc"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "sum_empty_repeat",
+  "expr": "sum(${w})",
+  "values": {
+   "w": []
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "string_length_latin",
+  "expr": "string-length(${n})",
+  "values": {
+   "n": "Sunita"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 6
+ },
+ {
+  "name": "string_length_devanagari_counts_code_points",
+  "expr": "string-length(${n})",
+  "values": {
+   "n": "सुनीता"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 6,
+  "note": "Code points, not grapheme clusters. JavaScript must count code points ([...s].length), not UTF-16 units."
+ },
+ {
+  "name": "string_length_unanswered",
+  "expr": "string-length(${n})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "string_length_of_current",
+  "expr": "string-length(.) = 10",
+  "values": {},
+  "current": "9876543210",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_mobile_matches",
+  "expr": "regex(., '[6-9][0-9]{9}')",
+  "values": {},
+  "current": "9876543210",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_mobile_wrong_first_digit",
+  "expr": "regex(., '[6-9][0-9]{9}')",
+  "values": {},
+  "current": "1234567890",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_must_match_whole_string",
+  "expr": "regex(., '[6-9][0-9]{9}')",
+  "values": {},
+  "current": "98765432101",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_partial_match_is_false",
+  "expr": "regex(${a}, '[0-9]')",
+  "values": {
+   "a": "a1"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_unanswered_is_empty_string",
+  "expr": "regex(${a}, '[0-9]+')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_digit_class_is_ascii_only",
+  "expr": "regex(., '\\d+')",
+  "values": {},
+  "current": "१२३",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "\\d is ASCII 0-9 only, as in JavaScript. Devanagari digits do not match."
+ },
+ {
+  "name": "regex_alternation",
+  "expr": "regex(${a}, 'pink|blue')",
+  "values": {
+   "a": "blue"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "concat_values",
+  "expr": "concat(${a}, '-', ${b})",
+  "values": {
+   "a": "x",
+   "b": 5
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "x-5"
+ },
+ {
+  "name": "concat_number_formats",
+  "expr": "concat(2.5, ' ', 3, ' ', 1 div 4)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "2.5 3 0.25",
+  "note": "Whole numbers print without a decimal point."
+ },
+ {
+  "name": "concat_unanswered_is_empty",
+  "expr": "concat('a', ${x}, 'b')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "ab"
+ },
+ {
+  "name": "concat_boolean_is_true_false",
+  "expr": "concat('ok:', 1 = 1)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "ok:true"
+ },
+ {
+  "name": "concat_nan_prints_nan",
+  "expr": "concat('n=', ${x} + 1)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "n=NaN"
+ },
+ {
+  "name": "number_decimal_string",
+  "expr": "number('12.5')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 12.5
+ },
+ {
+  "name": "number_negative_string",
+  "expr": "number('-3')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": -3
+ },
+ {
+  "name": "number_trims_whitespace",
+  "expr": "number(' 7 ')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 7
+ },
+ {
+  "name": "number_non_numeric_is_nan",
+  "expr": "number('abc')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "number_empty_is_nan",
+  "expr": "number('')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "number_unanswered_is_nan",
+  "expr": "number(${a})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "number_rejects_exponent",
+  "expr": "number('1e3')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN",
+  "note": "XPath numbers have no exponent, plus sign, hex, inf or nan."
+ },
+ {
+  "name": "number_rejects_plus_sign",
+  "expr": "number('+5')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "number_of_true_is_one",
+  "expr": "number(1 = 1)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1
+ },
+ {
+  "name": "number_of_date_string_is_epoch_days",
+  "expr": "number('1970-01-11')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 10
+ },
+ {
+  "name": "number_of_current",
+  "expr": "number() + 1",
+  "values": {},
+  "current": "7",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 8
+ },
+ {
+  "name": "int_truncates_toward_zero",
+  "expr": "int(7.9)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 7
+ },
+ {
+  "name": "int_truncates_negative_toward_zero",
+  "expr": "int(-7.9)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": -7
+ },
+ {
+  "name": "int_of_string",
+  "expr": "int('3.7')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3
+ },
+ {
+  "name": "int_unanswered_is_nan",
+  "expr": "int(${a})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "today_is_server_supplied",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "2026-03-15"
+ },
+ {
+  "name": "today_is_the_utc_date",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T20:00:00-05:00",
+  "expect": "2026-03-16",
+  "note": "today() is the UTC calendar date of the supplied now. In India (UTC+5:30) it is therefore still yesterday from midnight until 05:30 local."
+ },
+ {
+  "name": "today_late_evening_utc_is_next_day_in_india",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T23:00:00+00:00",
+  "expect": "2026-03-15",
+  "note": "04:30 on 16 March in Bihar, yet today() is 15 March. Documented behaviour, not a bug to fix in one implementation only."
+ },
+ {
+  "name": "now_is_server_supplied",
+  "expr": "now()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "2026-03-15T09:30:00+00:00"
+ },
+ {
+  "name": "now_is_normalised_to_utc",
+  "expr": "now()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T20:00:00-05:00",
+  "expect": "2026-03-16T01:00:00+00:00"
+ },
+ {
+  "name": "date_difference_in_days",
+  "expr": "today() - ${dob}",
+  "values": {
+   "dob": "2026-03-05"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 10
+ },
+ {
+  "name": "date_not_in_future",
+  "expr": "${visit} <= today()",
+  "values": {
+   "visit": "2026-03-15"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "date_in_future_rejected",
+  "expr": "${visit} <= today()",
+  "values": {
+   "visit": "2026-03-16"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "date_equality_is_numeric",
+  "expr": "${d} = today()",
+  "values": {
+   "d": "2026-03-15"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "age_in_whole_months_from_dob",
+  "expr": "int((today() - ${dob}) div 30.4)",
+  "values": {
+   "dob": "2025-03-15"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 12
+ },
+ {
+  "name": "invalid_calendar_date_compares_false",
+  "expr": "${d} < today()",
+  "values": {
+   "d": "2026-02-30"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "datetime_before_now",
+  "expr": "${t} < now()",
+  "values": {
+   "t": "2026-03-15T09:00:00+00:00"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "datetime_other_offset",
+  "expr": "${t} < now()",
+  "values": {
+   "t": "2026-03-15T14:00:00+05:30"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "14:00+05:30 is 08:30 UTC, before 09:30 UTC."
+ },
+ {
+  "name": "naive_datetime_string_is_refused_not_guessed",
+  "expr": "${t} < now()",
+  "values": {
+   "t": "2026-03-15T09:00:00"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "A datetime with no offset is NaN, so every comparison is false."
+ },
+ {
+  "name": "position_defaults_to_one",
+  "expr": "position()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1
+ },
+ {
+  "name": "position_is_one_based",
+  "expr": "position()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3,
+  "repeat_index": 2
+ },
+ {
+  "name": "ref_in_repeat_reads_current_row",
+  "expr": "${age}",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 12,
+  "repeat_index": 2
+ },
+ {
+  "name": "ref_in_repeat_defaults_to_first_row",
+  "expr": "${age}",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 4
+ },
+ {
+  "name": "ref_in_repeat_past_the_end_is_empty",
+  "expr": "${age}",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "repeat_index": 7
+ },
+ {
+  "name": "indexed_repeat_second_row",
+  "expr": "indexed-repeat(${age}, ${children}, 2)",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 9
+ },
+ {
+  "name": "indexed_repeat_out_of_range",
+  "expr": "indexed-repeat(${age}, ${children}, 5)",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "indexed_repeat_index_zero",
+  "expr": "indexed-repeat(${age}, ${children}, 0)",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "indexed_repeat_with_position",
+  "expr": "indexed-repeat(${age}, ${children}, position())",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 9,
+  "repeat_index": 1
+ },
+ {
+  "name": "unsupported_instance_lookup",
+  "expr": "instance('x')/root/item[./name = ${a}]/label",
+  "unsupported": true,
+  "note": "Cascading-select lookups against a secondary instance are out of scope for Phase 1."
+ },
+ {
+  "name": "unsupported_unknown_function",
+  "expr": "format-date(${d}, '%Y')",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_true_function",
+  "expr": "true()",
+  "unsupported": true,
+  "note": "Deliberate: the supported function list is closed."
+ },
+ {
+  "name": "unsupported_absolute_path",
+  "expr": "/data/age > 5",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_bare_name",
+  "expr": "age > 5",
+  "unsupported": true,
+  "note": "A bare name is an XPath path. Fields must be written ${age}."
+ },
+ {
+  "name": "unsupported_group_path_reference",
+  "expr": "${grp/age} > 5",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_path_after_reference",
+  "expr": "${a}/b = 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_parent_axis",
+  "expr": "../age > 5",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_axis",
+  "expr": "self::node() = 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_union",
+  "expr": "${a} | ${b}",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_predicate",
+  "expr": "${a}[1] = 2",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_attribute",
+  "expr": "@id = 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_variable",
+  "expr": "$x > 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_double_equals",
+  "expr": "${a} == 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_not_without_parentheses",
+  "expr": "not ${a}",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_empty_expression",
+  "expr": "",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_blank_expression",
+  "expr": "   ",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_unterminated_string",
+  "expr": "${a} = 'x",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_unterminated_reference",
+  "expr": "${a > 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_unbalanced_parenthesis",
+  "expr": "(1 + 2",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_extra_closing_parenthesis",
+  "expr": "1 + 2)",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_trailing_operand",
+  "expr": "1 2",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_dangling_operator",
+  "expr": "1 +",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_wrong_arity_selected",
+  "expr": "selected(${a})",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_wrong_arity_today",
+  "expr": "today(1)",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_count_of_expression",
+  "expr": "count(1 + 1)",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_sum_of_expression",
+  "expr": "sum(${a} + 1)",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_regex_computed_pattern",
+  "expr": "regex(${a}, ${p})",
+  "unsupported": true,
+  "note": "The pattern must be a literal so it can be checked at publish time."
+ },
+ {
+  "name": "unsupported_regex_invalid_pattern",
+  "expr": "regex(${a}, '[')",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_regex_named_group",
+  "expr": "regex(${a}, '(?P<x>a)')",
+  "unsupported": true,
+  "note": "Python-only syntax would diverge from JavaScript."
+ },
+ {
+  "name": "unsupported_regex_lookbehind",
+  "expr": "regex(${a}, '(?<=a)b')",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_nesting_too_deep",
+  "expr": "((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_expression_too_long",
+  "expr": "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_number_glued_to_letters",
+  "expr": "1a > 0",
+  "unsupported": true
+ }
+]
