@@ -850,7 +850,7 @@
    }
   },
   {
-   "name": "quirk: hidden repeat keeps a calculate computed before it hid",
+   "name": "hidden repeat clears a calculate computed before it hid",
    "spec": "quirk",
    "now": "2026-10-31T09:00:00+05:30",
    "data": {
@@ -872,8 +872,7 @@
     "repeats": {
      "R": [
       {
-       "v": 3,
-       "rc": 6
+       "v": 3
       }
      ]
     }

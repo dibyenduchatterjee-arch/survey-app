@@ -270,7 +270,9 @@ class _Run:
                     not self.relevant(node, level, record=False):
                 # a hidden group or repeat: its calculates are unset. The error, if the
                 # expression failed, is recorded once, by walk().
-                changed = self.clear_calculates(node.get("children", []), level) or changed
+                # [node], not its children: a hidden repeat's calculates live in its rows,
+                # which clear_calculates reaches only when handed the repeat node itself.
+                changed = self.clear_calculates([node], level) or changed
                 continue
             if "calculate" in node:
                 new = None

@@ -295,3 +295,20 @@ def test_a_calculate_cleared_by_a_later_hiding_is_not_kept(spec):
     find(s["nodes"], "asha_name")["relevant"] = "${g_calc} > 0"
     data = {k: v for k, v in GOOD.items() if k != "asha_name"}
     assert validate_submission(s, data, {}, NOW) == []
+
+
+def test_a_calculate_in_a_hidden_repeats_rows_is_cleared_once_the_repeat_hides():
+    # R looks visible on pass 1 (gate is not computed yet), so rc is derived; gate then
+    # opens and hides R on pass 2. The calculate inside R's rows must be unset again.
+    from app.forms.validate import _Run
+
+    q = {"type": "integer", "name": "x"}
+    rep = {"type": "repeat", "name": "R", "relevant": "${gate} != 'open'", "children": [
+        {"type": "integer", "name": "v"},
+        {"type": "calculate", "name": "rc", "calculate": "${v} * 2"}]}
+    gate = {"type": "calculate", "name": "gate", "calculate": "if(${x} > 5, 'open', 'shut')"}
+    run = _Run({"nodes": [q, rep, gate], "choices": {}}, {"x": 8}, {"R": [{"v": 3}]},
+               datetime(2026, 10, 31, tzinfo=UTC))
+    run.settle()
+    assert run.top.own["gate"] == "open"
+    assert run.top_rows["R"] == [{"v": 3}]

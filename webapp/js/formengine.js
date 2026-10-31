@@ -13,6 +13,12 @@
 //      re-evaluated pass after pass until no value changes, at most (calculate instances
 //      + 1) passes. A calculate declared before its input would otherwise compute from an
 //      empty value and store a plausible wrong number silently.
+//   (Deliberate phone-only choices: isComplete() ignores rule "error" because the enumerator
+//   cannot fix a broken form and blocking her would strand field data; a calculate cycle
+//   becomes an "error" failure instead of the server's exception, safer on a phone, and
+//   unreachable in practice since compile.py refuses to publish a cyclic form;
+//   `repeat_count` is not enforced here or on the server (Phase 2); recompute runs from
+//   scratch like the server and is untimed at several hundred repeat rows.)
 //   2. A calculate under ANY node whose `relevant` is false (group or repeat, any depth),
 //      or whose own `relevant` is false, is not computed and its value is unset.
 //   3. RAW ANSWERS OF HIDDEN QUESTIONS ARE PRESERVED, never blanked. (The task brief said
@@ -536,8 +542,6 @@ export class FormEngine {
   }
 
   // Unset every calculate under a hidden node; true if any value was removed.
-  // (Ported as the server has it, see the report: for a hidden REPEAT this reaches the
-  // calculates of the repeat's own level, not those in its rows.)
   #clearCalculates(nodes, level) {
     let changed = false;
     for (const node of nodes) {
@@ -564,7 +568,7 @@ export class FormEngine {
       if (!isCalc && node.relevant && !this.#relevant(node, level, false, sink)) {
         // a hidden group or repeat: its calculates are unset. An error in its relevant
         // is recorded once, by the walk.
-        changed = this.#clearCalculates(node.children ?? [], level) || changed;
+        changed = this.#clearCalculates([node], level) || changed; // [node]: a hidden repeat's calculates live in its rows
         continue;
       }
       if (isCalc) {
