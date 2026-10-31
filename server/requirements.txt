@@ -72,6 +72,7 @@ tomli_w==1.2.0
 truststore==0.10.5
 typing-inspection==0.4.4
 typing_extensions==4.16.0
+tzdata==2026.6
 uritemplate==4.2.0
 urllib3==2.8.0
 uvicorn==0.54.0

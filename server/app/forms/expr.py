@@ -14,7 +14,7 @@ THE LOUD-FAILURE RULE
 SUPPORTED
     ${field}  .  literals 'text' "text" 12 3.5 .5
     or  and  = != < <= > >=  + - * div mod  unary -  ( )
-    not() selected() count() count-selected() sum() if() string-length() regex()
+    true() false() not() selected() count() count-selected() sum() if() string-length() regex()
     concat() number() int() today() now() coalesce() position() indexed-repeat()
     Precedence, lowest to highest: or, and, comparison, + -, * div mod, unary -.
     All binary operators are left-associative. `not` is a function, as in XPath.
@@ -40,8 +40,9 @@ TYPE RULES (every one of these is pinned by a case in the corpus)
       (XPath says Infinity; NaN keeps every later comparison false). mod keeps the
       sign of the dividend. Date arithmetic yields plain numbers of days:
       `today() - ${dob}` is an age in days.
-    * today() is the UTC calendar date of Context.now; now() is Context.now in UTC.
-      Between 00:00 and 05:30 in India that makes today() yesterday's date.
+    * today() is the calendar date of Context.now in Context.timezone (an IANA
+      name, default Asia/Kolkata), so a 05:00 IST visit is dated today. now() is the
+      instant, Context.now converted to UTC, whatever the timezone.
     * regex() must match the WHOLE string, uses ASCII classes (\\d is 0-9 only),
       and the pattern must be a string literal using only syntax JavaScript shares.
     * Repeats: `${f}` where f is a list reads row Context.repeat_index (0-based;
@@ -62,6 +63,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MAX_NODES = 200  # keeps the walker far from Python's recursion limit
 MAX_DEPTH = 50
@@ -85,8 +87,15 @@ class Context:
     current: Any
     now: datetime
     repeat_index: int = 0
+    # IANA zone that decides what "today" is. Mirrors Settings.form_timezone; the
+    # caller passes the setting in so this module stays free of app imports.
+    timezone: str = "Asia/Kolkata"
 
     def __post_init__(self) -> None:
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone {self.timezone!r}") from exc
         if not isinstance(self.now, datetime) or self.now.utcoffset() is None:
             raise ValueError("Context.now must be a timezone-aware datetime")
 
@@ -150,6 +159,8 @@ _FUNCTIONS: dict[str, tuple[int, int | None, tuple[int, ...]]] = {
     "concat": (1, None, ()),
     "number": (0, 1, ()),
     "int": (1, 1, ()),
+    "true": (0, 0, ()),
+    "false": (0, 0, ()),
     "today": (0, 0, ()),
     "now": (0, 0, ()),
     "coalesce": (1, None, ()),
@@ -589,7 +600,11 @@ def _call(node: Call, ctx: Context) -> Any:
         n = to_number(arg(0))
         return float(math.trunc(n)) if math.isfinite(n) else n
     if name == "today":
-        return ctx.now.astimezone(UTC).date()
+        return ctx.now.astimezone(ZoneInfo(ctx.timezone)).date()
+    if name == "true":
+        return True
+    if name == "false":
+        return False
     if name == "now":
         return ctx.now.astimezone(UTC)
     if name == "coalesce":

@@ -33,6 +33,7 @@ def _context(case):
         current=case.get("current"),
         now=datetime.fromisoformat(case["now"]),
         repeat_index=case.get("repeat_index", 0),
+        **({"timezone": case["timezone"]} if "timezone" in case else {}),
     )
 
 
@@ -61,7 +62,7 @@ def test_corpus_covers_every_supported_function():
     joined = " ".join(c["expr"] for c in CASES if not c.get("unsupported"))
     for fn in ("selected(", "count(", "count-selected(", "sum(", "if(", "string-length(",
                "regex(", "concat(", "number(", "int(", "today(", "now(", "coalesce(",
-               "position(", "indexed-repeat(", "not("):
+               "position(", "indexed-repeat(", "not(", "true(", "false("):
         assert fn in joined, fn
     for op in (" div ", " mod ", " and ", " or ", " != ", " <= ", " >= ", " + ", " * "):
         assert op in joined, op
@@ -108,3 +109,21 @@ def test_evaluator_does_not_use_eval_or_import_the_app():
 def test_naive_datetime_values_are_not_evaluated_as_a_clock():
     ctx = Context(values={"t": datetime(2026, 1, 1)}, current=None, now=datetime(2026, 1, 2, tzinfo=UTC))
     assert evaluate("${t} < now()", ctx) is False
+
+
+def test_an_unknown_timezone_is_refused():
+    with pytest.raises(ValueError):
+        Context(values={}, current=None, now=datetime(2026, 1, 1, tzinfo=UTC), timezone="Mars/Olympus")
+
+
+def test_context_timezone_default_matches_the_setting():
+    from app.core.config import Settings
+
+    ctx = Context(values={}, current=None, now=datetime(2026, 1, 1, tzinfo=UTC))
+    assert ctx.timezone == Settings().form_timezone == "Asia/Kolkata"
+
+
+def test_the_corpus_pins_the_timezone_boundary():
+    by_name = {c["name"]: c for c in CASES}
+    kolkata, utc = by_name["today_in_kolkata_after_midnight_local"], by_name["today_in_utc_is_still_yesterday"]
+    assert kolkata["now"] == utc["now"] and kolkata["expect"] != utc["expect"]

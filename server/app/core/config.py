@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # How many trusted proxies append to X-Forwarded-For; the client IP is the
     # entry that many places from the right-hand end.
     trusted_proxy_hops: int = Field(default=1, ge=1)
+    # IANA zone that decides what today() means in form expressions. Change it here
+    # for a deployment outside India.
+    form_timezone: str = "Asia/Kolkata"
     refresh_token_days: int = Field(default=30, ge=1)
     login_rate_limit_per_username: int = Field(default=5, ge=1)
     login_rate_limit_per_ip: int = Field(default=60, ge=1)

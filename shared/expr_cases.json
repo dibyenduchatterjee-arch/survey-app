@@ -1064,22 +1064,137 @@
   "expect": "2026-03-15"
  },
  {
-  "name": "today_is_the_utc_date",
+  "name": "today_defaults_to_kolkata",
   "expr": "today()",
   "values": {},
   "current": null,
-  "now": "2026-03-15T20:00:00-05:00",
+  "now": "2026-03-15T23:00:00+00:00",
   "expect": "2026-03-16",
-  "note": "today() is the UTC calendar date of the supplied now. In India (UTC+5:30) it is therefore still yesterday from midnight until 05:30 local."
+  "note": "No timezone field means Asia/Kolkata. The same instant is 15 March in UTC."
  },
  {
-  "name": "today_late_evening_utc_is_next_day_in_india",
+  "name": "today_in_kolkata_after_midnight_local",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T23:00:00+00:00",
+  "expect": "2026-03-16",
+  "timezone": "Asia/Kolkata"
+ },
+ {
+  "name": "today_in_utc_is_still_yesterday",
   "expr": "today()",
   "values": {},
   "current": null,
   "now": "2026-03-15T23:00:00+00:00",
   "expect": "2026-03-15",
-  "note": "04:30 on 16 March in Bihar, yet today() is 15 March. Documented behaviour, not a bug to fix in one implementation only."
+  "timezone": "UTC",
+  "note": "Same instant as the case above, different date: the timezone is what decides today()."
+ },
+ {
+  "name": "today_in_new_york_respects_dst",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-16T03:00:00+00:00",
+  "expect": "2026-03-15",
+  "timezone": "America/New_York",
+  "note": "EDT is UTC-4 from 8 March 2026, so 03:00 UTC is 23:00 on the 15th."
+ },
+ {
+  "name": "today_from_offset_now_uses_the_zone_not_the_offset",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T20:00:00-05:00",
+  "expect": "2026-03-16",
+  "timezone": "Asia/Kolkata"
+ },
+ {
+  "name": "early_morning_visit_today_passes_date_constraint",
+  "expr": "${visit} <= today()",
+  "values": {
+   "visit": "2026-03-16"
+  },
+  "current": null,
+  "now": "2026-03-15T23:30:00+00:00",
+  "expect": true,
+  "note": "A 05:00 IST home visit: the visit date is today and must be accepted."
+ },
+ {
+  "name": "early_morning_visit_today_fails_under_utc",
+  "expr": "${visit} <= today()",
+  "values": {
+   "visit": "2026-03-16"
+  },
+  "current": null,
+  "now": "2026-03-15T23:30:00+00:00",
+  "expect": false,
+  "timezone": "UTC"
+ },
+ {
+  "name": "now_ignores_timezone",
+  "expr": "now()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T23:00:00+00:00",
+  "expect": "2026-03-15T23:00:00+00:00",
+  "timezone": "Asia/Kolkata",
+  "note": "now() is always the UTC instant; only today() is local."
+ },
+ {
+  "name": "true_function",
+  "expr": "true()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "false_function",
+  "expr": "false()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "true_false_inside_if_true",
+  "expr": "if(${x} > 0, true(), false())",
+  "values": {
+   "x": 3
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "true_false_inside_if_false",
+  "expr": "if(${x} > 0, true(), false())",
+  "values": {
+   "x": 0
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "false_in_logic",
+  "expr": "false() or ${a} > 1 and true()",
+  "values": {
+   "a": 2
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "not_of_false",
+  "expr": "not(false())",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
  },
  {
   "name": "now_is_server_supplied",
@@ -1339,10 +1454,14 @@
   "unsupported": true
  },
  {
-  "name": "unsupported_true_function",
-  "expr": "true()",
-  "unsupported": true,
-  "note": "Deliberate: the supported function list is closed."
+  "name": "unsupported_true_with_argument",
+  "expr": "true(1)",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_true_without_parentheses",
+  "expr": "true",
+  "unsupported": true
  },
  {
   "name": "unsupported_absolute_path",
