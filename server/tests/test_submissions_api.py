@@ -7,11 +7,12 @@ import pytest
 from sqlalchemy import func, select
 from starlette.requests import Request
 
-from app.api import submissions
-from app.api.submissions import (
+from app.intake import submissions
+from app.intake.duplicates import likely_duplicates
+from app.intake.submissions import (
     IntakeRefused,
     MediaPart,
-    likely_duplicates,
+    resolve_form_version,
     store_submission,
 )
 from app.core.config import get_settings
@@ -126,7 +127,7 @@ def test_a_valid_submission_is_stored_with_its_repeat_rows_and_media(client, db,
     ]
     m = db.scalars(select(MediaFile)).one()
     assert (m.question_name, m.content_type, m.size) == ("household_photo", "image/jpeg", len(JPEG))
-    assert m.storage_path == f"{uid}/household_photo.jpg"
+    assert m.storage_path == f"{uid}/1.jpg"
     stored = (media_root / m.storage_path).read_bytes()
     assert stored != JPEG and JPEG[:8] not in stored  # encrypted at rest
     assert decrypt_bytes(stored) == JPEG
@@ -311,9 +312,9 @@ def test_media_is_not_written_under_a_client_supplied_name(client, db, form, enu
     m = db.scalars(select(MediaFile)).one()
     stored = media_root / m.storage_path
     assert ".." not in m.storage_path
-    assert stored.name == "household_photo.png"  # extension from the sniffed type
+    assert stored.name == "1.png"  # position + sniffed extension, no client string
     assert m.content_type == "image/png" and "evil" not in m.filename
-    assert [p.name for p in disk(media_root)] == ["household_photo.png"]
+    assert [p.name for p in disk(media_root)] == ["1.png"]
     assert stored.resolve().is_relative_to(media_root.resolve())
 
 
@@ -374,11 +375,13 @@ def test_a_media_write_failure_rolls_back_rows_and_earlier_files(db, form, enum,
     nothing_left(db, media_root)
 
 
-def test_an_unpublished_version_is_not_accepted(client, db, form, enum, media_root):
+def test_an_unpublished_but_known_version_is_stored_flagged_not_refused(client, db, form, enum, media_root):
     form["fv"].published_at = None
     db.commit()
-    assert post(client, enum, payload(form)[1]).status_code == 404
-    nothing_left(db, media_root)
+    r = post(client, enum, payload(form)[1])
+    assert r.status_code == 201 and r.json()["status"] == "flagged"
+    assert [(f["question"], f["rule"]) for f in r.json()["failures"]] == [("form_version", "error")]
+    assert _count(db, Submission) == 1 and _count(db, MediaFile) == 1 and len(disk(media_root)) == 1
 
 
 def test_an_unknown_form_is_404_for_staff_and_looks_like_unassigned_to_enumerators(client, db, form, enum):
@@ -387,6 +390,96 @@ def test_an_unknown_form_is_404_for_staff_and_looks_like_unassigned_to_enumerato
     files["submission"] = (None, json.dumps({**sub, "form_id": "nope"}), "application/json")
     assert post(client, form["sup"], files).status_code == 404
     assert post(client, enum, files).status_code == 403
+
+
+def test_unknown_version_is_refused_with_a_keep_on_device_code(client, db, form, enum, media_root):
+    _, files = payload(form)
+    sub = json.loads(files["submission"][1])
+    files["submission"] = (None, json.dumps({**sub, "version": "1999010101"}), "application/json")
+    r = post(client, form["sup"], files)
+    assert r.status_code == 404
+    assert r.json()["detail"] == {
+        "code": "form_version_unknown", "message": "Form or version not found", "retain_on_device": True}
+    nothing_left(db, media_root)
+
+
+@pytest.mark.parametrize(
+    "mutate,status,code",
+    [
+        (lambda d: {**d, "uuid": "nope"}, 422, "bad_uuid"),
+        (lambda d: {**d, "form_id": "nope"}, 403, "not_assigned"),
+    ],
+)
+def test_every_refusal_carries_a_code_and_says_keep_on_device(client, db, form, enum, media_root, mutate, status, code):
+    _, files = payload(form)
+    files["submission"] = (None, json.dumps(mutate(json.loads(files["submission"][1]))), "application/json")
+    r = post(client, enum, files)
+    assert r.status_code == status
+    assert r.json()["detail"]["code"] == code and r.json()["detail"]["retain_on_device"] is True
+
+
+def test_refusals_for_files_carry_codes_too(client, db, form, enum, media_root, monkeypatch):
+    monkeypatch.setattr(get_settings(), "max_media_bytes", 20)
+    assert post(client, enum, payload(form)[1]).json()["detail"]["code"] == "file_too_large"
+    monkeypatch.undo()
+    r = post(client, enum, payload(form, media={"household_photo": ("a.jpg", b"nope")})[1])
+    assert r.json()["detail"]["code"] == "file_type_mismatch"
+    r = post(client, enum, payload(form, media={"asha_name": ("a.jpg", JPEG)})[1])
+    assert r.json()["detail"]["code"] == "media_slot_unknown"
+
+
+def test_a_replay_still_gets_its_receipt_after_the_assignment_is_removed(client, db, form, enum):
+    _, files = payload(form)
+    first = post(client, enum, files)
+    assert first.status_code == 201
+    db.query(Assignment).filter_by(user_id=enum.id).delete()
+    db.commit()
+    again = post(client, enum, files)
+    assert again.status_code == 200 and again.json() == first.json()
+    # a NEW submission from the now-unassigned enumerator is still refused
+    assert post(client, enum, payload(form)[1]).status_code == 403
+    # and someone else's uuid is still a 409, not a leak
+    assert _count(db, Submission) == 1
+
+
+def test_resolve_form_version_masks_unknown_forms_for_enumerators(db, form, enum, user_factory):
+    fv = resolve_form_version(db, enum, form["form_id"], form["version"])
+    assert fv.id == form["fv"].id
+    for bad_form, bad_version in [("nope", "x"), (form["form_id"], "1999010101")]:
+        with pytest.raises(IntakeRefused) as e:
+            resolve_form_version(db, enum, bad_form, bad_version)
+        assert e.value.code in ("not_assigned", "form_version_unknown")
+    stranger = user_factory(username="stranger", role="enumerator")
+    with pytest.raises(IntakeRefused) as e:
+        resolve_form_version(db, stranger, form["form_id"], form["version"])
+    assert (e.value.status_code, e.value.code) == (403, "not_assigned")
+    with pytest.raises(IntakeRefused) as e:
+        resolve_form_version(db, form["sup"], "nope", "x")
+    assert (e.value.status_code, e.value.code) == (404, "form_version_unknown")
+
+
+def test_a_zero_byte_file_part_means_no_file_chosen(client, db, form, enum, media_root):
+    r = post(client, enum, payload(form, media={"household_photo": ("", b"")})[1])
+    assert r.status_code == 201 and r.json()["status"] == "received"
+    assert _count(db, Submission) == 1 and _count(db, MediaFile) == 0 and disk(media_root) == []
+
+
+def test_a_zero_byte_part_for_an_unknown_slot_is_ignored_and_a_real_photo_still_stores(client, db, form, enum):
+    r = post(client, enum, payload(form, media={"nonsense": ("", b""), "household_photo": ("p.jpg", JPEG)})[1])
+    assert r.status_code == 201
+    assert [m.question_name for m in db.scalars(select(MediaFile))] == ["household_photo"]
+
+
+def test_stored_names_never_contain_the_question_name(db, form, enum, media_root, monkeypatch):
+    names = ["CON", "a" * 140, "Photo", "photo"]  # reserved on Windows, very long, case-colliding
+    monkeypatch.setattr(submissions, "_media_questions", lambda spec: {n: "image" for n in names})
+    media = {n: MediaPart("x.jpg", JPEG + n.encode()) for n in names}
+    uid = str(uuidlib.uuid4())
+    store_submission(db, form["fv"], enum, GOOD, {}, media, uid, fake_request())
+    assert sorted(p.name for p in disk(media_root)) == ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]
+    rows = db.scalars(select(MediaFile).order_by(MediaFile.id)).all()
+    assert sorted(m.question_name for m in rows) == sorted(names)  # real name kept in the row
+    assert all(decrypt_bytes((media_root / m.storage_path).read_bytes()) == JPEG + m.question_name.encode() for m in rows)
 
 
 def test_malformed_bodies_are_refused_cleanly(client, db, form, enum, media_root):
@@ -611,7 +704,7 @@ def test_each_question_type_accepts_its_formats_by_sniffed_bytes(
         ("household_photo", MP3), ("household_photo", WEBM), ("household_photo", PDF),
         ("voice_note", JPEG), ("voice_note", PDF), ("voice_note", EXE),
         ("clip", OGG), ("clip", MP3), ("clip", WAV), ("clip", JPEG),
-        ("document", EXE), ("document", HTML), ("document", WEBM), ("document", b""),
+        ("document", EXE), ("document", HTML), ("document", WEBM),
     ],
 )
 def test_bytes_that_do_not_match_the_questions_declared_type_are_refused(
