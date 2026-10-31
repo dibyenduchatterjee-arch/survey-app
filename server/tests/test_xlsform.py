@@ -102,3 +102,58 @@ def test_committed_fixtures_match_the_generator(tmp_path):
         assert _cells(tmp_path / f"{name}.xlsx") == _cells(FIX / f"{name}.xlsx"), (
             f"{name}.xlsx is stale: re-run make_fixtures.py"
         )
+
+
+# ---- decompression bomb (review finding I-3) -----------------------------------------------
+
+
+def _zip_with(extra: dict[str, bytes], base: Path = FIXTURE) -> bytes:
+    import io
+    import zipfile
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(base.read_bytes())) as src, zipfile.ZipFile(
+        out, "w", zipfile.ZIP_DEFLATED
+    ) as dst:
+        for item in src.infolist():
+            dst.writestr(item, src.read(item))
+        for name, data in extra.items():
+            dst.writestr(name, data)
+    return out.getvalue()
+
+
+def test_a_small_upload_that_expands_past_the_cap_is_refused_before_it_is_read(monkeypatch):
+    import time
+
+    bomb = _zip_with({"xl/worksheets/filler.xml": b"0" * (60 * 1024 * 1024)})
+    assert len(bomb) < 300 * 1024  # a few hundred KB on the wire, 60 MB when opened
+
+    def must_not_run(**kw):
+        raise AssertionError("the converter was handed a decompression bomb")
+
+    monkeypatch.setattr("app.forms.xlsform.convert", must_not_run)
+    started = time.monotonic()
+    with pytest.raises(XLSFormError) as e:
+        to_xform(bomb)
+    assert time.monotonic() - started < 2
+    assert "too large once unpacked" in e.value.messages[0]
+
+
+def test_a_spreadsheet_with_too_many_entries_is_refused(monkeypatch):
+    many = _zip_with({f"xl/extra/{i}.xml": b"<a/>" for i in range(300)})
+    monkeypatch.setattr("app.forms.xlsform.convert", lambda **kw: (_ for _ in ()).throw(AssertionError))
+    with pytest.raises(XLSFormError) as e:
+        to_xform(many)
+    assert "too many parts" in e.value.messages[0]
+
+
+def test_a_single_entry_with_an_absurd_ratio_is_refused(monkeypatch):
+    dense = _zip_with({"xl/worksheets/dense.xml": b"0" * (8 * 1024 * 1024)})  # well under the total cap
+    monkeypatch.setattr("app.forms.xlsform.convert", lambda **kw: (_ for _ in ()).throw(AssertionError))
+    with pytest.raises(XLSFormError) as e:
+        to_xform(dense)
+    assert "compressed" in e.value.messages[0]
+
+
+def test_the_real_fixtures_pass_the_zip_checks():
+    assert "<h:html" in to_xform(FIXTURE.read_bytes())

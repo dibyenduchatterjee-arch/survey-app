@@ -400,3 +400,15 @@ def test_republishing_the_current_version_keeps_its_original_published_at(client
     assert _publish(client, h, body["form_id"], body["version"]).status_code == 200
     v = db.scalar(select(FormVersion))
     assert v.is_current and v.published_at == first
+
+
+def test_an_xlsform_zip_bomb_is_a_clear_422_and_stores_nothing(client, db, sup):
+    from test_xlsform import FIXTURE, _zip_with
+
+    _, h = sup
+    bomb = _zip_with({"xl/worksheets/filler.xml": b"0" * (60 * 1024 * 1024)}, FIXTURE)
+    r = client.post("/api/forms", files=_files("bomb.xlsx", bomb), headers=h)
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "invalid_xlsform"
+    assert "too large once unpacked" in r.text
+    assert _count(db, FormVersion) == 0 and _count(db, Form) == 0
