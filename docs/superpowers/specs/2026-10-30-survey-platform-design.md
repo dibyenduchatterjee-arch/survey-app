@@ -58,10 +58,19 @@ as a CSV in Evidence Action's Google Drive the same evening.
 | Scale | 50–500 enumerators, a few thousand submissions/day |
 | Authentication | Username + password |
 | Must-have in Phase 1 | Hindi + English labels, GPS, photo capture, pre-loaded data |
-| Build toolchain | **No Node.js.** Plain ES modules, no build step. |
+| Build toolchain | Node.js for **testing only**. The shipped PWA stays plain ES modules with no build step. |
 
-The machine has Python 3.14 and git; Node.js and Docker are not installed and the
-network stalls `winget`. The design avoids both.
+The machine has Python 3.14 and git. Docker is not installed and the network stalls
+`winget`, so the design avoids both. Node.js 26.13.0 LTS was installed from the
+official zip (checksum verified, no admin rights) at
+`%LOCALAPPDATA%\Programs\nodejs` and added to the user PATH.
+
+**Node's role is deliberately narrow.** It runs the JavaScript unit tests with the
+built-in `node --test` runner and serves static files during development. It is not
+a bundler, not a transpiler, and not a runtime dependency: the PWA ships as the same
+plain ES modules the browser loads directly, so deploying it means copying a folder.
+No `node_modules` is needed to run the system in production. This keeps deployment
+trivial while still giving the JavaScript side a real test-driven cycle.
 
 ---
 
@@ -113,6 +122,9 @@ survey-platform/
       auth.js             login, token storage, refresh
       i18n.js             Hindi / English label switching
     console/              admin pages (same origin, admin/supervisor only)
+    tests/                node --test suites + browser.html harness
+  shared/
+    expr_cases.json       one expression corpus, read by pytest and node --test
   docs/
   README.md
   ARCHITECTURE.md
@@ -129,8 +141,9 @@ survey-platform/
   at-rest encryption.
 - **google-api-python-client** for Drive and Sheets, authenticated with a service
   account whose key lives in an environment variable, never in the repo.
-- **Plain ES modules** in the PWA. No bundler, no npm. The server serves `webapp/`
-  as static files.
+- **Plain ES modules** in the PWA. No bundler, no runtime npm packages. The server
+  serves `webapp/` as static files. Node.js is present only to run `node --test`
+  and a dev file server.
 
 ---
 
@@ -228,7 +241,7 @@ multi-language `label::hi` / `label::en` columns.
 
 XForms expressions are a restricted XPath dialect. Phase 1 implements a documented
 subset, twice — `expr.py` on the server and `expr.js` in the browser — driven from
-one shared test-case file (`server/tests/expr_cases.json`) so the two cannot drift.
+one shared test-case file (`shared/expr_cases.json`) so the two cannot drift.
 
 Supported: `${field}` references, `.` (current value), comparison operators,
 `and`/`or`/`not()`, arithmetic, `selected()`, `count()`, `count-selected()`,
@@ -428,13 +441,16 @@ what was fixed, what remains open.
   `validate.py`, `csv_export.py`, `security.py`, `rbac.py`. Integration tests
   through FastAPI's `TestClient` for the whole path: upload a real XLSForm, publish,
   submit with media, export, and assert the CSV bytes.
-- **Expression parity:** `server/tests/expr_cases.json` holds expression, inputs and
-  expected result. `expr.py` is tested against it by pytest; `expr.js` is tested
-  against the same file by a test page loaded in the browser, whose results are read
-  back. Neither implementation may diverge.
-- **PWA:** a `webapp/tests/index.html` harness runs the IndexedDB, form-engine, sync
-  and i18n tests in a real browser — no Node, no jsdom. Driven and read back through
-  the built-in browser.
+- **Expression parity:** `shared/expr_cases.json` holds expression, inputs and
+  expected result. `expr.py` is tested against it by pytest and `expr.js` by
+  `node --test`, from the same file. Neither implementation may diverge, and adding
+  a case adds it to both suites at once.
+- **PWA logic:** `node --test webapp/tests/` covers the form engine, the expression
+  evaluator, i18n and the sync queue's retry and de-duplication logic. These are
+  pure functions and need no browser.
+- **PWA browser behaviour:** IndexedDB, the service worker, camera and geolocation
+  need a real browser. A `webapp/tests/browser.html` harness runs them, driven and
+  read back through the built-in browser pane.
 - **Offline behaviour:** tested by disabling the network in the browser pane mid-run,
   filling a form, re-enabling, and asserting the submission arrives exactly once.
 - Development follows test-driven development: the failing test first.
