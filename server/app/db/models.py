@@ -18,6 +18,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, object_session, relationship
@@ -47,12 +48,33 @@ class UTCDateTime(TypeDecorator):
         return value
 
 
+class DeviceDateTime(UTCDateTime):
+    """For device-reported timestamps (started_at / finished_at).
+
+    A phone with a wrong timezone setting can send a naive timestamp; rejecting it
+    would lose the submission. A naive value is therefore assumed to be UTC and
+    stored; it is never used for ordering or expiry.
+    """
+
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return super().process_bind_param(value, dialect)
+
+
 class Base(DeclarativeBase):
     type_annotation_map = {datetime: UTCDateTime()}
 
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('admin', 'supervisor', 'enumerator')", name="ck_users_role"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(150), unique=True)
@@ -94,6 +116,7 @@ class Form(Base):
 class FormVersion(Base):
     __tablename__ = "form_versions"
     __table_args__ = (
+        UniqueConstraint("form_id", "version", name="uq_form_versions_form_version"),
         # At most one current version per form, enforced by the database.
         Index(
             "uq_form_versions_one_current",
@@ -152,16 +175,18 @@ class Submission(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     # Idempotency key for the sync protocol: the database enforces it.
     uuid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    form_version_id: Mapped[int] = mapped_column(ForeignKey("form_versions.id"))
-    submitted_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    form_version_id: Mapped[int] = mapped_column(
+        ForeignKey("form_versions.id"), index=True
+    )
+    submitted_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     received_at: Mapped[datetime] = mapped_column(default=utcnow)  # server-set
     device_id: Mapped[str | None] = mapped_column(String(100))
-    started_at: Mapped[datetime | None]  # device-reported, stored as-is
-    finished_at: Mapped[datetime | None]  # device-reported, stored as-is
-    status: Mapped[str] = mapped_column(String(20), default="received")
+    started_at: Mapped[datetime | None] = mapped_column(DeviceDateTime)  # device-reported, stored as-is
+    finished_at: Mapped[datetime | None] = mapped_column(DeviceDateTime)  # device-reported, stored as-is
+    status: Mapped[str] = mapped_column(String(20), default="received", index=True)
     data_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     # Server-side validation failures; a failing submission is flagged, never dropped.
-    failures_json: Mapped[list[Any] | None] = mapped_column(JSON)
+    failures_json: Mapped[list[Any] | None] = mapped_column(JSON(none_as_null=True))
     gps_lat: Mapped[float | None] = mapped_column(Float)
     gps_lon: Mapped[float | None] = mapped_column(Float)
     gps_accuracy: Mapped[float | None] = mapped_column(Float)
@@ -169,9 +194,15 @@ class Submission(Base):
 
 class RepeatRow(Base):
     __tablename__ = "repeat_rows"
+    __table_args__ = (
+        # A retried submission must not double its repeat rows.
+        UniqueConstraint(
+            "submission_id", "repeat_name", "row_index", name="uq_repeat_rows_position"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id"))
+    submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id"), index=True)
     repeat_name: Mapped[str] = mapped_column(String(150))
     row_index: Mapped[int] = mapped_column(Integer)
     data_json: Mapped[dict[str, Any]] = mapped_column(JSON)
@@ -181,7 +212,7 @@ class MediaFile(Base):
     __tablename__ = "media_files"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id"))
+    submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id"), index=True)
     question_name: Mapped[str] = mapped_column(String(150))
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(100))
@@ -203,7 +234,7 @@ class AuditLog(Base):
     object_id: Mapped[str | None] = mapped_column(String(100))
     ip: Mapped[str | None] = mapped_column(String(64))
     user_agent: Mapped[str | None] = mapped_column(String(500))
-    detail_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    detail_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True))
 
 
 class ExportJob(Base):
