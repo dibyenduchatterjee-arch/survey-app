@@ -231,3 +231,67 @@ def test_inputs_are_not_mutated(spec):
     snap = copy.deepcopy((spec, data, reps))
     validate_submission(spec, data, reps, NOW)
     assert (spec, data, reps) == snap
+
+
+def test_a_forward_declared_gate_for_a_repeat_does_not_trip_the_cycle_guard(spec):
+    # children is gated on `gate`, declared AFTER it, and holds a reversed chain of
+    # calculates: several passes are needed and the first pass sees none of them.
+    s = copy.deepcopy(spec)
+    kids = find(s["nodes"], "children")
+    kids["relevant"] = "${gate} > 0"
+    kids["children"] += [
+        {"type": "calculate", "name": "c3", "calculate": "${c2} + 1"},
+        {"type": "calculate", "name": "c2", "calculate": "${c1} + 1"},
+        {"type": "calculate", "name": "c1", "calculate": "${child_age_years}"},
+    ]
+    s["nodes"].append({"type": "calculate", "name": "gate", "calculate": "${household_children}"})
+    note = find(s["nodes"], "referral_note")
+    note["relevant"], note["required"] = "${c3} > 0", True
+    f = validate_submission(s, GOOD, {"children": [row(child_age_months=48)]}, NOW)
+    assert pairs(f) == [("children[1]/referral_note", "required")]  # c3 = 4 + 2
+    # gate closed: the repeat is hidden, nothing in it is asked
+    assert validate_submission(s, {**GOOD, "household_children": 0}, {"children": [row()]}, NOW) == []
+
+
+def test_an_erroring_repeat_relevant_is_recorded_once(spec):
+    s = copy.deepcopy(spec)
+    find(s["nodes"], "children")["relevant"] = "bogus()"
+    f = validate_submission(s, GOOD, {"children": [row()]}, NOW)
+    assert pairs(f) == [("children", "error")]
+
+
+def test_an_erroring_nested_repeat_relevant_is_recorded_once_per_parent_row(spec):
+    s = copy.deepcopy(spec)
+    find(s["nodes"], "ifa_doses")["relevant"] = "bogus()"
+    f = validate_submission(s, GOOD, {"children": [row(), row()]}, NOW)
+    assert pairs(f) == [("children[1]/ifa_doses", "error"), ("children[2]/ifa_doses", "error")]
+
+
+def test_a_calculate_in_a_hidden_group_is_not_computed(spec):
+    s = copy.deepcopy(spec)
+    s["nodes"] = [
+        {"type": "group", "name": "grp", "relevant": "${household_children} > 5", "children": [
+            {"type": "calculate", "name": "g_calc", "calculate": "${household_children}"}]},
+        *s["nodes"],
+    ]
+    asha = find(s["nodes"], "asha_name")
+    asha["relevant"] = "${g_calc} > 0"
+    data = {k: v for k, v in GOOD.items() if k != "asha_name"}
+    assert validate_submission(s, data, {}, NOW) == []  # group hidden: g_calc unset, asha hidden
+    shown = validate_submission(s, {**data, "household_children": 7}, {}, NOW)
+    assert ("asha_name", "required") in pairs(shown)
+
+
+def test_a_calculate_cleared_by_a_later_hiding_is_not_kept(spec):
+    # `gate` is declared after the group it hides, so pass 1 computes g_calc while the
+    # group still looks visible (gate unset reads as "not hidden"); pass 2 must clear it.
+    s = copy.deepcopy(spec)
+    s["nodes"] = [
+        {"type": "group", "name": "grp", "relevant": "${gate} = 0 or ${gate} = ''", "children": [
+            {"type": "calculate", "name": "g_calc", "calculate": "${household_children}"}]},
+        *s["nodes"],
+        {"type": "calculate", "name": "gate", "calculate": "${household_children}"},
+    ]
+    find(s["nodes"], "asha_name")["relevant"] = "${g_calc} > 0"
+    data = {k: v for k, v in GOOD.items() if k != "asha_name"}
+    assert validate_submission(s, data, {}, NOW) == []

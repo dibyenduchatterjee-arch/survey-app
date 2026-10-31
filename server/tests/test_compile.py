@@ -286,11 +286,13 @@ def _with_calculates(*rows):
     wb = load_workbook(FIX / "amb_asha_visit.xlsx")
     ws = wb["survey"]
     header = [c.value for c in ws[1]]
-    for name, formula in rows:
+    for name, formula, *rest in rows:
         row = [None] * len(header)
-        row[header.index("type")] = "calculate"
+        row[header.index("type")] = rest[0] if rest else "calculate"
         row[header.index("name")] = name
         row[header.index("calculation")] = formula
+        if len(rest) > 1:
+            row[header.index("relevant")] = rest[1]
         ws.append(row)
     buf = io.BytesIO()
     wb.save(buf)
@@ -317,3 +319,24 @@ def test_a_longer_calculate_cycle_is_refused():
 def test_calculates_that_chain_without_a_cycle_compile(spec):
     out = compile_spec(_with_calculates(("late", "${early} + 1"), ("early", "${household_children}")))
     assert find(out["nodes"], "late")["calculate"] == "${early} + 1"
+
+
+def test_a_cycle_through_an_ancestor_relevant_is_refused():
+    # x sits in a group whose relevant reads y, and y reads x
+    with pytest.raises(FormCompileError, match="x -> y -> x"):
+        compile_spec(_with_calculates(
+            ("g", None, "begin group", "${y} > 0"),
+            ("x", "1"),
+            ("g_end", None, "end group"),
+            ("y", "${x}"),
+        ))
+
+
+def test_a_calculate_gated_by_a_later_calculate_through_a_group_is_not_a_cycle():
+    out = compile_spec(_with_calculates(
+        ("g", None, "begin group", "${y} > 0"),
+        ("x", "1"),
+        ("g_end", None, "end group"),
+        ("y", "${household_children}"),
+    ))
+    assert find(out["nodes"], "x")["calculate"] == "1"

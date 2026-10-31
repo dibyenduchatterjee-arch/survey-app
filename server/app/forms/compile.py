@@ -33,10 +33,14 @@ CHOICE FILTER
 
 CALCULATE CYCLES
     The dependency graph of the calculates (each one's `${field}` references in its
-    formula and its `relevant`, restricted to other calculates) must be acyclic, or
+    formula, its own `relevant` and the `relevant` of every group or repeat around it,
+    restricted to other calculates) must be acyclic, or
     compilation raises `FormCompileError` naming the fields in the cycle. Without this a
     cycle such as a = ${b} + 1, b = ${a} + 1 settles quietly at NaN on both the phone
     and the server. validate.py keeps its own CalculateCycleError as defence in depth.
+    A calculate that reads its OWN value (a = ${a} + 1) is a cycle and is refused, on
+    purpose: it is circular by definition. The ODK once() idiom for "compute once" needs
+    a function this evaluator does not support anyway. Do not "fix" this.
 
 LANGUAGES
     `languages` and `default_language` are never empty: a form with no itext
@@ -377,12 +381,15 @@ class _Compiler:
 _REF = re.compile(r"\$\{(" + _NAME + r")\}")
 
 
-def _calculates(nodes: list[dict], out: dict[str, set[str]] | None = None) -> dict[str, set[str]]:
+def _calculates(nodes: list[dict], inherited: str = "",
+                out: dict[str, set[str]] | None = None) -> dict[str, set[str]]:
+    """Calculate name -> field names its value depends on (formula, own and ancestor relevant)."""
     out = {} if out is None else out
     for n in nodes:
         if "calculate" in n:
-            out[n["name"]] = set(_REF.findall(n["calculate"] + " " + n.get("relevant", "")))
-        _calculates(n.get("children", []), out)
+            text = " ".join([n["calculate"], n.get("relevant", ""), inherited])
+            out[n["name"]] = set(_REF.findall(text))
+        _calculates(n.get("children", []), inherited + " " + n.get("relevant", ""), out)
     return out
 
 

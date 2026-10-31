@@ -32,14 +32,16 @@ CALCULATES are recomputed to a fixed point, so declaration order does not matter
 are re-evaluated pass after pass until no value changes, at most (calculates + 1) passes.
 Task 18's JavaScript engine MUST use the same rule so phone and server agree.
 
-HIDDEN NODES AND CROSS-ROW AGGREGATES (Task 18's engine must match this exactly)
-    * Neither a hidden question nor a hidden repeat's rows are blanked. Their raw
-      answers stay visible to other expressions, and to count()/sum() over a repeated
-      field, which see every row of the repeat whether or not the repeat is relevant.
-    * A hidden repeat's rows are skipped for calculation and validation, so their
-      calculates are left unset (a calculate whose own `relevant` is false is unset too).
-      If relevance flips between fixed-point passes, a value computed in an earlier pass
-      is cleared in the next pass the calculate is hidden, not kept.
+HIDDEN NODES AND CALCULATES (Task 18's engine must match this exactly)
+    * A calculate under ANY node whose `relevant` is false (group or repeat, any depth),
+      or whose own `relevant` is false, is not computed and its value is unset. This
+      is re-applied on every fixed-point pass, so a value computed while the node
+      looked visible is cleared once it is hidden. A supervisor never sees a computed
+      number derived from a section the enumerator could not see.
+    * Raw answers of hidden QUESTIONS are not blanked here: they stay visible to other
+      expressions and to count()/sum() over a repeated field, which see every row of
+      the repeat whether or not it is relevant. (The offline app clears a hidden answer
+      before submit, so in practice this only matters for a modified client.)
     Deferred: whether aggregates should exclude hidden rows. Not changed, only recorded.
 
 EVALUATION-TIME ERRORS never escape as exceptions (a crash here would be a 500 and a
@@ -157,7 +159,6 @@ class _Run:
         self.top_rows = {k: _rows(v) for k, v in repeats.items()}
         self.top_repeats = self._top_repeats(self.nodes)
         self.top = _Level(dict(data), {}, 0, "")
-        self.evaluated = 0
 
     def _top_repeats(self, nodes: list[dict]) -> list[dict]:
         found = []
@@ -227,12 +228,44 @@ class _Run:
         return None
 
     # ---- calculates, to a fixed point
+    def count_calculates(self, nodes: list[dict], own: dict, top: bool) -> int:
+        """Every calculate instance in the form, relevant or not: one per node per row."""
+        total = 0
+        for n in nodes:
+            if "calculate" in n:
+                total += 1
+            elif n["type"] == "group":
+                total += self.count_calculates(n.get("children", []), own, top)
+            elif n["type"] == "repeat":
+                rows = self.top_rows.get(n["name"], []) if top else own.get(n["name"], [])
+                for row in rows:
+                    total += self.count_calculates(n.get("children", []), row, False)
+        return total
+
+    def clear_calculates(self, nodes: list[dict], level: _Level) -> bool:
+        """Unset every calculate under a hidden node; True if any value was removed."""
+        changed = False
+        for node in nodes:
+            if "calculate" in node:
+                changed = level.own.pop(node["name"], None) is not None or changed
+            elif node["type"] == "group":
+                changed = self.clear_calculates(node.get("children", []), level) or changed
+            elif node["type"] == "repeat":
+                for child in self.children(node, level):
+                    changed = self.clear_calculates(node.get("children", []), child) or changed
+        return changed
+
     def calc_pass(self, nodes: list[dict], level: _Level, record: bool) -> bool:
         changed = False
         for node in nodes:
             name = node["name"]
+            if "calculate" not in node and node.get("relevant") and \
+                    not self.relevant(node, level, record=False):
+                # a hidden group or repeat: its calculates are unset. The error, if the
+                # expression failed, is recorded once, by walk().
+                changed = self.clear_calculates(node.get("children", []), level) or changed
+                continue
             if "calculate" in node:
-                self.evaluated += 1
                 new = None
                 if not node.get("relevant") or self.relevant(node, level, record):
                     try:
@@ -250,8 +283,6 @@ class _Run:
             elif node["type"] == "group":
                 changed = self.calc_pass(node.get("children", []), level, record) or changed
             elif node["type"] == "repeat":
-                if node.get("relevant") and not self.relevant(node, level, record):
-                    continue
                 for child in self.children(node, level):
                     changed = self.calc_pass(node.get("children", []), child, record) or changed
         return changed
@@ -259,13 +290,14 @@ class _Run:
     def settle(self) -> None:
         """Recompute every calculate until nothing changes, so declaration order is irrelevant.
 
-        (calculates evaluated in the first pass) + 1 passes are enough for any acyclic
-        form; needing more means a cycle, which raises.
+        (calculate instances in the whole form, rows included, hidden or not) + 1 passes
+        are enough for any acyclic form, however late a gating calculate is declared;
+        needing more means a cycle, which raises.
         """
         self.prepare(self.nodes, self.top.own, True)
-        self.evaluated = 0
         changed = self.calc_pass(self.nodes, self.top, False)
-        budget, passes = self.evaluated + 1, 1
+        budget = self.count_calculates(self.nodes, self.top.own, True) + 1
+        passes = 1
         while changed:
             if passes >= budget:
                 raise CalculateCycleError(
