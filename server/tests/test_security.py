@@ -3,11 +3,13 @@ from datetime import UTC, datetime, timedelta
 import jwt
 import pytest
 
+from app.core import security
 from app.core.config import get_settings
 from app.core.security import (
     TokenExpired,
     TokenInvalid,
     create_access_token,
+    dummy_verify,
     decode_access_token,
     hash_password,
     new_refresh_token,
@@ -81,32 +83,35 @@ def test_expired_token_is_rejected_when_issued_in_the_past():
         decode_access_token(tok)
 
 
+def _assert_invalid_not_expired(token: str, **kw) -> TokenInvalid:
+    """The token must be refused as invalid, not misclassified as merely expired."""
+    with pytest.raises(TokenInvalid) as e:
+        decode_access_token(token, **kw)
+    assert not isinstance(e.value, TokenExpired)
+    return e.value
+
+
 def test_token_signed_with_another_secret_is_rejected():
     now = datetime.now(UTC)
     payload = _payload(now)
     # Control: identical claims signed with the real secret are accepted, so the
     # failure below can only come from signature verification.
     assert decode_access_token(jwt.encode(payload, _secret(), algorithm="HS256")).user_id == 7
-    with pytest.raises(TokenInvalid):
-        decode_access_token(jwt.encode(payload, OTHER_SECRET, algorithm="HS256"))
+    _assert_invalid_not_expired(jwt.encode(payload, OTHER_SECRET, algorithm="HS256"))
 
 
 def test_unsigned_alg_none_token_is_rejected():
-    forged = jwt.encode(_payload(datetime.now(UTC)), None, algorithm="none")
-    with pytest.raises(TokenInvalid):
-        decode_access_token(forged)
+    _assert_invalid_not_expired(jwt.encode(_payload(datetime.now(UTC)), None, algorithm="none"))
 
 
 def test_other_hmac_algorithm_is_rejected():
     tok = jwt.encode(_payload(datetime.now(UTC)), _secret(), algorithm="HS384")
-    with pytest.raises(TokenInvalid):
-        decode_access_token(tok)
+    _assert_invalid_not_expired(tok)
 
 
 @pytest.mark.parametrize("bad", ["", "garbage", "a.b.c"])
 def test_malformed_token_is_rejected(bad):
-    with pytest.raises(TokenInvalid):
-        decode_access_token(bad)
+    _assert_invalid_not_expired(bad)
 
 
 @pytest.mark.parametrize(
@@ -116,21 +121,72 @@ def test_malformed_token_is_rejected(bad):
         lambda p: p.pop("sub"),
         lambda p: p.pop("role"),
         lambda p: p.update(sub="abc"),
+        lambda p: p.update(sub=7),
+        lambda p: p.update(sub="+7"),
+        lambda p: p.update(sub=" 7 "),
+        lambda p: p.update(sub="1_0"),
+        lambda p: p.update(sub="-7"),
+        lambda p: p.update(sub="07"),
+        lambda p: p.update(sub="٧"),  # Arabic-Indic digit seven
         lambda p: p.update(role=5),
     ],
 )
 def test_validly_signed_token_with_bad_claims_is_rejected(mutate):
     p = _payload(datetime.now(UTC))
     mutate(p)
-    with pytest.raises(TokenInvalid):
-        decode_access_token(jwt.encode(p, _secret(), algorithm="HS256"))
+    _assert_invalid_not_expired(jwt.encode(p, _secret(), algorithm="HS256"))
+
+
+def test_decodes_with_now_beyond_the_real_clock_for_a_future_issued_token():
+    # Both sides are driven by the injected clock; PyJWT's wall-clock iat/nbf
+    # checks must not interfere.
+    future = datetime.now(UTC) + timedelta(days=30)
+    tok = create_access_token(7, "admin", now=future)
+    assert decode_access_token(tok, now=future + timedelta(minutes=1)).user_id == 7
+
+
+def test_token_issued_slightly_in_the_future_is_not_rejected_for_skew():
+    now = datetime.now(UTC)
+    tok = jwt.encode(_payload(now, iat=int((now + timedelta(seconds=30)).timestamp())), _secret(), algorithm="HS256")
+    assert decode_access_token(tok, now=now).user_id == 7
+
+
+def test_expiry_is_inclusive_at_the_exact_boundary():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    tok = create_access_token(7, "admin", now=now)
+    exp = now + timedelta(minutes=15)
+    with pytest.raises(TokenExpired):
+        decode_access_token(tok, now=exp)
+    decode_access_token(tok, now=exp - timedelta(seconds=1))
+
+
+def test_naive_now_is_refused_with_a_clear_error():
+    naive = datetime(2026, 1, 1, 12, 0)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        create_access_token(7, "admin", now=naive)
+    tok = create_access_token(7, "admin")
+    with pytest.raises(ValueError, match="timezone-aware"):
+        decode_access_token(tok, now=naive)
 
 
 def test_errors_do_not_leak_the_token():
     tok = jwt.encode(_payload(datetime.now(UTC)), OTHER_SECRET, algorithm="HS256")
-    with pytest.raises(TokenInvalid) as e:
-        decode_access_token(tok)
-    assert tok not in str(e.value) and OTHER_SECRET not in str(e.value)
+    for bad in (tok, "garbage"):
+        err = _assert_invalid_not_expired(bad)
+        assert str(err) == "invalid token"
+        assert err.__cause__ is None
+        assert bad not in str(err) and OTHER_SECRET not in str(err)
+
+
+def test_dummy_verify_always_false_and_runs_a_real_argon2_check(monkeypatch):
+    calls = []
+    real = security.verify_password
+    monkeypatch.setattr(
+        security, "verify_password", lambda p, h: calls.append(h) or real(p, h)
+    )
+    assert dummy_verify("whatever") is False
+    assert calls == [security._DUMMY_HASH]
+    assert security._DUMMY_HASH.startswith("$argon2id$")
 
 
 def test_refresh_token_is_stored_only_as_a_hash():

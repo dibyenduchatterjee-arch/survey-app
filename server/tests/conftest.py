@@ -7,9 +7,10 @@ import pytest
 # Make `app` importable when pytest is run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Test-only secrets; set before the app is imported so Settings validates.
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-not-for-production-use-0123456789-abcdefghijklmnop")
-os.environ.setdefault("MEDIA_KEY", "test-media-key-not-for-production")
+# Test-only secrets, set unconditionally so a real secret in the developer's
+# shell can never leak into a test run; set before the app is imported so Settings validates.
+os.environ["JWT_SECRET"] = "test-jwt-secret-not-for-production-use-0123456789-abcdefghijklmnop"
+os.environ["MEDIA_KEY"] = "test-media-key-not-for-production"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
