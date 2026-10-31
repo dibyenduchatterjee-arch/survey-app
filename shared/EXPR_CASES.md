@@ -109,6 +109,32 @@ Each of these has cases; the JavaScript side imitates Python, never the other wa
   backreferences (`(a)\1`), `\N{name}`, and a repeat count of 4294967295 or more. A regex
   the two engines would disagree about must fail to publish, not behave differently on
   the phone.
+- **Refused on both sides at parse time: a regex that can backtrack catastrophically**
+  (security review I-2). `(a+)+$` takes seconds on a few dozen characters in Python's `re`
+  and in every browser, so one in a form would freeze the server and every phone that
+  opens it. The rule is `_backtracking_risk` in `server/app/forms/expr.py`, ported
+  line for line to `backtrackingRisk` in `webapp/js/expr.js`, and it is NOT just "a
+  quantifier inside a quantifier". It runs on the parse tree that Python's `sre_parse`
+  builds (the JS side builds the same shape: common prefixes factored out of an
+  alternation, an alternation of single characters folded into one set), and only looks
+  at repeats that can run long, more than 10 times (`*`, `+`, `{11}`, `{2,}` and so on).
+  Inside one it refuses:
+  - a body that can match nothing: `(a*)*`, `(a?){30}`;
+  - a part of variable length followed by something that can start with the same
+    character, counting the next time round the repeat: `(a+)+`, `(?:x+x+)+`, `(.*,)+`,
+    `([a-z]+ ?)+`;
+  - alternatives that can start with the same character, or that cannot be told apart
+    (a negated class, a non-ASCII class and `.` count as "anything"): `(a|aa)+`,
+    `(.|a)+`, `(?:a+|b)+`.
+
+  It is stricter than strictly necessary, on purpose: a pattern is cheap to rewrite. Still
+  accepted: `(\d+\.){3}\d+` (the outer repeat is small), `(cat|dog)+` (branches start
+  differently), `(\d{3}-)+\d{4}`, `[a-z]+(,[a-z]+)*`, `(a|[a-z])+` (folded into one set).
+  Pinned by the `regex_nested_quantifier_refused_*` (`unsupported`) and
+  `regex_ordinary_repeat_still_accepted_*` cases, and by a differential run of about 14,000
+  generated patterns that gave identical accept/refuse answers on both sides. Whoever
+  changes the rule on one side changes the other and the corpus in the same commit.
+
 - **Infinity** (a literal past the double range): `Infinity mod x` is NaN and
   `indexed-repeat` with an infinite index is empty. Neither crashes.
 - **Hour 24** (`T24:00`) in an ISO datetime string is NaN. Python 3.14's `fromisoformat`

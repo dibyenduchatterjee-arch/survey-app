@@ -3237,10 +3237,8 @@
  {
   "name": "regex_plus_after_a_group_quantifier_pair",
   "expr": "regex(., '(?:a+)+')",
-  "values": {},
-  "current": "aaa",
-  "now": "2026-03-15T09:30:00+00:00",
-  "expect": true
+  "unsupported": true,
+  "note": "Nested quantifier: the same text can be split between repeats in many ways, so a few dozen characters can run for seconds. Refused at parse time on both sides (security review I-2)."
  },
  {
   "name": "regex_repeat_count_just_under_the_cap",
@@ -3350,5 +3348,138 @@
   "current": null,
   "now": "2026-03-15T09:30:00+00:00",
   "expect": 20527.999305555557
+ },
+ {
+  "name": "regex_nested_quantifier_refused_plus_inside_plus_anchored",
+  "expr": "regex(., '(a+)+$')",
+  "unsupported": true,
+  "note": "The textbook catastrophic pattern: about 5 s on 26 characters. Refused at parse time by both implementations."
+ },
+ {
+  "name": "regex_nested_quantifier_refused_digits_star_inside_star",
+  "expr": "regex(., '^(\\d+)*$')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_star_inside_star",
+  "expr": "regex(., '(a*)*b')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_word_with_optional_space_repeated",
+  "expr": "regex(., '([a-z]+ ?)+')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_overlapping_alternatives_aa",
+  "expr": "regex(., '(a|aa)+$')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_overlapping_digit_alternatives",
+  "expr": "regex(., '(\\d|\\d\\d)*')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_optional_repeated_thirty_times",
+  "expr": "regex(., '(a?){30}a{30}')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_adjacent_plus_pair_repeated",
+  "expr": "regex(., '(?:x+x+)+y')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_star_group_inside_star_group",
+  "expr": "regex(., '((ab)*)*c')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_dot_alternative_overlaps",
+  "expr": "regex(., '(.|a)+')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_plus_alternative_overlaps_literal",
+  "expr": "regex(., '(?:a+|b)+c')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_nested_quantifier_refused_dot_star_then_comma_repeated",
+  "expr": "regex(., '(.*,)+')",
+  "unsupported": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_dotted_number_small_outer_repeat",
+  "expr": "regex(., '(\\d+\\.){3}\\d+')",
+  "values": {},
+  "current": "10.0.0.1",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_alternatives_start_differently",
+  "expr": "regex(., '(cat|dog)+')",
+  "values": {},
+  "current": "catdogcat",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_fixed_inner_count_is_not_nested",
+  "expr": "regex(., '(\\d{3}-)+\\d{4}')",
+  "values": {},
+  "current": "555-123-4567",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_capitalised_words_repeated",
+  "expr": "regex(., '([A-Z][a-z]{2,8} )+')",
+  "values": {},
+  "current": "Asha Devi ",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_comma_separated_list",
+  "expr": "regex(., '[a-z]+(,[a-z]+)*')",
+  "values": {},
+  "current": "iron,folic,acid",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_optional_noncapturing_suffix",
+  "expr": "regex(., '(?:pink|blue)(?: syrup)?')",
+  "values": {},
+  "current": "pink syrup",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_small_bounded_outer_repeat",
+  "expr": "regex(., '(\\d+,){1,3}')",
+  "values": {},
+  "current": "1,22,",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_alternation_folded_into_one_set",
+  "expr": "regex(., '(a|[a-z])+')",
+  "values": {},
+  "current": "abz",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_ordinary_repeat_still_accepted_plain_alternation",
+  "expr": "regex(., 'pink|blue')",
+  "values": {},
+  "current": "blue",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
  }
 ]
