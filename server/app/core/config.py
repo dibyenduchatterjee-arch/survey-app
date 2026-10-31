@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # The single media size cap for the whole system: uploads above it are
     # rejected (Task 11) and photos are downscaled to fit below it (Task 19).
     max_media_bytes: int = 5 * 1024 * 1024
+    # Per-form duplicate key for submission duplicate detection: form_id -> the top-level
+    # question names that identify "the same visit". Set as JSON in the environment, e.g.
+    # DUPLICATE_KEYS='{"amb_asha_visit": ["asha_name", "household_id"]}'. A form not listed
+    # uses the default (every top-level answer plus the repeat rows). Only ever reports.
+    duplicate_keys: dict[str, list[str]] = {}
     # Reverse proxy (Caddy / nginx). Off by default: X-Forwarded-For is client-controlled
     # and is honoured only when the deployer says a trusted proxy sits in front.
     trust_proxy_headers: bool = False
