@@ -23,7 +23,7 @@ from starlette.datastructures import UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.access import staff_can_see_form
+from app.core.access import staff_can_see_form, staff_form_filter
 from app.core.config import get_settings
 from app.core.crypto import decrypt_bytes
 from app.core.rbac import require_role
@@ -237,6 +237,8 @@ def list_submissions(
     q = _summary_query()
     if user.role == "enumerator":  # an enumerator never sees another's submissions
         q = q.where(Submission.submitted_by == user.id)
+    else:  # staff: only the forms they may see; a foreign form_id filter simply matches nothing
+        q = q.where(staff_form_filter(user))
     if form_id is not None:
         q = q.where(Form.form_id == form_id)
     if status is not None:
@@ -261,7 +263,10 @@ def get_submission(
         uid = str(uuidlib.UUID(uuid))
     except ValueError:
         raise not_found from None
-    row = db.execute(_summary_query().where(Submission.uuid == uid)).first()
+    q = _summary_query().where(Submission.uuid == uid)
+    if user.role != "enumerator":  # a form outside the staff member's projects is "not found"
+        q = q.where(staff_form_filter(user))
+    row = db.execute(q).first()
     # Someone else's submission is "not found", not "forbidden": its existence is not revealed.
     if row is None or (user.role == "enumerator" and row[0].submitted_by != user.id):
         raise not_found

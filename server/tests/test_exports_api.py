@@ -17,7 +17,9 @@ from sqlalchemy import select
 from app.api import exports
 from app.core.config import get_settings
 from app.core.security import create_access_token
-from app.db.models import AuditLog, ExportJob, Form, FormVersion, RepeatRow, Submission
+from app.db.models import (
+    DEFAULT_PROJECT_NAME, AuditLog, ExportJob, Form, FormVersion, Project, ProjectMember, RepeatRow, Submission,
+)
 from app.export.csv_export import build_csvs
 from app.export.drive import DriveUploader
 from app.export.sheets import SheetWriter
@@ -37,9 +39,17 @@ def spec():
 
 
 @pytest.fixture
-def as_(user_factory):
+def as_(user_factory, db):
     def make(role):
         u = user_factory(username=role, role=role)
+        if role == "supervisor":  # a supervisor sees only their projects; the form is in the default one
+            p = db.scalar(select(Project).where(Project.name == DEFAULT_PROJECT_NAME))
+            if p is None:
+                p = Project(name=DEFAULT_PROJECT_NAME)
+                db.add(p)
+                db.flush()
+            db.add(ProjectMember(project_id=p.id, user_id=u.id))
+            db.commit()
         return u, {"Authorization": f"Bearer {create_access_token(u.id, role)}"}
 
     return make

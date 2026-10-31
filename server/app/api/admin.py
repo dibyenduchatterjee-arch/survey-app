@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import audit
+from app.core.access import staff_can_see_project, staff_form_filter
 from app.core.rbac import require_role
 from app.core.security import hash_password
 from app.db.models import (
@@ -286,13 +287,14 @@ def update_user(
 def list_assignments(
     user_id: int | None = None,
     form_id: str | None = Query(default=None, max_length=150),  # the form's public id
-    _: User = Depends(_admin_or_supervisor),
+    user: User = Depends(_admin_or_supervisor),
     db: Session = Depends(get_session),
 ) -> list[AssignmentListItem]:
     query = (
         select(Assignment.id, Assignment.user_id, Form.form_id, User.username, User.full_name, Form.title)
         .join(User, User.id == Assignment.user_id)
         .join(Form, Form.id == Assignment.form_id)
+        .where(staff_form_filter(user))  # a supervisor lists only their projects' forms
         .order_by(Assignment.id)
     )
     if user_id is not None:
@@ -402,9 +404,10 @@ class MemberAdd(BaseModel):
     user_id: int
 
 
-def _project(db: Session, project_id: int) -> Project:
+def _project(db: Session, user: User, project_id: int) -> Project:
+    """The project, or the one 404 for missing and not-yours alike (a supervisor: members only)."""
     p = db.get(Project, project_id)
-    if p is None:
+    if p is None or not staff_can_see_project(db, user, p.id):
         raise HTTPException(status_code=404, detail="Project not found")
     return p
 
@@ -441,6 +444,8 @@ def create_project(
     db.add(p)
     try:
         db.flush()
+        if user.role == "supervisor":  # or they could not see the project they just made
+            db.add(ProjectMember(project_id=p.id, user_id=user.id))
         audit.record(db, user.id, "project.create", "project", p.id, request, {"name": name})
         db.commit()
     except IntegrityError:
@@ -451,16 +456,21 @@ def create_project(
 
 @router.get("/projects", response_model=list[ProjectOut])
 def list_projects(
-    _: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+    user: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
 ) -> list[ProjectOut]:
-    return [_project_out(db, p) for p in db.scalars(select(Project).order_by(Project.id))]
+    query = select(Project).order_by(Project.id)
+    if user.role != "admin":
+        query = query.where(
+            Project.id.in_(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id))
+        )
+    return [_project_out(db, p) for p in db.scalars(query)]
 
 
 @router.get("/projects/{project_id}", response_model=ProjectDetail)
 def get_project(
-    project_id: int, _: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+    project_id: int, user: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
 ) -> ProjectDetail:
-    p = _project(db, project_id)
+    p = _project(db, user, project_id)
     forms = db.execute(
         select(Form.form_id, Form.title).where(Form.project_id == p.id).order_by(Form.id)
     ).all()
@@ -479,7 +489,7 @@ def rename_project(
     user: User = Depends(_admin_or_supervisor),
     db: Session = Depends(get_session),
 ) -> ProjectOut:
-    p = _project(db, project_id)
+    p = _project(db, user, project_id)
     old, p.name = p.name, body.name.strip()
     try:
         audit.record(db, user.id, "project.update", "project", p.id, request, {"name": {"from": old, "to": p.name}})
@@ -490,8 +500,8 @@ def rename_project(
     return _project_out(db, p)
 
 
-def _form_by_key(db: Session, form_id: str) -> Form:
-    form = db.scalar(select(Form).where(Form.form_id == form_id))
+def _form_by_key(db: Session, user: User, form_id: str) -> Form:
+    form = db.scalar(select(Form).where(Form.form_id == form_id, staff_form_filter(user)))
     if form is None:
         raise HTTPException(status_code=404, detail="Form not found")
     return form
@@ -506,8 +516,8 @@ def add_form_to_project(
     db: Session = Depends(get_session),
 ) -> ProjectOut:
     """Put the form in this project (moving it from whichever project it was in)."""
-    p = _project(db, project_id)
-    form = _form_by_key(db, form_id)
+    p = _project(db, user, project_id)
+    form = _form_by_key(db, user, form_id)
     previous = form.project_id
     form.project_id = p.id
     audit.record(
@@ -527,8 +537,8 @@ def remove_form_from_project(
     db: Session = Depends(get_session),
 ) -> Response:
     """Take the form out: it returns to the default project, as every form is in exactly one."""
-    p = _project(db, project_id)
-    form = _form_by_key(db, form_id)
+    p = _project(db, user, project_id)
+    form = _form_by_key(db, user, form_id)
     if form.project_id != p.id:
         raise HTTPException(status_code=404, detail="That form is not in this project")
     if p.name == DEFAULT_PROJECT_NAME:
@@ -549,9 +559,9 @@ def remove_form_from_project(
 
 @router.get("/projects/{project_id}/members", response_model=list[ProjectMemberOut])
 def list_project_members(
-    project_id: int, _: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+    project_id: int, user: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
 ) -> list[ProjectMemberOut]:
-    _project(db, project_id)
+    _project(db, user, project_id)
     return _members(db, project_id)
 
 
@@ -564,7 +574,7 @@ def add_project_member(
     db: Session = Depends(get_session),
 ) -> ProjectMemberOut:
     """Assign a user to the project: they may fill every form in it, now and later."""
-    _project(db, project_id)
+    _project(db, user, project_id)
     member = db.get(User, body.user_id)
     if member is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -598,7 +608,7 @@ def remove_project_member(
     user: User = Depends(_admin_or_supervisor),
     db: Session = Depends(get_session),
 ) -> Response:
-    _project(db, project_id)
+    _project(db, user, project_id)
     row = db.scalar(
         select(ProjectMember).where(
             ProjectMember.project_id == project_id, ProjectMember.user_id == user_id

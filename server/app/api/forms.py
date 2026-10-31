@@ -21,10 +21,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.core import audit
-from app.core.access import granted_to, has_form_grant
+from app.core.access import granted_to, has_form_grant, staff_can_see_form, staff_form_filter
 from app.core.config import Settings, get_settings
 from app.core.rbac import current_user, require_role
-from app.db.models import Dataset, Form, FormVersion, User
+from app.db.models import Dataset, Form, FormVersion, Project, ProjectMember, User
 from app.db.session import get_session
 from app.forms.autometa import inject_auto_metadata
 from app.forms.compile import FormCompileError, compile_spec
@@ -100,6 +100,21 @@ def _title_of(spec: dict, fallback: str) -> str:
     return (titles[0] if titles else fallback)[:255]
 
 
+def _project_for_new_form(db: Session, user: User) -> int:
+    """Where a supervisor's brand-new form goes: the earliest project they belong to, else a
+    project of their own. Never the default project, which they could not see into."""
+    mine = db.scalar(
+        select(ProjectMember.project_id).where(ProjectMember.user_id == user.id).order_by(ProjectMember.id)
+    )
+    if mine is not None:
+        return mine
+    own = Project(name=f"Unfiled forms - {user.username}")
+    db.add(own)
+    db.flush()
+    db.add(ProjectMember(project_id=own.id, user_id=user.id))
+    return own.id
+
+
 @router.post("/forms", response_model=UploadResult, status_code=201)
 def upload_form(
     request: Request,
@@ -143,10 +158,15 @@ def upload_form(
     today = datetime.now(UTC).strftime("%Y%m%d")
     for attempt in range(3):  # a concurrent upload can take our sequence number
         form = db.scalar(select(Form).where(Form.form_id == form_key))
+        if form is not None and not staff_can_see_form(db, user, form.id):
+            # Not theirs to overwrite; indistinguishable from "no such form" to a supervisor.
+            raise HTTPException(status_code=404, detail="Form not found")
         version = _next_version(db, form, today)
         spec["version"] = version
         if form is None:
             form = Form(form_id=form_key, title=_title_of(spec, form_key), created_by=user.id)
+            if user.role == "supervisor":  # they must be able to see what they just created
+                form.project_id = _project_for_new_form(db, user)
             db.add(form)
         else:
             form.title = _title_of(spec, form.title)
@@ -196,7 +216,7 @@ def publish_form(
         if form is not None
         else None
     )
-    if form is None or version is None:
+    if form is None or version is None or not staff_can_see_form(db, user, form.id):
         raise HTTPException(status_code=404, detail="Form or version not found")
     try:
         form.publish(version)
@@ -229,6 +249,8 @@ def list_forms(
     )
     if user.role == "enumerator":  # never learns that other forms exist
         query = query.where(granted_to(user.id))
+    else:  # a supervisor sees only their projects' forms; an admin sees all
+        query = query.where(staff_form_filter(user))
     return [
         FormSummary(form_id=fid, title=title, current_version=ver)
         for fid, title, ver in db.execute(query).all()
@@ -254,6 +276,8 @@ def get_spec(
     if user.role == "enumerator":
         if not has_form_grant(db, user.id, form.id):
             raise not_found
+    elif not staff_can_see_form(db, user, form.id):
+        raise not_found
     return row.json_spec
 
 

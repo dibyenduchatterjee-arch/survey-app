@@ -42,7 +42,6 @@ from sqlalchemy.orm import Session
 
 from app.core import audit
 from app.core.access import staff_can_see_form
-from app.core.access import staff_can_see_form
 from app.core.config import Settings, get_settings
 from app.core.rbac import require_role
 from app.db.models import ExportJob, Form, FormVersion, Submission, User
@@ -229,7 +228,7 @@ def start_export(
     if not settings.drive_folder_id:
         raise HTTPException(status_code=503, detail="DRIVE_FOLDER_ID is not set: exports need a Drive folder")
     form = db.scalars(select(Form).where(Form.form_id == body.form_id)).first()
-    if form is None:
+    if form is None or not staff_can_see_form(db, user, form.id):  # same 404 either way
         raise HTTPException(status_code=404, detail="Form not found")
     job = ExportJob(form_id=form.id, requested_by=user.id, status="pending")
     db.add(job)
@@ -242,18 +241,18 @@ def start_export(
     return JobStarted(job_id=job.id)
 
 
-def _load(db: Session, job_id: int) -> tuple[ExportJob, str]:
+def _load(db: Session, user: User, job_id: int) -> tuple[ExportJob, str]:
     row = db.execute(
         select(ExportJob, Form.form_id).join(Form, ExportJob.form_id == Form.id).where(ExportJob.id == job_id)
     ).first()
-    if row is None:
+    if row is None or not staff_can_see_form(db, user, row[0].form_id):  # same 404 either way
         raise HTTPException(status_code=404, detail="Export job not found")
     return row[0], row[1]
 
 
 @router.get("/exports/{job_id}", response_model=JobOut)
-def get_export(job_id: int, _: User = Depends(_staff), db: Session = Depends(get_session)) -> JobOut:
-    job, form_id = _load(db, job_id)
+def get_export(job_id: int, user: User = Depends(_staff), db: Session = Depends(get_session)) -> JobOut:
+    job, form_id = _load(db, user, job_id)
     return _job_out(job, form_id)
 
 
@@ -265,9 +264,7 @@ def download_export(
     db: Session = Depends(get_session),
 ) -> Response:
     """Stream the main CSV, byte for byte (the BOM is what makes Devanagari open in Excel)."""
-    job, form_key = _load(db, job_id)
-    if not staff_can_see_form(db, user, job.form_id):
-        raise HTTPException(status_code=404, detail="Export job not found")
+    job, form_key = _load(db, user, job_id)
     if job.status != "done" or not job.drive_file_id:
         detail = job.error if job.status == "failed" and job.error else f"Export is {job.status}, not done"
         raise HTTPException(status_code=409, detail=detail)
