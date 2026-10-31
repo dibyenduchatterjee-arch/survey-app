@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EvAc browser tests</title>
+</head>
+<body>
+<pre id="out">running...</pre>
+<script type="module">
+// Reporting harness. Runs every exported test_* function in each module listed
+// below, sequentially, and publishes:
+//   window.__results = [{ module, name, ok, error, ms }, ...]
+//   window.__summary = { total, passed, failed }
+//   window.__done    = true   (set last; poll this before reading results)
+// Probe mode (?probe=queue) is used by the page-reload test: a fresh document
+// that only reads the queue and posts it to its parent.
+const MODULES = ['./browser_db.js'];
+const params = new URLSearchParams(location.search);
+
+if (params.get('probe') === 'queue') {
+  const { queueLength, peekQueue } = await import('../js/db.js');
+  const n = await queueLength();
+  const uuids = (await peekQueue(100)).map(s => s.uuid);
+  parent.postMessage({ probe: 'queue', n, uuids }, '*');
+} else {
+  window.__results = [];
+  window.__done = false;
+  const only = params.get('only');
+  for (const path of MODULES) {
+    const module = path.replace('./', '');
+    let mod;
+    try {
+      mod = await import(path);
+    } catch (e) {
+      window.__results.push({ module, name: '(import)', ok: false, error: String((e && e.stack) || e), ms: 0 });
+      continue;
+    }
+    for (const name of Object.keys(mod).filter(k => k.startsWith('test_'))) {
+      if (only && !name.includes(only)) continue;
+      const t0 = performance.now();
+      try {
+        await mod[name]();
+        window.__results.push({ module, name, ok: true, error: null, ms: Math.round(performance.now() - t0) });
+      } catch (e) {
+        window.__results.push({ module, name, ok: false, error: String((e && e.message) || e), ms: Math.round(performance.now() - t0) });
+      }
+    }
+  }
+  const passed = window.__results.filter(r => r.ok).length;
+  window.__summary = { total: window.__results.length, passed, failed: window.__results.length - passed };
+  document.getElementById('out').textContent =
+    window.__results.map(r => (r.ok ? 'PASS ' : 'FAIL ') + r.name + (r.ok ? '' : '  -> ' + r.error)).join('\n') +
+    '\n\n' + JSON.stringify(window.__summary);
+  window.__done = true;
+}
+</script>
+</body>
+</html>
