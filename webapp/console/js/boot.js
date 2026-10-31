@@ -10,10 +10,12 @@ import { mountForms } from './forms.js';
 import { mountSubmissions } from './submissions.js';
 import { mountExports } from './exports.js';
 import { mountUsers } from './users.js';
+import { mountProjects } from './projects.js';
 import { mountAudit } from './audit.js';
 
 export const PAGES = {
-  home: { title: 'Projects', href: 'index.html', mount: mountHome },
+  home: { title: 'Downloads', href: 'index.html', mount: mountHome },
+  projects: { title: 'Projects', href: 'projects.html', mount: mountProjects },
   forms: { title: 'Forms', href: 'forms.html', mount: mountForms },
   submissions: { title: 'Submissions', href: 'submissions.html', mount: mountSubmissions },
   exports: { title: 'Exports', href: 'exports.html', mount: mountExports },

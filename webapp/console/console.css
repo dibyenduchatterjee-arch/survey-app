@@ -35,3 +35,10 @@ th, td { border-bottom: 1px solid var(--line); padding: .35rem .5rem; text-align
 .media-placeholder { width: 260px; padding: 1.2rem; background: #eceef4; border: 2px dashed #8a90a2; border-radius: 8px; color: var(--soft); }
 .export-control progress { width: 100%; max-width: 320px; display: block; margin: .4rem 0; }
 .login { max-width: 360px; margin: 3rem auto; }
+.project-card > summary { cursor: pointer; list-style: revert; }
+.project-card .chips { display: flex; flex-wrap: wrap; gap: .3rem; margin: .35rem 0 0; }
+.project-card .chip { background: var(--wash); border: 1px solid var(--line); border-radius: 6px; padding: 0 .45rem; font-size: .85rem; }
+.project-card .project-body { margin-top: .6rem; border-top: 1px solid var(--line); }
+.project-card .access-note { background: #fff7e6; border-left: 5px solid var(--magenta); padding: .4rem .7rem; margin: .3rem 0; }
+.project-card ul.members, .project-card ul.forms-in { padding-left: 1.1rem; }
+.project-card li.member { margin: .25rem 0; }
