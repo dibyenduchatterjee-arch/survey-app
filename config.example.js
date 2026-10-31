@@ -1,15 +1,10 @@
-// Copy this file to config.js and fill it in. config.js is read by googleauth.js.
+// Copy this file to config.js and paste your Apps Script Web App address below.
 //
-// Nothing here is a secret. The OAuth client id identifies the app to Google and is
-// visible to anyone who opens it. Do NOT add a client secret or refresh token
-// (the Picker key below is restricted and harmless) anywhere in the app: every user signs in as himself.
+// Where to find it: in the Apps Script editor, Deploy > Manage deployments > the Web app
+// deployment > "Web app URL". It ends in /exec.
 //
-// Created in Google Cloud Console (see the task report for the exact steps).
+// Not a secret: it is only the address of the backend. The credential is each project's access
+// code, which workers type and which lives in your Projects sheet (hashed), never in this file.
 export const config = {
-  googleClientId: 'PASTE-YOUR-CLIENT-ID.apps.googleusercontent.com',
-  // Browser API key for the Google Picker only. Restrict it in Cloud Console to this site's
-  // address and to the Picker API; it cannot read or write anyone's data.
-  googleApiKey: 'PASTE-THE-RESTRICTED-BROWSER-API-KEY',
-  // Cloud project number (Project info on the Cloud Console dashboard).
-  googleAppId: 'PASTE-THE-PROJECT-NUMBER',
+  appsScriptUrl: 'PASTE-THE-WEB-APP-URL-THAT-ENDS-IN-/exec',
 };
