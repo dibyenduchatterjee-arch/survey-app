@@ -60,6 +60,11 @@ class FormSummary(BaseModel):
     current_version: str | None
 
 
+class DatasetSummary(BaseModel):
+    name: str
+    version: int
+
+
 class DatasetOut(BaseModel):
     name: str
     version: int
@@ -305,6 +310,16 @@ def upload_dataset(
         db.rollback()
         raise
     return DatasetOut(name=name, version=ds.version, rows=rows)
+
+
+@router.get("/datasets", response_model=list[DatasetSummary])
+def list_datasets(
+    user: User = Depends(current_user),  # same as GET /datasets/{name}: any signed-in user
+    db: Session = Depends(get_session),
+) -> list[DatasetSummary]:
+    """Names and versions only; the rows are fetched per name."""
+    rows = db.execute(select(Dataset.name, Dataset.version).order_by(Dataset.name)).all()
+    return [DatasetSummary(name=n, version=v) for n, v in rows]
 
 
 @router.get("/datasets/{name}", response_model=DatasetOut)

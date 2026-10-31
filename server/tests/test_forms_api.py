@@ -291,6 +291,21 @@ def test_dataset_reupload_bumps_version_and_enumerator_can_read(client, as_, sup
     assert got.status_code == 200 and got.json()["version"] == 2
 
 
+def test_dataset_listing_is_names_and_versions_for_any_signed_in_user(client, as_, sup):
+    _, h = sup
+    _, eh = as_("enumerator")
+    assert client.get("/api/datasets", headers=eh).json() == []
+    client.post("/api/datasets/villages", files={"file": ("v.csv", b"name\nsecret-village\n")}, headers=h)
+    for _i in range(2):
+        client.post("/api/datasets/asha", files={"file": ("a.csv", b"name\nA\n")}, headers=h)
+    r = client.get("/api/datasets", headers=eh)
+    assert r.status_code == 200
+    assert r.json() == [{"name": "asha", "version": 2}, {"name": "villages", "version": 1}]
+    assert "secret-village" not in r.text
+    assert client.get("/api/datasets", headers=h).status_code == 200
+    assert client.get("/api/datasets").status_code == 401
+
+
 def test_dataset_missing_is_404_and_needs_auth(client, sup):
     _, h = sup
     assert client.get("/api/datasets/nope", headers=h).status_code == 404
