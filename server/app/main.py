@@ -1,5 +1,8 @@
+import base64
+import hashlib
 import logging
 import mimetypes
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractContextManager, asynccontextmanager
 from pathlib import Path
@@ -9,6 +12,8 @@ from fastapi.responses import FileResponse
 from sqlalchemy import update
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api import admin, auth, exports, forms, openrosa, submissions
 from app.core.config import PROJECT_ROOT
@@ -52,7 +57,85 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+# ---- browser security headers ----------------------------------------------------------------
+#
+# The console holds an admin's refresh token in IndexedDB, readable by any script on the origin,
+# and its buttons (deactivate a user, start an export) must not be clickjackable. So every
+# response says: never framed, never sniffed, no referrer, HTTPS only, and run only script this
+# server shipped. The console pages each carry one inline module script; it is allowed by
+# its hash (computed from the file being served), never by 'unsafe-inline'. The one other
+# concession is inline style ATTRIBUTES, which console/js/forms.js sets to indent nested
+# questions: `style-src-attr` only, so no <style> element and no script can ride on it.
+
+_INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script>", re.S | re.I)
+_NO_CSP_PATHS = ("/docs", "/redoc")  # FastAPI's own pages load a CDN and inline script
+
+
+def content_security_policy(script_hashes: tuple[str, ...] = ()) -> str:
+    return "; ".join(
+        [
+            "default-src 'self'",
+            "script-src 'self'" + "".join(f" '{h}'" for h in script_hashes),
+            "style-src 'self'",
+            "style-src-attr 'unsafe-inline'",
+            "img-src 'self' blob: data:",  # data: is the manifest icon
+            "media-src 'self' blob:",
+            "connect-src 'self'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+        ]
+    )
+
+
+_STATIC_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+}
+
+
+def inline_script_hashes(html: bytes) -> tuple[str, ...]:
+    """CSP source hashes ('sha256-...') of the page's inline scripts, in document order."""
+    found = []
+    for body in _INLINE_SCRIPT.findall(html.decode("utf-8", "replace")):
+        if body.strip():
+            # A browser's HTML parser turns CRLF and CR into LF before it hashes the script text.
+            body = body.replace(chr(13) + chr(10), chr(10)).replace(chr(13), chr(10))
+            digest = hashlib.sha256(body.encode("utf-8")).digest()
+            found.append("sha256-" + base64.b64encode(digest).decode("ascii"))
+    return tuple(dict.fromkeys(found))
+
+
+class SecurityHeadersMiddleware:
+    """Adds the headers above to every HTTP response unless the handler already set that header."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in _STATIC_HEADERS.items():
+                    if name not in headers:
+                        headers[name] = value
+                if "content-security-policy" not in headers and not path.startswith(_NO_CSP_PATHS):
+                    headers["content-security-policy"] = content_security_policy()
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 app = FastAPI(title="Evidence Action survey platform", lifespan=lifespan)
+app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(auth.router)
 app.include_router(forms.router)
 app.include_router(submissions.router)
@@ -108,7 +191,10 @@ def mount_webapp(target: FastAPI, webapp_dir: Path = WEBAPP_DIR) -> None:
         if hit.suffix == ".webmanifest":
             media_type = "application/manifest+json"
         # `no-cache` = revalidate every time: a new release (and a new service worker) is seen at once.
-        return FileResponse(hit, media_type=media_type, headers={"Cache-Control": "no-cache"})
+        headers = {"Cache-Control": "no-cache"}
+        if hit.suffix == ".html":  # its own inline scripts, by hash, and no one else's
+            headers["Content-Security-Policy"] = content_security_policy(inline_script_hashes(hit.read_bytes()))
+        return FileResponse(hit, media_type=media_type, headers=headers)
 
 
 mount_webapp(app)
