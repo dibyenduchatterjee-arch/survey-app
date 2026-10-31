@@ -362,6 +362,44 @@ Keep the Shared Drive limited to named people. The exports in it are **not encry
 If the export fails, the page shows Google's message. See *When an export fails* in
 `docs/OPERATIONS.md`.
 
+## Publishing a form to Drive (no server)
+
+You compile and publish a form from your own laptop. Evidence Action's projects live in Drive: your
+main folder holds one folder per project, and sharing a project folder with a teammate is the access
+control.
+
+One-time setup: put the project folder in a **Shared Drive**, add the service account to that Shared
+Drive as **Content manager** (a service account has no storage of its own, so a plain My Drive folder
+fails with `storageQuotaExceeded`), and set `GOOGLE_SERVICE_ACCOUNT_FILE` to the key file's path.
+The folder id is the last part of the folder's address in Drive.
+
+Check a form first (touches nothing in Drive, needs no key):
+
+```powershell
+.\.venv\Scripts\python.exe tools\publish_form.py --xlsx "C:\forms\amb_asha_visit.xlsx" --project-folder 1AbCdEfGh --dry-run
+```
+
+Publish it:
+
+```powershell
+.\.venv\Scripts\python.exe tools\publish_form.py --xlsx "C:\forms\amb_asha_visit.xlsx" --project-folder 1AbCdEfGh
+```
+
+You should see:
+
+```
+Published.
+  Form id:    amb_asha_visit
+  Version:    2026103101
+  Questions:  17 questions (plus the automatic fields)
+  Spec file:  amb_asha_visit.spec.json
+  Drive link: https://drive.google.com/file/d/.../view
+```
+
+Two files appear in the project folder: `amb_asha_visit.xlsx` and `amb_asha_visit.spec.json`. Publishing
+the same form again updates those same two files (new version `...02`), so links keep working. If the
+form has a problem you see `NOT published.` and the name of the question to fix; nothing reaches Drive.
+
 ## Settings (`.env`)
 
 | Setting | Meaning | Default |
@@ -458,3 +496,24 @@ cd server
 **ज़रूरी:** Drive का फ़ोल्डर **Shared Drive** में होना चाहिए, और उस Shared Drive में सर्विस अकाउंट **Content manager** के रूप में जुड़ा होना चाहिए। अपने निजी *My Drive* के फ़ोल्डर में यह `storageQuotaExceeded` की गलती देगा, क्योंकि सर्विस अकाउंट के पास अपनी स्टोरेज नहीं होती। पूरे कदम ऊपर *Google setup* में हैं। `GOOGLE_SERVICE_ACCOUNT_FILE` और `DRIVE_FOLDER_ID` भरे बिना डाउनलोड नहीं चलेगा।
 
 कुछ गड़बड़ हो तो `docs/OPERATIONS.md` देखिए।
+
+### 8. फ़ॉर्म को Drive में प्रकाशित करना (बिना सर्वर)
+
+फ़ॉर्म आप अपने ही लैपटॉप से बनाकर Drive में डालते हैं। प्रोजेक्ट का फ़ोल्डर जिसके साथ शेयर होगा, वही उस प्रोजेक्ट के फ़ॉर्म देख पाएगा।
+
+एक बार की तैयारी: प्रोजेक्ट का फ़ोल्डर **Shared Drive** में रखिए, सर्विस अकाउंट को उस Shared Drive में **Content manager** बनाइए, और `GOOGLE_SERVICE_ACCOUNT_FILE` में की-फ़ाइल का पता भरिए। (निजी My Drive के फ़ोल्डर में `storageQuotaExceeded` की गलती आएगी।)
+
+पहले जाँच लीजिए (Drive में कुछ नहीं बदलता):
+
+```powershell
+.\.venv\Scripts\python.exe tools\publish_form.py --xlsx "C:\forms\amb_asha_visit.xlsx" --project-folder 1AbCdEfGh --dry-run
+```
+
+फिर प्रकाशित कीजिए:
+
+```powershell
+.\.venv\Scripts\python.exe tools\publish_form.py --xlsx "C:\forms\amb_asha_visit.xlsx" --project-folder 1AbCdEfGh
+```
+
+सब ठीक हो तो `Published.` दिखेगा, साथ में फ़ॉर्म का नाम, वर्ज़न, सवालों की गिनती और Drive का लिंक। फ़ोल्डर में दो फ़ाइलें आती हैं: `amb_asha_visit.xlsx` और `amb_asha_visit.spec.json`। वही फ़ॉर्म दोबारा प्रकाशित करने पर यही दो फ़ाइलें नए वर्ज़न से बदलती हैं, लिंक वही रहते हैं। कोई गड़बड़ हो तो `NOT published.` दिखेगा और उस सवाल का नाम, जिसे ठीक करना है। तब Drive में कुछ नहीं जाता।
+
