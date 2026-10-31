@@ -382,7 +382,7 @@ def list_datasets(
     user: User = Depends(current_user),
     db: Session = Depends(get_session),
 ) -> list[DatasetSummary]:
-    """Names and versions of the datasets this person may read; the rows are fetched per name."""
+    """Name, version and project of each dataset this person may read; rows are fetched per (project, name)."""
     rows = db.execute(
         select(Dataset.name, Dataset.version, Dataset.project_id)
         .where(dataset_filter(user))
@@ -391,27 +391,21 @@ def list_datasets(
     return [DatasetSummary(name=n, version=v, project_id=p) for n, v, p in rows]
 
 
-@router.get("/datasets/{name}", response_model=DatasetOut)
+@router.get("/datasets/{project_id}/{name}", response_model=DatasetOut)
 def get_dataset(
+    project_id: int,
     name: str = Path(pattern=_DATASET_NAME),
-    project_id: int | None = None,
     user: User = Depends(current_user),
     db: Session = Depends(get_session),
 ) -> DatasetOut:
-    """One dataset by name, among those this person may read; any other is a plain 404.
+    """One dataset, addressed by its project AND name (names repeat across projects).
 
-    Two readable projects can each hold a dataset of the same name (an admin sees all of them);
-    then `project_id` says which, and without it the answer is 409 rather than a guess.
+    The listing gives each dataset's project_id. A dataset this person may not read, one in a
+    project they are outside, and one that does not exist are all the same plain 404.
     """
-    query = select(Dataset).where(Dataset.name == name, dataset_filter(user))
-    if project_id is not None:
-        query = query.where(Dataset.project_id == project_id)
-    found = db.scalars(query.order_by(Dataset.project_id).limit(2)).all()
-    if not found:
+    ds = db.scalar(
+        select(Dataset).where(Dataset.project_id == project_id, Dataset.name == name, dataset_filter(user))
+    )
+    if ds is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    if len(found) > 1:
-        raise HTTPException(
-            status_code=409, detail="More than one project has a dataset with this name; add ?project_id="
-        )
-    ds = found[0]
     return DatasetOut(name=ds.name, version=ds.version, project_id=ds.project_id, rows=_parse_csv(ds.csv_blob))

@@ -196,13 +196,13 @@ export async function test_a_dataset_refresh_leaves_rejected_records_in_real_ind
   const bootFetch = async url => {
     const u = String(url);
     if (u === '/api/forms') return json(200, []);
-    if (u === '/api/datasets') return json(200, [{ name: 'blocks', version: 1 }]);
-    if (u === '/api/datasets/blocks') return json(200, { name: 'blocks', version: 1, rows: [{ a: 1 }] });
+    if (u === '/api/datasets') return json(200, [{ name: 'blocks', version: 1, project_id: 1 }]);
+    if (u === '/api/datasets/1/blocks') return json(200, { name: 'blocks', version: 1, rows: [{ a: 1 }] });
     return json(404, {});
   };
   await sync.bootstrap(bootFetch);
   await sync.bootstrap(bootFetch);
-  eq(await db.getDataset('blocks'), [{ a: 1 }]);
+  eq(await db.getDataset('1/blocks'), [{ a: 1 }]);
   const [rec] = await sync.listRejected();
   eq(rec.uuid, 'rj');
   eq(await rec.media[0].blob.text(), 'KEEP');

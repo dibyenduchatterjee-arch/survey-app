@@ -279,7 +279,7 @@ def test_dataset_csv_round_trips_devanagari(client, sup):
         headers=h,
     )
     assert r.status_code == 200
-    got = client.get("/api/datasets/blocks", headers=h).json()
+    got = client.get(f"/api/datasets/{r.json()['project_id']}/blocks", headers=h).json()
     assert got["rows"][0]["name"] == "मुजफ्फरपुर"
     assert got["name"] == "blocks" and got["version"] == 1
 
@@ -287,10 +287,10 @@ def test_dataset_csv_round_trips_devanagari(client, sup):
 def test_dataset_reupload_bumps_version_and_enumerator_can_read(client, db, as_, sup, join_project):
     _, h = sup
     for _i in range(2):
-        client.post("/api/datasets/blocks", files={"file": ("b.csv", b"name\nA\n")}, headers=h)
+        up = client.post("/api/datasets/blocks", files={"file": ("b.csv", b"name\nA\n")}, headers=h)
     e, eh = as_("enumerator")
     join_project(db, e)  # datasets are readable by the project's people only
-    got = client.get("/api/datasets/blocks", headers=eh)
+    got = client.get(f"/api/datasets/{up.json()['project_id']}/blocks", headers=eh)
     assert got.status_code == 200 and got.json()["version"] == 2
 
 
@@ -325,8 +325,8 @@ def test_client_config_exposes_only_the_media_cap_to_signed_in_users(client, as_
 
 def test_dataset_missing_is_404_and_needs_auth(client, sup):
     _, h = sup
-    assert client.get("/api/datasets/nope", headers=h).status_code == 404
-    assert client.get("/api/datasets/nope").status_code == 401
+    assert client.get("/api/datasets/1/nope", headers=h).status_code == 404
+    assert client.get("/api/datasets/1/nope").status_code == 401
 
 
 @pytest.mark.parametrize(

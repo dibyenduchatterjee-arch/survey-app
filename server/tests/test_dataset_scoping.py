@@ -46,6 +46,11 @@ def world(client, db, user_factory):
     return w
 
 
+def _get(client, user, project, name):
+    pid = project.id if hasattr(project, "id") else project
+    return client.get(f"/api/datasets/{pid}/{name}", headers=_h(user))
+
+
 def _names(r):
     assert r.status_code == 200, r.text
     return sorted(d["name"] for d in r.json())
@@ -65,19 +70,33 @@ def test_listing_shows_each_person_only_their_projects_datasets(world):
 def test_reading_another_projects_dataset_is_the_same_404_as_a_missing_one(world, who):
     c = world["client"]
     user = world[who[0]][who[1]] if who[1] else world[who[0]]
-    target = "asha_b" if who[0] in ("a", "outsider") else "asha"
-    refused, missing = c.get(f"/api/datasets/{target}", headers=_h(user)), c.get("/api/datasets/nope", headers=_h(user))
-    assert refused.status_code == missing.status_code == 404
-    assert refused.json() == missing.json()
+    other = world["b"] if who[0] in ("a", "outsider") else world["a"]
+    target = "asha_b" if other is world["b"] else "asha"
+    refused = _get(c, user, other["project"], target)
+    missing = _get(c, user, other["project"], "nope")
+    wrong_project = _get(c, user, 99999, target)
+    assert refused.status_code == missing.status_code == wrong_project.status_code == 404
+    assert refused.json() == missing.json() == wrong_project.json()
 
 
 def test_people_read_their_own_projects_datasets(world):
     c = world["client"]
-    got = c.get("/api/datasets/asha", headers=_h(world["a"]["enum"])).json()
+    got = _get(c, world["a"]["enum"], world["a"]["project"], "asha").json()
     assert got["rows"] == [{"name": "Sunita", "phone": "9000000001"}]
-    assert c.get("/api/datasets/asha_b", headers=_h(world["assigned"])).status_code == 200
-    assert c.get("/api/datasets/asha", headers=_h(world["admin"])).status_code == 200
-    assert c.get("/api/datasets/asha_b", headers=_h(world["admin"])).status_code == 200
+    assert got["project_id"] == world["a"]["project"].id
+    assert _get(c, world["admin"], world["a"]["project"], "asha").status_code == 200
+    assert _get(c, world["admin"], world["b"]["project"], "asha_b").status_code == 200
+
+
+def test_a_direct_form_assignment_is_a_grant_to_that_forms_project_and_no_further(world, db):
+    """RULE: an enumerator with a direct Assignment on a form reads the datasets of that form's project."""
+    c, who = world["client"], world["assigned"]
+    assert _get(c, who, world["b"]["project"], "asha_b").status_code == 200  # via form_b
+    assert _get(c, who, world["a"]["project"], "asha").status_code == 404  # no grant in project a
+    db.query(Assignment).filter_by(user_id=who.id).delete()
+    db.commit()
+    assert _get(c, who, world["b"]["project"], "asha_b").status_code == 404  # the grant ends with the assignment
+    assert _names(c.get("/api/datasets", headers=_h(who))) == []
 
 
 def test_a_supervisor_cannot_overwrite_another_projects_dataset(world, db):
@@ -92,7 +111,7 @@ def test_a_supervisor_cannot_overwrite_another_projects_dataset(world, db):
     db.expire_all()
     theirs = db.query(Dataset).filter_by(name="asha_b", project_id=world["b"]["project"].id).one()
     assert theirs.version == before and b"Geeta" in theirs.csv_blob
-    assert c.get("/api/datasets/asha_b", headers=_h(world["b"]["sup"])).json()["rows"][0]["name"] == "Geeta"
+    assert _get(c, world["b"]["sup"], world["b"]["project"], "asha_b").json()["rows"][0]["name"] == "Geeta"
 
 
 def test_enumerators_cannot_write_datasets(world):
@@ -111,15 +130,57 @@ def test_a_supervisor_in_one_project_uploads_there_and_an_admin_must_say_where(w
     assert db.query(Dataset).filter_by(name="villages2").one().project_id == world["b"]["project"].id
 
 
-def test_the_same_name_may_exist_in_two_projects_and_the_admin_names_which(world):
+def test_the_same_name_in_two_projects_is_two_datasets_each_addressed_by_project(world):
     c = world["client"]
     assert _put(c, world["b"]["sup"], "asha", CSV_B).status_code == 200
-    assert c.get("/api/datasets/asha", headers=_h(world["a"]["sup"])).json()["rows"][0]["name"] == "Sunita"
-    assert c.get("/api/datasets/asha", headers=_h(world["b"]["sup"])).json()["rows"][0]["name"] == "Geeta"
-    ambiguous = c.get("/api/datasets/asha", headers=_h(world["admin"]))
-    assert ambiguous.status_code == 409
-    pid = world["b"]["project"].id
-    assert c.get(f"/api/datasets/asha?project_id={pid}", headers=_h(world["admin"])).json()["rows"][0]["name"] == "Geeta"
+    pa, pb = world["a"]["project"], world["b"]["project"]
+    assert _get(c, world["a"]["sup"], pa, "asha").json()["rows"][0]["name"] == "Sunita"
+    assert _get(c, world["b"]["sup"], pb, "asha").json()["rows"][0]["name"] == "Geeta"
+    assert _get(c, world["admin"], pa, "asha").json()["rows"][0]["name"] == "Sunita"
+    assert _get(c, world["admin"], pb, "asha").json()["rows"][0]["name"] == "Geeta"
+    # A supervisor naming the other project's copy is refused like a missing dataset.
+    assert _get(c, world["a"]["sup"], pb, "asha").status_code == 404
+
+
+def test_an_enumerator_in_two_projects_lists_both_same_named_datasets_and_reads_each(world, db):
+    c = world["client"]
+    for tag in ("a", "b"):
+        assert _put(c, world[tag]["sup"], "villages", CSV_A if tag == "a" else CSV_B).status_code == 200
+    both = world["a"]["enum"]
+    db.add(ProjectMember(project_id=world["b"]["project"].id, user_id=both.id))
+    db.commit()
+    listed = [d for d in c.get("/api/datasets", headers=_h(both)).json() if d["name"] == "villages"]
+    assert sorted(d["project_id"] for d in listed) == sorted([world["a"]["project"].id, world["b"]["project"].id])
+    got = {d["project_id"]: _get(c, both, d["project_id"], "villages").json()["rows"][0]["name"] for d in listed}
+    assert got == {world["a"]["project"].id: "Sunita", world["b"]["project"].id: "Geeta"}
+
+
+def test_the_old_name_only_address_no_longer_exists(world):
+    r = world["client"].get("/api/datasets/asha", headers=_h(world["a"]["enum"]))
+    assert r.status_code == 404
+
+
+def test_upload_by_a_supervisor_in_two_projects_must_name_one_and_is_told_the_choices(world, db):
+    c, sup = world["client"], world["a"]["sup"]
+    db.add(ProjectMember(project_id=world["b"]["project"].id, user_id=sup.id))
+    db.commit()
+    refused = _put(c, sup, "villages", CSV_A)
+    assert refused.status_code == 422
+    detail = refused.json()["detail"]
+    assert detail["error"] == "project_required"
+    assert sorted(p["id"] for p in detail["projects"]) == sorted([world["a"]["project"].id, world["b"]["project"].id])
+    assert {p["name"] for p in detail["projects"]} == {"Project a", "Project b"}
+    assert db.query(Dataset).filter_by(name="villages").count() == 0
+    ok = _put(c, sup, "villages", CSV_B, project_id=world["b"]["project"].id)
+    assert ok.status_code == 200 and ok.json()["project_id"] == world["b"]["project"].id
+    assert db.query(Dataset).filter_by(name="villages").one().project_id == world["b"]["project"].id
+
+
+def test_upload_to_a_project_the_caller_is_outside_is_refused_like_a_missing_project(world):
+    c = world["client"]
+    a = _put(c, world["a"]["sup"], "villages", CSV_A, project_id=world["b"]["project"].id)
+    b = _put(c, world["a"]["sup"], "villages", CSV_A, project_id=99999)
+    assert a.status_code == b.status_code == 404 and a.json() == b.json()
 
 
 def test_a_dataset_always_has_a_project(db):

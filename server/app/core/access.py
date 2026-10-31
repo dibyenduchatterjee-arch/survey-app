@@ -72,7 +72,9 @@ def dataset_filter(user: User) -> ColumnElement[bool]:
     A dataset belongs to one project (its rows are names and phone numbers of frontline
     workers). Admin reads all. A supervisor reads the datasets of projects they are a member of.
     An enumerator reads those of projects they are a member of, and of the project of any form
-    they hold a direct `Assignment` on - their phone needs the lists their own forms look up.
+    they hold a direct `Assignment` on. That last part is deliberate: a per-form assignment is a
+    real grant by staff, and the phone needs the lists that form's project holds. It reaches that
+    one project only and ends with the assignment.
     Writes need `staff_can_see_project` on the dataset's project, so the read and write rules
     are built on the same membership.
     """
