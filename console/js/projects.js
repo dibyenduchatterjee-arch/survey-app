@@ -87,6 +87,38 @@ export async function mountProjects(root, ctx) {
           await reload(p.id);
         } }));
 
+    // A supervisor is not handed the directory of users. They type the exact username of
+    // someone they already know; the server answers with that one active account, or nothing.
+    const lookupInput = h('input', { class: 'lookup-username', type: 'text', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'Exact username', 'aria-label': `Exact username of the person to add to ${p.name}` });
+    const lookupResult = h('div', { class: 'lookup-result', role: 'status', 'aria-live': 'polite' });
+    const finder = isAdmin ? null
+      : h('form', { class: 'toolbar lookup', onsubmit: async e => {
+        e.preventDefault();
+        const username = lookupInput.value.trim();
+        clear(lookupResult);
+        if (!username) { lookupResult.append(h('p', { class: 'hint', text: 'Type the username first.' })); return; }
+        let found;
+        try { found = await api.get('/api/users', { username }); } catch (ex) { lookupResult.append(h('p', { class: 'msg bad', role: 'alert', text: ex.message })); return; }
+        const u = (found || []).find(x => x.username === username);
+        if (!u) {
+          lookupResult.append(h('p', { class: 'hint lookup-none', text: `No one was found with the username "${username}". Usernames have to match exactly, so check the spelling. The person also needs an active account; an admin can set one up.` }));
+        } else if (memberIds.has(u.id)) {
+          lookupResult.append(h('p', { class: 'hint lookup-already', text: `${u.full_name} (${u.username}) is already in "${p.name}".` }));
+        } else {
+          lookupResult.append(h('div', { class: 'lookup-found toolbar' },
+            h('span', {}, h('strong', { text: u.full_name }), ' ', h('code', { text: u.username }), ` (${u.role}) `),
+            h('button', { type: 'button', class: 'primary add-found-member', text: 'Add to project', 'aria-label': `Add ${u.full_name} to ${p.name}`, onclick: async () => {
+              try {
+                await api.post(`/api/projects/${p.id}/members`, { user_id: u.id });
+                say(`${u.full_name} can now fill all ${plural(forms.length, 'form', 'forms')} in "${p.name}", and any form added later.`);
+              } catch (ex) { say(ex.message, true); }
+              await reload(p.id);
+            } })));
+        }
+      } },
+      lookupInput,
+      h('button', { type: 'submit', class: 'find-user', text: 'Find person' }));
+
     const here = new Set(forms.map(f => f.form_id));
     const projOf = new Map();
     for (const d of details) for (const f of d.forms || []) projOf.set(f.form_id, d.name);
@@ -124,7 +156,9 @@ The members of "${p.name}" will be able to see this form's data. People who are 
         h('h3', { text: `Who has access (${members.length})` }),
         h('p', { class: 'access-note', text: `Everyone below can fill all ${plural(forms.length, 'form', 'forms')} above, and any form moved into "${p.name}" later.` }),
         h('ul', { class: 'members' }, who),
-        adder || h('p', { class: 'hint', text: 'Only an admin can add people.' }),
+        adder || h('div', { class: 'add-by-username' },
+          h('p', { class: 'hint', text: 'To add someone, type their exact username and press Find person.' }),
+          finder, lookupResult),
         h('div', { class: 'toolbar rename' }, nameIn,
           h('button', { type: 'button', class: 'rename', text: 'Rename', onclick: async () => {
             const name = nameIn.value.trim();
