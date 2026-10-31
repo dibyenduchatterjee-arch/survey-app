@@ -1,7 +1,7 @@
-// The enumerator app: log in, pick a form, fill it, finish, watch the queue drain.
+// The enumerator app: enter a project code, pick a form, fill it, finish, watch the queue drain.
 //
 // Deliberately thin. The logic lives in the modules it wires together:
-//   db.js (drafts, queue)  googleauth.js (Google sign-in)  drive.js (folder chooser)  sync.js (bootstrap, upload)
+//   db.js (drafts, queue)  projects.js (project-code login, Apps Script calls)  sync.js (bootstrap, upload)
 //   formengine.js (answers, validation)  render.js (the screen, GPS, photos, drafts)
 //
 // Two rules that matter more than the rest:
@@ -12,9 +12,8 @@
 //     server answers 200 as a replay, never a duplicate household.
 
 import * as db from './db.js';
-import { signIn, signOut, currentUser } from './googleauth.js';
-import { addProject } from './drive.js';
-import { bootstrap, startSync, syncOnce, listRejected, retryRejected } from './sync.js';
+import { openProject, signOut, listProjects } from './projects.js';
+import { bootstrap, startSync, syncOnce, listRejected, retryRejected, splitFormId } from './sync.js';
 import { FormEngine } from './formengine.js';
 import { availableLanguages, translate } from './i18n.js';
 import { renderForm, draftSaver, loadDraft, deleteDraftFully, rememberMediaCap, mediaCap } from './render.js';
@@ -47,18 +46,29 @@ const store = {
 const T = {
   hi: {
     title: 'Evidence Action सर्वे',
-    username: 'यूज़रनेम',
-    password: 'पासवर्ड',
-    login: 'लॉगिन करें',
-    google_signin: 'Google से लॉगिन करें',
-    add_project: 'प्रोजेक्ट जोड़ें',
-    add_project_help: '"प्रोजेक्ट जोड़ें" दबाएँ और वह फ़ोल्डर चुनें जो आपके सुपरवाइज़र ने आपके साथ साझा किया है।',
-    logging_in: 'लॉगिन हो रहा है…',
-    login_failed: 'लॉगिन नहीं हो पाया',
-    session_over: 'आपका लॉगिन समाप्त हो गया है। दोबारा लॉगिन करें। भरा हुआ काम फ़ोन में सुरक्षित है।',
+    code_title: 'प्रोजेक्ट कोड डालें',
+    code_label: 'प्रोजेक्ट कोड',
+    code_help: 'यह आपका अपना कोड है, जो सुपरवाइज़र ने दिया है। इससे सिर्फ़ आपके प्रोजेक्ट के फ़ॉर्म खुलेंगे, और भरे हुए फ़ॉर्म पर आपका नाम लगेगा।',
+    code_go: 'प्रोजेक्ट खोलें',
+    code_opening: 'खुल रहा है…',
+    code_empty: 'पहले प्रोजेक्ट कोड डालें।',
+    code_refused: 'यह कोड सही नहीं है, या इस प्रोजेक्ट की पहुँच बंद है। अपने सुपरवाइज़र से पूछें।',
+    code_network: 'इंटरनेट नहीं चल रहा, या सर्वर जवाब नहीं दे रहा। थोड़ी देर बाद फिर कोशिश करें।',
+    code_wait: 'बहुत ज़्यादा कोशिशें हुईं। कुछ मिनट बाद फिर कोशिश करें।',
+    code_unset: 'ऐप अभी सेट नहीं हुआ है (config.js में Apps Script का पता नहीं है)।',
+    code_cancel: 'वापस जाएँ',
+    add_project: 'दूसरा प्रोजेक्ट जोड़ें',
+    my_projects: 'आपके प्रोजेक्ट',
+    project_open: 'खुला है',
+    project_lost: 'पहुँच बंद है',
+    remove_project: 'हटाएँ',
+    sure_remove: 'पक्का हटाएँ?',
+    no_projects: 'अभी कोई प्रोजेक्ट नहीं खुला है।',
+    access_lost: 'इस प्रोजेक्ट की पहुँच बंद हो गई है: {p}। सही कोड फिर से डालें। भरा हुआ काम फ़ोन में सुरक्षित है।',
+    logging_in: 'खुल रहा है…',
     downloading: 'फ़ॉर्म डाउनलोड हो रहे हैं…',
     forms: 'फ़ॉर्म भरें',
-    no_forms: 'अभी कोई फ़ॉर्म नहीं मिला। इंटरनेट चालू करके फिर खोलें।',
+    no_forms: 'अभी कोई फ़ॉर्म नहीं मिला। इंटरनेट चालू करके "फ़ॉर्म अपडेट करें" दबाएँ।',
     drafts: 'अधूरे फ़ॉर्म',
     resume: 'जारी रखें',
     discard: 'मिटाएँ',
@@ -71,8 +81,8 @@ const T = {
     online: 'ऑनलाइन',
     rejected: 'सर्वर ने ये फ़ॉर्म नहीं लिए',
     retry: 'फिर भेजें',
-    logout: 'लॉग आउट',
-    logout_pending: 'अभी {n} फ़ॉर्म भेजे नहीं गए। फिर भी लॉग आउट करें?',
+    logout: 'सभी प्रोजेक्ट से बाहर निकलें',
+    logout_pending: 'अभी {n} फ़ॉर्म भेजे नहीं गए। भेजे नहीं गए फ़ॉर्म फ़ोन में रहेंगे। फिर भी बाहर निकलें?',
     finish: 'पूरा करें',
     home: 'होम',
     saved: 'सेव हो गया',
@@ -96,18 +106,29 @@ const T = {
   },
   en: {
     title: 'Evidence Action Survey',
-    username: 'Username',
-    password: 'Password',
-    login: 'Log in',
-    google_signin: 'Sign in with Google',
-    add_project: 'Add a project',
-    add_project_help: 'Tap "Add a project" and choose the folder your supervisor shared with you.',
-    logging_in: 'Logging in…',
-    login_failed: 'Could not log in',
-    session_over: 'Your login has ended. Log in again. Your saved work is safe on this phone.',
+    code_title: 'Enter your project code',
+    code_label: 'Project code',
+    code_help: 'This is your own code from your supervisor. It opens only the forms of your project, and the forms you fill carry your name.',
+    code_go: 'Open project',
+    code_opening: 'Opening…',
+    code_empty: 'Enter the project code first.',
+    code_refused: 'This code is not right, or access to this project has been switched off. Ask your supervisor.',
+    code_network: 'No internet, or the server did not answer. Try again in a little while.',
+    code_wait: 'Too many tries. Try again in a few minutes.',
+    code_unset: 'The app is not set up yet (the Apps Script address is missing in config.js).',
+    code_cancel: 'Back',
+    add_project: 'Add another project',
+    my_projects: 'Your projects',
+    project_open: 'Open',
+    project_lost: 'Access switched off',
+    remove_project: 'Remove',
+    sure_remove: 'Really remove?',
+    no_projects: 'No project is open yet.',
+    access_lost: 'Access to this project has been switched off: {p}. Enter the right code again. Your saved work is safe on this phone.',
+    logging_in: 'Opening…',
     downloading: 'Downloading forms…',
     forms: 'Fill a form',
-    no_forms: 'No forms yet. Turn on the internet and open this again.',
+    no_forms: 'No forms yet. Turn on the internet and tap "Refresh forms".',
     drafts: 'Unfinished forms',
     resume: 'Continue',
     discard: 'Delete',
@@ -120,8 +141,8 @@ const T = {
     online: 'Online',
     rejected: 'The server did not accept these forms',
     retry: 'Send again',
-    logout: 'Log out',
-    logout_pending: '{n} forms have not been sent yet. Log out anyway?',
+    logout: 'Leave all projects',
+    logout_pending: '{n} forms have not been sent yet. They stay on this phone. Leave anyway?',
     finish: 'Finish',
     home: 'Home',
     saved: 'Saved',
@@ -229,12 +250,15 @@ function useChromeToggle(rerender) {
 const maxMediaBytes = () => mediaCap(localStorage);
 const rememberCap = (boot) => rememberMediaCap(boot, localStorage);
 
-// The signed-in person, in the shape the rest of the app reads: user.id is the Google email,
-// which is also what sync stamps as _submitted_by. Null when nobody is signed in.
+// Who is using the phone, in the shape the rest of the app reads. user.id is the DEVICE's id (stable
+// across projects, so drafts stay visible whichever project is open). The person's NAME comes from
+// their code, per project (projects[].person), and is stamped on the rows by the backend. Null when
+// no project is open: the first screen asks for a code.
 async function readSession() {
-  let u = null;
-  try { u = await currentUser(); } catch { /* treated as signed out */ }
-  return u && u.email ? { user: { id: u.email, email: u.email, name: u.name } } : null;
+  let held = [];
+  try { held = await listProjects(); } catch { /* treated as nothing open */ }
+  if (!held.length) return null;
+  return { user: { id: deviceId() }, projects: held };
 }
 
 function deviceId() {
@@ -268,27 +292,41 @@ function screen(name, title, ...kids) {
   refreshStatus();
 }
 
-function showLogin(message) {
-  useChromeToggle(() => showLogin(message));
+// The first screen, and the "add another project" screen. A wrong code stores nothing.
+function showCode(message, { canCancel = false } = {}) {
+  useChromeToggle(() => showCode(message, { canCancel }));
   const err = h('p', 'err', { role: 'alert' });
-  const go = h('button', 'btn btn-primary', { type: 'button', text: t('google_signin') });
-  go.addEventListener('click', async () => {
+  const code = h('input', 'control', { type: 'text', id: 'project-code', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', 'aria-label': t('code_label') });
+  const go = h('button', 'btn btn-primary', { type: 'submit', text: t('code_go') });
+  const form = h('form', 'card', { novalidate: true },
+    h('h2', '', { text: t('code_title') }),
+    h('p', 'muted', { text: t('code_help') }),
+    h('div', 'field', {}, h('label', '', { for: 'project-code' }, t('code_label')), code),
+    err, go);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
     err.textContent = '';
+    if (!code.value.trim()) { err.textContent = t('code_empty'); return; }
     go.disabled = true;
-    go.textContent = t('logging_in');
+    go.textContent = t('code_opening');
     try {
-      await signIn();          // called from the tap, so the browser allows Google's window
-      await afterLogin();
+      await openProject(code.value);          // stores nothing unless the backend accepts the code
+      await afterOpen();
     } catch (ex) {
-      err.textContent = `${t('login_failed')}: ${ex.message || ex}`;
+      const c = ex && ex.code;
+      err.textContent = c === 'refused' ? t('code_refused')
+        : c === 'too_many_attempts' ? t('code_wait')
+        : c === 'not_configured' ? t('code_unset')
+        : t('code_network');
       go.disabled = false;
-      go.textContent = t('google_signin');
+      go.textContent = t('code_go');
     }
   });
-  screen('login', t('title'), message ? h('div', 'notice', { text: message }) : null, h('div', 'card', {}, err, go));
+  const back = canCancel ? h('button', 'btn btn-quiet', { type: 'button', text: t('code_cancel'), onclick: () => showHome() }) : null;
+  screen('code', t('title'), message ? h('div', 'notice', { text: message }) : null, form, back);
 }
 
-async function afterLogin() {
+async function afterOpen() {
   state.session = await readSession();
   screen('boot', t('title'), h('p', 'card', { text: t('downloading') }));
   let boot = null;
@@ -300,14 +338,18 @@ async function afterLogin() {
 }
 
 // The newest version of each form this phone holds. A draft stays on its own version.
+// Only forms of projects this phone currently holds (and that are not switched off) are listed:
+// a project that was removed or revoked shows nothing, though its stored forms and any queued
+// work stay on the phone. Form ids are namespaced by project, so each project's form is its own.
 async function latestForms() {
-  const all = await db.listForms();
+  const live = new Set((await listProjects()).filter((p) => !p.revoked).map((p) => p.key));
+  const all = (await db.listForms()).filter((spec) => spec._project && live.has(spec._project.id));
   const best = new Map();
   for (const spec of all) {
     const cur = best.get(spec.form_id);
     if (!cur || compareVersions(spec.version, cur.version) > 0) best.set(spec.form_id, spec);
   }
-  return [...best.values()];
+  return [...best.values()].sort((a, b) => String(a._project.name).localeCompare(String(b._project.name)));
 }
 
 function compareVersions(a, b) {
@@ -317,16 +359,23 @@ function compareVersions(a, b) {
   return x < y ? -1 : x > y ? 1 : 0;
 }
 
-const specTitle = (spec) => translate(spec.title, state.lang, spec.default_language) || spec.form_id;
+const specTitle = (spec) => translate(spec.title, state.lang, spec.default_language) || spec._form_id || splitFormId(spec.form_id).form;
+
+function lostText(session, keys) {
+  const names = (keys || []).map((k) => (session.projects.find((p) => p.key === k) || { name: k }).name);
+  return t('access_lost', { p: names.join(', ') });
+}
 
 async function showHome(boot, note) {
   useChromeToggle(() => showHome(boot, note));
   const session = (state.session = await readSession());
-  if (!session) { showLogin(t('session_over')); return; }
+  if (!session) { showCode(); return; }
   const uid = session.user && session.user.id;
 
   const forms = await latestForms();
+  const heldKeys = new Set(session.projects.filter((p) => !p.revoked).map((p) => p.key));
   const drafts = (await db.listDrafts()).filter((d) => d.kind !== 'media').filter((d) => d.user_id === undefined || d.user_id === uid)
+    .filter((d) => heldKeys.has(splitFormId(d.form_id).project))
     .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
   const pending = await db.queueLength();
   const rejected = await listRejected().catch(() => []);
@@ -345,8 +394,8 @@ async function showHome(boot, note) {
       sendBtn.textContent = t('sending');
       let sent = null;
       try { sent = await syncOnce(); } catch { /* shown by the count below */ }
-      // An expired Google sign-in: ask to sign in again. The queue has not been touched.
-      if (sent && sent.authRequired) { showLogin(t('session_over')); return; }
+      // A project whose code was switched off: say which one. The queue has not been touched.
+      if (sent && sent.authRequired) { showHome(boot, { kind: 'bad', text: lostText(session, sent.lostProjects) }); return; }
       showHome(boot);
     },
   });
@@ -356,6 +405,9 @@ async function showHome(boot, note) {
     pending ? sendBtn : null));
 
   // Refresh forms: one tap fetches the assigned forms and datasets again.
+  const lostNote = !note && session.projects.some((p) => p.revoked)
+    ? { kind: 'bad', text: lostText(session, session.projects.filter((p) => p.revoked).map((p) => p.key)) } : null;
+  if (lostNote) note = lostNote;
   const status = h('p', note ? 'notice ' + note.kind : 'muted', { role: 'status', 'aria-live': 'polite', text: note ? note.text : '' });
   status.hidden = !note;
   const refreshBtn = refreshButton({
@@ -371,40 +423,42 @@ async function showHome(boot, note) {
       await showHome(r.boot || boot, { kind: r.status === 'ok' ? 'good' : r.status === 'partial' ? '' : 'bad', text: refreshMessage(r, state.lang) });
     },
   });
-  const projectBtn = h('button', 'btn', { type: 'button', text: t('add_project') });
-  projectBtn.addEventListener('click', async () => {
-    projectBtn.disabled = true;
-    try {
-      const added = await addProject();           // Google's folder chooser; null if closed
-      if (added) { await refreshForms().then((r) => r.boot && rememberCap(r.boot)); }
-      await showHome(boot);
-    } catch (ex) {
-      projectBtn.disabled = false;
-      status.hidden = false;
-      status.className = 'notice bad';
-      status.textContent = t('fail', { m: (ex && ex.message) || ex });
-    }
-  });
-  parts.push(h('section', 'card', {}, refreshBtn, status, projectBtn));
+  parts.push(h('section', 'card', {}, refreshBtn, status));
+
+  // Projects held on this phone. Adding one never replaces another.
+  const projList = h('ul', 'list');
+  for (const p of session.projects) {
+    let armed = false;
+    const rm = h('button', 'btn btn-quiet', { type: 'button', text: t('remove_project') });
+    rm.addEventListener('click', async () => {
+      if (!armed) { armed = true; rm.textContent = t('sure_remove'); return; }
+      await signOut(p.key);            // this project only; the queue, drafts and forms stay
+      showHome(boot);
+    });
+    projList.append(h('li', 'btn-row', {},
+      h('span', '', { text: p.name + (p.person ? ' · ' + p.person : '') + ' · ' + (p.revoked ? t('project_lost') : t('project_open')) }), rm));
+  }
+  parts.push(h('section', 'card', {}, h('h2', '', { text: t('my_projects') }), projList,
+    h('button', 'btn', { type: 'button', id: 'add-project', text: t('add_project'), onclick: () => showCode(null, { canCancel: true }) })));
 
   // Forms
   const formList = h('ul', 'list');
   for (const spec of forms) {
     formList.append(h('li', '', {}, h('button', 'btn btn-primary', {
       type: 'button',
-      text: specTitle(spec),
       onclick: () => openForm(spec, null),
-    })));
+    }, specTitle(spec), h('small', 'project-tag', { text: spec._project.name, style: 'display:block;font-weight:400;opacity:.8' }))));
   }
   parts.push(h('section', 'card', {}, h('h2', '', { text: t('forms') }),
-    forms.length ? formList : h('p', 'muted', { text: t('no_forms') + ' ' + t('add_project_help') })));
+    forms.length ? formList : h('p', 'muted', { text: t('no_forms') })));
 
   // Drafts
   if (drafts.length) {
     const list = h('ul', 'list');
     for (const d of drafts) {
       const when = d.updated_at ? new Date(d.updated_at).toLocaleString(state.lang === 'en' ? 'en-IN' : 'hi-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '';
-      const label = `${d.form_id} · ${when}`;
+      const sp = splitFormId(d.form_id);
+      const label = `${sp.form} (${sp.project}) · ${when}`;
       let armed = false;
       const del = h('button', 'btn btn-quiet', { type: 'button', text: t('discard') });
       del.addEventListener('click', async () => {
@@ -430,7 +484,7 @@ async function showHome(boot, note) {
     const list = h('ul', 'list');
     for (const r of rejected) {
       list.append(h('li', '', {},
-        h('p', '', { text: `${r.form_id}: ${r.message || r.code || r.status}` }),
+        h('p', '', { text: `${splitFormId(r.form_id).form} (${splitFormId(r.form_id).project}): ${r.message || r.code || r.status}` }),
         h('button', 'btn', { type: 'button', text: t('retry'), onclick: async () => { await retryRejected(r.uuid); showHome(boot); } })));
     }
     parts.push(h('section', 'card', {}, h('div', 'notice bad', { text: t('rejected') }), list));
@@ -441,8 +495,8 @@ async function showHome(boot, note) {
   const out = h('button', 'btn btn-quiet', { type: 'button', text: t('logout') });
   out.addEventListener('click', async () => {
     if (pending && !sure) { sure = true; out.textContent = t('logout_pending', { n: pending }); return; }
-    await signOut();           // forgets the sign-in only; the queue, drafts and forms stay
-    showLogin();
+    await signOut();           // forgets the project codes only; the queue, drafts and forms stay
+    showCode();
   });
   parts.push(out);
   screen('home', t('title'), parts);
@@ -536,7 +590,8 @@ function openForm(spec, draft) {
         device_id: deviceId(),
         started_at: startedAt,
         finished_at: new Date().toISOString(),
-        user_id: uid,                   // the sync queue skips submissions that belong to another user
+        user_id: uid,                   // the device
+        person: ((state.session.projects || []).find((p) => p.key === spec._project.id) || {}).person || '',   // whose code this was filled under
         ...firstFix(spec, sub.data),
       };
       await db.enqueue(submission, blobs);   // submission and photos commit together
@@ -600,7 +655,7 @@ async function main() {
     return;
   }
   const session = await readSession();
-  if (!session) { showLogin(); return; }
+  if (!session) { showCode(); return; }
   state.session = session;
   startSync();
   await showHome();

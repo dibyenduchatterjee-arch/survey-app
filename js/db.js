@@ -250,9 +250,8 @@ export const clearSession = () => write('session', s => s.delete(SESSION_ID));
 
 // ---- project sessions (access-code login; one record per project on this device) ----
 // Kept in the same `session` store under other ids, so no schema change or migration is needed.
-//   'project:<key>'  { id, key, name, code, token, expires_at, revoked }
+//   'project:<key>'  { id, key, name, person, code, token, expires_at, revoked }
 //   'active'         { id, key }            which project is open right now
-//   'worker'         { id, name }           who is filling forms on this device
 // The code is stored like a password, here in IndexedDB and nowhere else: it is needed to
 // re-open when the 6-hour token lapses. Never localStorage.
 const PROJECT_PREFIX = 'project:';
@@ -265,7 +264,7 @@ export const deleteSessionRecord = id => write('session', s => s.delete(id));
 export const listProjectSessions = () =>
   read('session', s => s.getAll()).then(v => (v || []).filter(r => r && typeof r.id === 'string' && r.id.startsWith(PROJECT_PREFIX)));
 // Signing out of everything removes every project login and the active marker, and nothing
-// else: the queue, drafts, rejected store, forms and the worker name are not touched.
+// else: the queue, drafts, rejected store and forms are not touched.
 export async function clearProjectSessions() {
   for (const r of await listProjectSessions()) await deleteSessionRecord(r.id);
   await deleteSessionRecord('active');

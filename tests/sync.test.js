@@ -1,300 +1,291 @@
-// Sync against Google Drive and Sheets, with the Drive layer stubbed: no test here touches
-// the network. `memStore` has db.js's exact interface; `fakeDrive` is an in-memory
-// spreadsheet that can be told to fail at a named call.
+// Sync against the Apps Script backend, with the backend faked: no test here touches the network.
+// `memStore` has db.js's exact interface; `fakeBackend` is the API from task-40-report.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import * as sync from "../js/sync.js";
-import { DriveError } from "../js/drive.js";
+import * as projects from "../js/projects.js";
+import { memStore, fakeBackend, URL_, FORM_A, FORM_B, sub, photo, noSleep } from "./_fakes.mjs";
 
-// ---- fakes -----------------------------------------------------------------------
+const world = () => fakeBackend({
+  GAYA2026: { name: "Bihar AMB", forms: [FORM_A] },
+  PATNA: { name: "Patna WIFS", forms: [FORM_B] },
+});
+const opts = (store, be, extra = {}) => ({ store, fetchImpl: be.fetchImpl, url: URL_, sleep: noSleep(), random: () => 0.5, ...extra });
 
-function memStore() {
-  const forms = new Map();
-  const rejected = new Map();
-  const media = new Map();
-  let queue = [];
-  let seq = 0;
-  return {
-    async putForm(spec) { forms.set(`${spec.form_id}|${spec.version}`, structuredClone(spec)); },
-    async getForm(id, v) { return forms.get(`${id}|${v}`); },
-    async listForms() { return [...forms.values()]; },
-    async putRejected(rec) { rejected.set(rec.uuid, rec); },
-    async listRejected() { return [...rejected.values()]; },
-    async getRejected(uuid) { return rejected.get(uuid); },
-    async deleteRejected(uuid) { rejected.delete(uuid); },
-    async enqueue(sub, blobs) {
-      queue = queue.filter(q => q.uuid !== sub.uuid);
-      queue.push({ ...sub, queued_at: ++seq });
-      media.set(sub.uuid, Object.entries(blobs || {}).map(([question, blob]) => ({ uuid: sub.uuid, question, blob })));
-    },
-    async peekQueue(n = 1) { return queue.slice(0, n); },
-    async dequeue(uuid) { queue = queue.filter(q => q.uuid !== uuid); media.delete(uuid); },
-    async queueLength() { return queue.length; },
-    async getMedia(uuid) { return media.get(uuid) || []; },
-  };
-}
-
-const SPEC = {
-  form_id: "visit", version: "2026103101",
-  nodes: [
-    { type: "text", name: "asha_name" },
-    { type: "group", name: "g", children: [{ type: "integer", name: "household_children" }] },
-    { type: "image", name: "household_photo" },
-    { type: "note", name: "n1" },
-    { type: "repeat", name: "children", children: [
-      { type: "text", name: "child_name" },
-      { type: "repeat", name: "doses", children: [{ type: "integer", name: "dose_ml" }] },
-    ] },
-  ],
-};
-const PROJECT = { id: "P1", name: "AMB" };
-
-async function readyStore(spec = SPEC) {
+// A phone that has opened a project and downloaded its forms.
+async function ready(be, codes = ["GAYA2026"]) {
   const store = memStore();
-  await store.putForm({ ...spec, _project: PROJECT });
+  for (const c of codes) await projects.openProject(c, { store, fetchImpl: be.fetchImpl, url: URL_ });
+  await sync.bootstrap(opts(store, be));
   return store;
 }
-
-const sub = (uuid, extra = {}) => ({
-  uuid, form_id: "visit", version: "2026103101", user_id: "asha@x.org",
-  data: { asha_name: "सीता", household_children: 2 }, repeats: {},
-  device_id: "dev-1", started_at: "2026-10-31T09:00:00Z", finished_at: "2026-10-31T09:05:00Z",
-  gps_lat: 25.5, gps_lon: 85.1, ...extra,
-});
-const photo = (t = "JPEG") => new Blob([t], { type: "image/jpeg" });
-const err = (status, retryable = status === 429 || status >= 500, body = "") =>
-  new DriveError(`Google ${status}`, { status, retryable, body });
-
-// An in-memory Drive. `fail[name]` is a function(callNumber, args) that may throw.
-function fakeDrive(fail = {}) {
-  const tabs = new Map();           // tab name -> array of rows; row 0 is the header
-  const calls = [];
-  const counts = {};
-  const uploads = [];
-  const hit = (name, args) => {
-    calls.push(name);
-    counts[name] = (counts[name] || 0) + 1;
-    if (fail[name]) fail[name](counts[name], args);
-  };
-  const d = {
-    tabs, calls, uploads,
-    rows: tab => (tabs.get(tab) || []).slice(1),
-    async listProjects() { hit("listProjects"); return d.projects || [PROJECT]; },
-    async listForms(id) { hit("listForms", id); return (d.files || {})[id] || []; },
-    async readSpec(fid) { hit("readSpec", fid); d.read = [...(d.read || []), fid]; return structuredClone(d.specs[fid]); },
-    async uploadMedia(folder, name) {
-      hit("uploadMedia", name);
-      uploads.push({ folder, name });
-      return { id: "f" + uploads.length, link: `https://drive.example/${name}` };
-    },
-    async findOrCreateSpreadsheet(folder, name) { hit("findOrCreateSpreadsheet"); return "SS:" + folder + ":" + name; },
-    async ensureTab(ss, tab, header) {
-      hit("ensureTab");
-      if (!tabs.has(tab)) tabs.set(tab, [header.slice()]);
-    },
-    async ensureColumns(ss, tab, names) {
-      hit("ensureColumns");
-      const header = tabs.get(tab)[0];
-      for (const n of names) if (!header.includes(n)) header.push(n);   // add only, never reorder
-      return header;
-    },
-    async readColumns(ss, tab, n) {
-      hit("readColumns");
-      return (tabs.get(tab) || []).map(r => r.slice(0, n).map(String));
-    },
-    async appendRow(ss, tab, values) {
-      hit("appendRow", { tab, values });
-      const t = tabs.get(tab);
-      const row = Array.isArray(values) ? values : t[0].map(k => (values[k] ?? ""));
-      t.push(row);
-    },
-  };
-  return d;
-}
-
-const noSleep = () => { const s = async ms => { s.waits.push(ms); }; s.waits = []; return s; };
-const opts = (store, drive, extra = {}) => ({
-  store, drive, sleep: noSleep(), random: () => 0.5, getUser: async () => ({ email: "asha@x.org" }), ...extra,
-});
+const submits = be => be.calls.filter(c => c.action === "submit");
 
 test.beforeEach(() => { sync._resetSyncState(); });
 
-// ---- the required behaviours -------------------------------------------------------
+// ---- bootstrap and project isolation ---------------------------------------------------
 
-test("a submission appends exactly one row, uuid first, answers in header order, metadata after", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
+test("a valid code lists only that project's forms, tagged and namespaced", async () => {
+  const be = world();
+  const store = await ready(be);
+  const forms = await store.listForms();
+  assert.equal(forms.length, 1);
+  assert.equal(forms[0].form_id, "Bihar AMB::visit");
+  assert.equal(forms[0]._form_id, "visit");
+  assert.deepEqual(forms[0]._project, { id: "Bihar AMB", name: "Bihar AMB" });
+  assert.equal(forms[0].title.en, "Home visit");
+});
+
+test("two codes on one device: both projects' forms are kept apart even with the same form id and version", async () => {
+  const be = world();
+  const store = await ready(be, ["GAYA2026", "PATNA"]);
+  const forms = await store.listForms();
+  assert.deepEqual(forms.map(f => f.form_id).sort(), ["Bihar AMB::visit", "Patna WIFS::visit"]);
+  assert.equal((await store.getForm("Patna WIFS::visit", "2026103101")).nodes[0].name, "school_name");
+  assert.equal((await store.getForm("Bihar AMB::visit", "2026103101")).nodes[0].name, "asha_name");
+});
+
+test("each project's forms are fetched with that project's own token only", async () => {
+  const be = world();
+  await ready(be, ["GAYA2026", "PATNA"]);
+  const asked = be.calls.filter(c => c.action === "forms");
+  assert.equal(asked.length, 2);
+  assert.notEqual(asked[0].token, asked[1].token);
+});
+
+test("a submission goes to its own project and never to another", async () => {
+  const be = world();
+  const store = await ready(be, ["GAYA2026", "PATNA"]);
+  await store.enqueue(sub("a1", "Bihar AMB::visit"), {});
+  await store.enqueue(sub("p1", "Patna WIFS::visit", { data: { school_name: "School 7" } }), {});
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.uploaded, 2);
+  assert.equal(be.rows("Bihar AMB", "visit").length, 1);
+  assert.equal(be.rows("Patna WIFS", "visit").length, 1);
+  assert.equal(be.rows("Bihar AMB", "visit")[0].uuid, "a1");
+  assert.equal(be.rows("Patna WIFS", "visit")[0].school_name, "School 7");
+  assert.equal(be.rows("Patna WIFS", "visit")[0].asha_name, undefined);
+});
+
+test("a new form version is stored alongside the old one, never replacing it", async () => {
+  const be = world();
+  const store = await ready(be);
+  be.projects.GAYA2026.forms = [{ ...FORM_A, version: "2026110101", nodes: [...FORM_A.nodes, { type: "text", name: "extra" }] }];
+  const r = await sync.bootstrap(opts(store, be));
+  assert.equal(r.forms.filter(f => f.downloaded).length, 1);
+  assert.equal((await store.listForms()).length, 2);
+  assert.equal((await store.getForm("Bihar AMB::visit", "2026103101")).nodes.length, FORM_A.nodes.length);
+});
+
+test("an already-stored version is left exactly as it was (a draft keeps the form it started on)", async () => {
+  const be = world();
+  const store = await ready(be);
+  const before = JSON.stringify(await store.getForm("Bihar AMB::visit", "2026103101"));
+  be.projects.GAYA2026.forms = [{ ...FORM_A, title: { en: "CHANGED SAME VERSION" } }];
+  const r = await sync.bootstrap(opts(store, be));
+  assert.equal(r.forms[0].downloaded, false);
+  assert.equal(JSON.stringify(await store.getForm("Bihar AMB::visit", "2026103101")), before);
+});
+
+test("one bad spec does not stop the others, and a project that fails does not stop the next", async () => {
+  const be = world();
+  const store = memStore();
+  for (const c of ["GAYA2026", "PATNA"]) await projects.openProject(c, { store, fetchImpl: be.fetchImpl, url: URL_ });
+  be.projects.GAYA2026.forms = [{ nope: 1 }, FORM_A];
+  be.projects.GAYA2026.skipped = ["broken.spec.json"];
+  const r = await sync.bootstrap(opts(store, be));
+  assert.equal(r.forms.length, 2);
+  assert.equal(r.errors.length, 2);
+  be.projects.GAYA2026.active = false;     // now the first project's forms call is a session failure
+  const r2 = await sync.bootstrap(opts(store, be));
+  assert.ok(r2.errors.some(e => e.project === "Bihar AMB"));
+});
+
+test("bootstrap throws when projects are held and none could be asked", async () => {
+  const be = world();
+  const store = await ready(be);
+  be.fail.forms = () => "throw";
+  await assert.rejects(sync.bootstrap(opts(store, be)));
+  assert.equal((await store.listForms()).length, 1);   // what was downloaded earlier is untouched
+});
+
+test("bootstrap with no project open does nothing and does not call the backend", async () => {
+  const be = world();
+  const r = await sync.bootstrap(opts(memStore(), be));
+  assert.deepEqual(r.forms, []);
+  assert.equal(be.calls.length, 0);
+});
+
+// ---- uploading ---------------------------------------------------------------------------
+
+test("a submission posts once, uuid first, answers in order, without claiming a name; nothing is posted on a second run", async () => {
+  const be = world();
+  const store = await ready(be);
   await store.enqueue(sub("u1"), {});
-  const r = await sync.syncOnce(opts(store, drive));
+  const r = await sync.syncOnce(opts(store, be));
   assert.equal(r.uploaded, 1);
-  assert.equal(r.remaining, 0);
-  assert.deepEqual(drive.tabs.get("visit")[0], [
-    "uuid", "asha_name", "household_children", "household_photo",
-    "_gps", "_started_at", "_finished_at", "_device_id", "_submitted_by", "_form_version",
-  ]);
-  assert.deepEqual(drive.rows("visit"), [[
-    "u1", "सीता", 2, "", "25.5 85.1", "2026-10-31T09:00:00Z", "2026-10-31T09:05:00Z", "dev-1", "asha@x.org", "2026103101",
-  ]]);
   assert.equal(await store.queueLength(), 0);
+  assert.equal(submits(be).length, 1);
+  const body = submits(be)[0];
+  assert.equal(body.uuid, "u1");
+  const main = body.tabs.find(t => t.kind === "main");
+  assert.equal(main.name, "visit");
+  assert.deepEqual(main.key, ["uuid"]);
+  assert.deepEqual(Object.keys(main.rows[0]), ["uuid", "asha_name", "household_children", "household_photo", "_gps", "_started_at", "_finished_at", "_device_id", "_form_version"]);
+  assert.equal("_submitted_by" in main.rows[0], false);   // the backend stamps the name from the person's code
+  assert.equal(be.rows("Bihar AMB", "visit")[0]._submitted_by, "Sita");
+  assert.equal(main.rows[0].asha_name, "सीता");
+  assert.equal(body.tabs[body.tabs.length - 1].kind, "main");
+  const again = await sync.syncOnce(opts(store, be));
+  assert.equal(again.uploaded + again.replayed, 0);
+  assert.equal(submits(be).length, 1);
 });
 
-test("a newer form version's new question gets a new column; the old row is untouched", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
+test("the client never sends the received-at stamps (the script stamps them)", async () => {
+  const be = world();
+  const store = await ready(be);
   await store.enqueue(sub("u1"), {});
-  await sync.syncOnce(opts(store, drive));
-  const v1Header = drive.tabs.get("visit")[0].slice();
-  const v1Row = drive.rows("visit")[0].slice();
-
-  // the user adds a question, the team refreshes, and a submission is collected on version 2
-  const v2 = { ...SPEC, version: "2026110101", nodes: [...SPEC.nodes, { type: "text", name: "new_q" }] };
-  await store.putForm({ ...v2, _project: PROJECT });
-  await store.enqueue(sub("u2", { version: "2026110101", data: { asha_name: "गीता", new_q: "answer-2" } }), {});
-  await sync.syncOnce(opts(store, drive));
-
-  const header = drive.tabs.get("visit")[0];
-  assert.deepEqual(header.slice(0, v1Header.length), v1Header, "existing columns are not reordered");
-  assert.equal(header[header.length - 1], "new_q");
-  const rows = drive.rows("visit");
-  assert.deepEqual(rows[0], v1Row, "the version-1 row is untouched");
-  assert.equal(rows[1][header.indexOf("new_q")], "answer-2");
-  assert.equal(rows[1][header.indexOf("asha_name")], "गीता");
-  assert.equal(rows[1][header.indexOf("_form_version")], "2026110101");
+  await sync.syncOnce(opts(store, be));
+  const row = submits(be)[0].tabs.find(t => t.kind === "main").rows[0];
+  assert.equal("_received_at" in row, false);
+  assert.equal("_received_date_ist" in row, false);
 });
 
-test("a new question inside a repeat gets its column in the repeat tab", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1", { repeats: { children: [{ child_name: "A" }] } }), {});
-  await sync.syncOnce(opts(store, drive));
-  const v2 = structuredClone(SPEC);
-  v2.version = "2026110101";
-  v2.nodes.find(n => n.name === "children").children.push({ type: "integer", name: "age" });
-  await store.putForm({ ...v2, _project: PROJECT });
-  await store.enqueue(sub("u2", { version: "2026110101", repeats: { children: [{ child_name: "B", age: 4 }] } }), {});
-  await sync.syncOnce(opts(store, drive));
-  const header = drive.tabs.get("visit_children")[0];
-  assert.deepEqual(header, ["parent_uuid", "row_index", "child_name", "age"]);
-  assert.equal(drive.rows("visit_children")[1][header.indexOf("age")], 4);
-});
-
-test("a replay of the same uuid appends nothing and still dequeues", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1"), { household_photo: photo() });
-  await sync.syncOnce(opts(store, drive));
-  await store.enqueue(sub("u1"), { household_photo: photo() });   // the same submission comes back
-  const r = await sync.syncOnce(opts(store, drive));
-  assert.equal(drive.rows("visit").length, 1);
-  assert.equal(drive.uploads.length, 1, "no second photo upload for a replay");
+test("a replay of the same uuid is answered 'duplicate': dequeued, and nothing new is written", async () => {
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1"), {});
+  await sync.syncOnce(opts(store, be));
+  await store.enqueue(sub("u1"), {});          // e.g. a resumed draft finished twice: same uuid
+  const r = await sync.syncOnce(opts(store, be));
   assert.equal(r.replayed, 1);
+  assert.equal(r.uploaded, 0);
   assert.equal(await store.queueLength(), 0);
+  assert.equal(be.rows("Bihar AMB", "visit").length, 1);
 });
 
-test("a dropped connection after the append, then a retry, never makes a second row", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  const realAppend = drive.appendRow;
-  let lost = false;
-  drive.appendRow = async (...a) => {
-    await realAppend(...a);
-    if (!lost) { lost = true; throw err(0, false); }     // the row landed, the reply did not
+test("a lost reply, then a retry, sends the SAME uuid and makes one row", async () => {
+  const be = world();
+  const store = await ready(be);
+  // The backend writes the row but the reply never reaches the phone.
+  const real = be.fetchImpl;
+  let dropped = false;
+  const lossy = async (url, init) => {
+    const res = await real(url, init);
+    if (JSON.parse(init.body).action === "submit" && !dropped) { dropped = true; throw new TypeError("connection dropped"); }
+    return res;
   };
   await store.enqueue(sub("u1"), {});
-  await sync.syncOnce(opts(store, drive));
-  assert.equal(await store.queueLength(), 1, "still queued: we cannot know it landed");
-  await sync.syncOnce(opts(store, drive));
-  assert.equal(drive.rows("visit").length, 1);
+  const r = await sync.syncOnce(opts(store, be, { fetchImpl: lossy }));
+  assert.equal(r.uploaded + r.replayed, 1);
   assert.equal(await store.queueLength(), 0);
+  assert.equal(be.rows("Bihar AMB", "visit").length, 1);
+  const sent = submits(be).map(c => c.uuid);
+  assert.deepEqual(sent, ["u1", "u1"]);           // twice on the wire, never a new uuid
 });
 
-test("a failed photo upload leaves the submission queued and appends nothing", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive({ uploadMedia: () => { throw err(500); } });
-  await store.enqueue(sub("u1"), { household_photo: photo() });
-  const r = await sync.syncOnce(opts(store, drive, { maxAttempts: 2 }));
-  assert.equal(await store.queueLength(), 1);
-  assert.equal(drive.rows("visit").length, 0);
-  assert.equal(r.uploaded, 0);
-  assert.ok(r.retryInMs > 0);
-  assert.equal((await store.listRejected()).length, 0);
+test("a failure keeps the record queued (network, busy, server_error, HTML page, quota text)", async () => {
+  for (const fail of ["throw", "html",
+    () => ({ ok: false, error: "busy", retry: true, retry_after_s: 60 }),
+    () => ({ ok: false, error: "server_error", retry: true, retry_after_s: 120 }),
+    () => ({ ok: false, error: "quota", message: "Service invoked too many times for one day", retry: false })]) {
+    sync._resetSyncState();
+    const be = world();
+    const store = await ready(be);
+    await store.enqueue(sub("u1"), { household_photo: photo("PIC") });
+    be.fail.submit = typeof fail === "string" ? () => fail : fail;
+    const r = await sync.syncOnce(opts(store, be));
+    assert.equal(await store.queueLength(), 1, String(fail));
+    assert.equal((await store.getMedia("u1")).length, 1);
+    assert.equal(r.rejected, 0);
+    assert.equal(r.failed, 1);
+    assert.equal((await store.listRejected()).length, 0);
+    assert.equal(be.rows("Bihar AMB", "visit").length, 0);
+  }
 });
 
-test("photo link goes in the question's own column", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1"), { household_photo: photo() });
-  await sync.syncOnce(opts(store, drive));
-  assert.equal(drive.uploads[0].folder, "P1");
-  assert.equal(drive.rows("visit")[0][3], "https://drive.example/u1_household_photo.jpg");
-});
-
-test("a 429 retries with jittered exponential backoff, then succeeds", async () => {
-  const store = await readyStore();
-  let n = 0;
-  const drive = fakeDrive({ appendRow: () => { if (++n <= 2) throw err(429); } });
-  const sleep = noSleep();
+test("a retryable refusal backs off with jitter and then succeeds; the same uuid is resent", async () => {
+  const be = world();
+  const store = await ready(be);
   await store.enqueue(sub("u1"), {});
-  const r = await sync.syncOnce(opts(store, drive, { sleep, random: () => 1 }));
+  be.fail.submit = n => (n <= 3 ? { ok: false, error: "busy", retry: true, retry_after_s: 60 } : undefined);
+  const sleep = noSleep();
+  const r = await sync.syncOnce(opts(store, be, { sleep }));
   assert.equal(r.uploaded, 1);
-  // The fake throws BEFORE writing, so exactly one row exists after two failures.
-  assert.equal(drive.rows("visit").length, 1);
-  assert.equal(sleep.waits.length, 2);
-  assert.ok(sleep.waits[1] > sleep.waits[0], "exponential");
-  assert.ok(sleep.waits[0] > 0);
+  assert.equal(sleep.waits.length, 3);
+  assert.deepEqual(sleep.waits, [750, 1500, 3000]);       // 1s,2s,4s ceilings at random()=0.5 -> 75%
+  assert.deepEqual(submits(be).map(c => c.uuid), ["u1", "u1", "u1", "u1"]);
 });
 
 test("jitter spreads the delay between half and the full backoff", async () => {
   const waits = [];
-  for (const random of [0, 0.999]) {
+  for (const rnd of [0, 0.999]) {
     sync._resetSyncState();
-    const store = await readyStore();
-    let n = 0;
-    const drive = fakeDrive({ appendRow: () => { if (++n <= 1) throw err(503); } });
-    const sleep = noSleep();
+    const be = world();
+    const store = await ready(be);
     await store.enqueue(sub("u1"), {});
-    await sync.syncOnce(opts(store, drive, { sleep, random: () => random }));
+    be.fail.submit = n => (n === 1 ? { ok: false, error: "busy", retry: true } : undefined);
+    const sleep = noSleep();
+    await sync.syncOnce(opts(store, be, { sleep, random: () => rnd }));
     waits.push(sleep.waits[0]);
   }
-  assert.ok(waits[0] < waits[1]);
-  assert.ok(waits[0] >= waits[1] / 2 - 1);
+  assert.equal(waits[0], 500);
+  assert.ok(waits[1] > 990 && waits[1] <= 1000);
 });
 
-test("a Google quota 403 is retried, not rejected", async () => {
-  const store = await readyStore();
-  let n = 0;
-  const drive = fakeDrive({ appendRow: () => { if (++n === 1) throw err(403, false, '{"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}'); } });
+test("when the backend keeps saying retry, the run stops, the record stays, and the server's retry-after sets the next run", async () => {
+  const be = world();
+  const store = await ready(be);
   await store.enqueue(sub("u1"), {});
-  const r = await sync.syncOnce(opts(store, drive));
-  assert.equal(r.uploaded, 1);
+  await store.enqueue(sub("u2"), {});
+  be.fail.submit = () => ({ ok: false, error: "busy", retry: true, retry_after_s: 120 });
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(await store.queueLength(), 2);
+  assert.equal(r.failed, 1);
   assert.equal(r.rejected, 0);
+  assert.ok(r.retryInMs >= 120_000);
+  assert.equal(submits(be).length, 5);          // MAX_ATTEMPTS on the first record, then it stopped
 });
 
-test("a 403 moves the submission to rejected with its media, and the queue moves on", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive({ uploadMedia: (c, a) => { if (/u1_/.test(a)) throw err(403, false, "forbidden"); } });
-  await store.enqueue(sub("u1"), { household_photo: photo("PIC") });
-  await store.enqueue(sub("u2"), {});
-  const r = await sync.syncOnce(opts(store, drive));
-  assert.equal(r.rejected, 1);
-  assert.equal(r.uploaded, 1);
-  assert.equal(await store.queueLength(), 0);
-  const [rec] = await store.listRejected();
-  assert.equal(rec.uuid, "u1");
-  assert.equal(rec.status, 403);
-  assert.equal(rec.submission.data.asha_name, "सीता");
-  assert.equal(rec.media.length, 1);
-  assert.equal(await rec.media[0].blob.text(), "PIC");
-  assert.deepEqual(drive.rows("visit").map(r => r[0]), ["u2"]);
+test("permanent refusals go to the rejected store with their photo, and the queue moves on", async () => {
+  for (const code of ["bad_request", "too_large", "layout_mismatch"]) {
+    sync._resetSyncState();
+    const be = world();
+    const store = await ready(be);
+    await store.enqueue(sub("u1"), { household_photo: photo("PIC") });
+    await store.enqueue(sub("u2"), {});
+    be.fail.submit = (n, body) => (body.uuid === "u1" ? { ok: false, error: code, message: "no thanks", retry: false } : undefined);
+    const r = await sync.syncOnce(opts(store, be));
+    assert.equal(r.rejected, 1, code);
+    assert.equal(r.uploaded, 1);
+    assert.equal(await store.queueLength(), 0);
+    const [rec] = await store.listRejected();
+    assert.equal(rec.uuid, "u1");
+    assert.equal(rec.code, code);
+    assert.equal(rec.submission.data.asha_name, "सीता");
+    assert.equal(await rec.media[0].blob.text(), "PIC");
+    assert.deepEqual(be.rows("Bihar AMB", "visit").map(r => r.uuid), ["u2"]);
+  }
+});
+
+test("an unknown refusal is NOT treated as a rejection: the record is kept", async () => {
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1"), {});
+  be.fail.submit = () => ({ ok: false, error: "something_new", message: "huh", retry: false });
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.rejected, 0);
+  assert.equal(await store.queueLength(), 1);
 });
 
 test("a rejected submission can be put back on the queue with its photo", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive({ appendRow: () => { throw err(403, false, "forbidden"); } });
+  const be = world();
+  const store = await ready(be);
+  be.fail.submit = () => ({ ok: false, error: "layout_mismatch", retry: false });
   await store.enqueue(sub("u1"), { household_photo: photo("PIC") });
-  await sync.syncOnce(opts(store, drive));
+  await sync.syncOnce(opts(store, be));
   await sync.retryRejected("u1", { store });
   assert.equal(await store.queueLength(), 1);
   assert.equal((await store.getMedia("u1")).length, 1);
@@ -302,228 +293,181 @@ test("a rejected submission can be put back on the queue with its photo", async 
 });
 
 test("if the rejection cannot be recorded, the submission stays queued", async () => {
-  const store = await readyStore();
+  const be = world();
+  const store = await ready(be);
   store.putRejected = async () => { throw new Error("disk full"); };
-  const drive = fakeDrive({ appendRow: () => { throw err(403, false, "forbidden"); } });
+  be.fail.submit = () => ({ ok: false, error: "bad_request", retry: false });
   await store.enqueue(sub("u1"), {});
-  await sync.syncOnce(opts(store, drive));
+  await sync.syncOnce(opts(store, be));
   assert.equal(await store.queueLength(), 1);
 });
 
-test("repeat rows land in their own tab, each carrying the parent uuid and its row index", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1", { repeats: {
-    children: [
-      { child_name: "Anu", doses: [{ dose_ml: 5 }, { dose_ml: 5 }] },
-      { child_name: "Ravi" },
-    ],
-  } }), {});
-  await sync.syncOnce(opts(store, drive));
-  assert.deepEqual(drive.tabs.get("visit_children")[0], ["parent_uuid", "row_index", "child_name"]);
-  assert.deepEqual(drive.rows("visit_children"), [["u1", 1, "Anu"], ["u1", 2, "Ravi"]]);
-  assert.deepEqual(drive.tabs.get("visit_children_doses")[0], ["parent_uuid", "children_row_index", "row_index", "dose_ml"]);
-  assert.deepEqual(drive.rows("visit_children_doses"), [["u1", 1, 1, 5], ["u1", 1, 2, 5]]);
-  assert.equal(drive.rows("visit").length, 1);
+test("a photo goes up as base64 with its mime, and its own question's cell is sent empty", async () => {
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1"), { household_photo: photo("PIC") });
+  await sync.syncOnce(opts(store, be));
+  const body = submits(be)[0];
+  assert.equal(body.photos.length, 1);
+  assert.equal(body.photos[0].question, "household_photo");
+  assert.equal(body.photos[0].mime, "image/jpeg");
+  assert.equal(Buffer.from(body.photos[0].data_base64, "base64").toString(), "PIC");
+  assert.equal(body.tabs.find(t => t.kind === "main").rows[0].household_photo, "");
 });
 
-test("a crash midway through repeat rows is finished by the retry, with no duplicate rows", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  const real = drive.appendRow;
-  let n = 0;
-  drive.appendRow = async (...a) => { if (++n === 2) throw err(0, false); return real(...a); };
-  await store.enqueue(sub("u1", { repeats: { children: [{ child_name: "A" }, { child_name: "B" }, { child_name: "C" }] } }), {});
-  await sync.syncOnce(opts(store, drive));
-  assert.equal(await store.queueLength(), 1);
-  await sync.syncOnce(opts(store, drive));
-  assert.deepEqual(drive.rows("visit_children").map(r => r[2]), ["A", "B", "C"]);
-  assert.equal(drive.rows("visit").length, 1);
-  assert.equal(await store.queueLength(), 0);
-});
-
-test("the main row is written last, so its presence means everything else landed", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  const order = [];
-  const real = drive.appendRow;
-  drive.appendRow = async (ss, tab, v) => { order.push(tab); return real(ss, tab, v); };
-  await store.enqueue(sub("u1", { repeats: { children: [{ child_name: "A" }] } }), { household_photo: photo() });
-  await sync.syncOnce(opts(store, drive));
-  assert.deepEqual(order, ["visit_children", "visit"]);
-  assert.ok(drive.calls.indexOf("uploadMedia") < drive.calls.indexOf("appendRow"));
-});
-
-test("a forced re-authentication leaves the queue completely untouched, and a later sign-in drains it", async () => {
-  const store = await readyStore();
-  let signedIn = false;
-  const drive = fakeDrive({
-    findOrCreateSpreadsheet: () => {
-      if (!signedIn) { const e = new Error("Your Google sign-in has expired."); e.code = "needs_signin"; throw e; }
-    },
-  });
-  for (const u of ["u1", "u2"]) await store.enqueue(sub(u), { household_photo: photo() });
-  const r = await sync.syncOnce(opts(store, drive));
-  assert.equal(r.authRequired, true);
-  assert.equal(r.remaining, 2);
-  assert.equal(await store.queueLength(), 2);
-  assert.equal((await store.getMedia("u1")).length, 1);
-  assert.equal((await store.listRejected()).length, 0);
-  assert.equal(drive.rows("visit").length, 0);
-  signedIn = true;
-  const r2 = await sync.syncOnce(opts(store, drive));
-  assert.equal(r2.uploaded, 2);
-  assert.equal(await store.queueLength(), 0);
-});
-
-test("no signed-in user means authRequired and no Drive calls", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1"), {});
-  const r = await sync.syncOnce(opts(store, drive, { getUser: async () => null }));
-  assert.equal(r.authRequired, true);
-  assert.equal(drive.calls.length, 0);
-  assert.equal(await store.queueLength(), 1);
-});
-
-test("a 401 mid-run is an auth problem, not a rejection", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive({ appendRow: () => { throw err(401, false); } });
-  await store.enqueue(sub("u1"), {});
-  const r = await sync.syncOnce(opts(store, drive));
-  assert.equal(r.authRequired, true);
-  assert.equal(await store.queueLength(), 1);
-  assert.equal((await store.listRejected()).length, 0);
-});
-
-test("an empty queue is a no-op", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  const r = await sync.syncOnce(opts(store, drive));
-  assert.deepEqual([r.uploaded, r.replayed, r.failed, r.rejected, r.remaining, r.authRequired], [0, 0, 0, 0, 0, false]);
-  assert.equal(drive.calls.length, 0);
-});
-
-// ---- other rules that must hold ------------------------------------------------------
-
-test("uploads are strictly one at a time, oldest first", async () => {
-  const store = await readyStore();
-  let inFlight = 0, peak = 0;
-  const drive = fakeDrive();
-  const real = drive.appendRow;
-  drive.appendRow = async (...a) => {
-    inFlight++; peak = Math.max(peak, inFlight);
-    await new Promise(r => setTimeout(r, 3));
-    inFlight--;
-    return real(...a);
-  };
-  for (const u of ["u1", "u2", "u3"]) await store.enqueue(sub(u), {});
-  await sync.syncOnce(opts(store, drive));
-  assert.equal(peak, 1);
-  assert.deepEqual(drive.rows("visit").map(r => r[0]), ["u1", "u2", "u3"]);
-});
-
-test("two overlapping syncOnce calls share one run", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1"), {});
-  const [a, b] = [sync.syncOnce(opts(store, drive)), sync.syncOnce(opts(store, drive))];
-  assert.equal(a, b);
-  await a;
-  assert.equal(drive.rows("visit").length, 1);
+test("repeat rows go in their own tabs carrying the parent uuid and row indexes; the main tab is last", async () => {
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1", "Bihar AMB::visit", { repeats: { children: [{ child_name: "Ravi", doses: [{ dose_ml: 1 }, { dose_ml: 2 }] }, { child_name: "Mina" }] } }), {});
+  await sync.syncOnce(opts(store, be));
+  const body = submits(be)[0];
+  assert.deepEqual(body.tabs.map(t => t.name), ["visit_children", "visit_children_doses", "visit"]);
+  const kids = body.tabs[0];
+  assert.deepEqual(kids.key, ["parent_uuid", "row_index"]);
+  assert.deepEqual(kids.rows.map(r => [r.parent_uuid, r.row_index, r.child_name]), [["u1", 1, "Ravi"], ["u1", 2, "Mina"]]);
+  const doses = body.tabs[1];
+  assert.deepEqual(doses.key, ["parent_uuid", "children_row_index", "row_index"]);
+  assert.deepEqual(doses.rows.map(r => [r.children_row_index, r.row_index, r.dose_ml]), [[1, 1, 1], [1, 2, 2]]);
 });
 
 test("an answer starting with = is passed through as plain data", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1", { data: { asha_name: "=HYPERLINK(\"x\")" } }), {});
-  await sync.syncOnce(opts(store, drive));
-  assert.equal(drive.rows("visit")[0][1], '=HYPERLINK("x")');   // drive.appendRow writes RAW
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1", "Bihar AMB::visit", { data: { asha_name: "=HYPERLINK(1)" } }), {});
+  await sync.syncOnce(opts(store, be));
+  assert.equal(be.rows("Bihar AMB", "visit")[0].asha_name, "=HYPERLINK(1)");
+});
+
+// ---- sessions, revocation, sign-out ------------------------------------------------------
+
+test("an expired token (a 'session' reply) is renewed once from the stored code and the same submission is resent", async () => {
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1"), {});
+  be.tokens.clear();                          // the backend forgot every token
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.uploaded, 1);
+  assert.equal(be.counts.open, 2);
+  assert.equal(be.rows("Bihar AMB", "visit").length, 1);
+});
+
+test("when access is withdrawn the record stays queued, nothing is rejected, and the other project still sends", async () => {
+  const be = world();
+  const store = await ready(be, ["GAYA2026", "PATNA"]);
+  await store.enqueue(sub("a1"), {});
+  await store.enqueue(sub("p1", "Patna WIFS::visit", { data: { school_name: "S" } }), {});
+  be.projects.GAYA2026.active = false;
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.authRequired, true);
+  assert.deepEqual(r.lostProjects, ["Bihar AMB"]);
+  assert.equal(r.rejected, 0);
+  assert.equal(r.uploaded, 1);
+  assert.equal(await store.queueLength(), 1);
+  assert.equal((await store.peekQueue(1))[0].uuid, "a1");
+  assert.equal((await store.listRejected()).length, 0);
+  // the owner switches the project back on and the person types the code again: it drains
+  be.projects.GAYA2026.active = true;
+  await projects.openProject("GAYA2026", { store, fetchImpl: be.fetchImpl, url: URL_ });
+  const r2 = await sync.syncOnce(opts(store, be));
+  assert.equal(r2.uploaded, 1);
+  assert.equal(await store.queueLength(), 0);
+});
+
+test("sign-out leaves the queue intact, sends nothing, and a later code entry drains it", async () => {
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1"), { household_photo: photo("PIC") });
+  await projects.signOut(undefined, { store });
+  const before = be.calls.length;
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(be.calls.length, before);
+  assert.equal(r.skipped, 1);
+  assert.equal(await store.queueLength(), 1);
+  assert.equal((await store.getMedia("u1")).length, 1);
+  await projects.openProject("GAYA2026", { store, fetchImpl: be.fetchImpl, url: URL_ });
+  const r2 = await sync.syncOnce(opts(store, be));
+  assert.equal(r2.uploaded, 1);
+  assert.equal(be.rows("Bihar AMB", "visit").length, 1);
+});
+
+test("a record filled in under one person's code waits when another person's code holds the project", async () => {
+  const be = world();
+  be.projects.GAYA2026.person = "Ram";
+  const store = await ready(be);
+  await store.enqueue(sub("u1"), {});          // person: Sita
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.skipped, 1);
+  assert.equal(await store.queueLength(), 1);
+  assert.equal(submits(be).length, 0);
+});
+
+test("the client never populates _submitted_by anywhere", async () => {
+  const { readFile } = await import("node:fs/promises");
+  for (const f of ["../js/sync.js", "../js/app.js", "../js/projects.js"]) {
+    const src = (await readFile(new URL(f, import.meta.url), "utf8")).replace(/\/\/.*$/gm, "");
+    assert.doesNotMatch(src, /_submitted_by/, f);
+  }
+});
+
+test("an empty queue is a no-op", async () => {
+  const be = world();
+  const store = await ready(be);
+  const before = be.calls.length;
+  const r = await sync.syncOnce(opts(store, be));
+  assert.equal(r.uploaded + r.failed + r.rejected, 0);
+  assert.equal(be.calls.length, before);
+});
+
+test("uploads are strictly one at a time, oldest first", async () => {
+  const be = world();
+  const store = await ready(be);
+  let inFlight = 0, peak = 0;
+  const real = be.fetchImpl;
+  const slow = async (url, init) => {
+    if (JSON.parse(init.body).action !== "submit") return real(url, init);
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise(r => setTimeout(r, 3));
+    inFlight--;
+    return real(url, init);
+  };
+  for (const u of ["u1", "u2", "u3"]) await store.enqueue(sub(u), {});
+  await sync.syncOnce(opts(store, be, { fetchImpl: slow }));
+  assert.equal(peak, 1);
+  assert.deepEqual(be.rows("Bihar AMB", "visit").map(r => r.uuid), ["u1", "u2", "u3"]);
+});
+
+test("two overlapping syncOnce calls share one run", async () => {
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1"), {});
+  const [a, b] = [sync.syncOnce(opts(store, be)), sync.syncOnce(opts(store, be))];
+  assert.equal(a, b);
+  await a;
+  assert.equal(be.rows("Bihar AMB", "visit").length, 1);
 });
 
 test("a submission whose form was never stored is skipped and kept", async () => {
-  const store = memStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1"), {});
-  const r = await sync.syncOnce(opts(store, drive));
+  const be = world();
+  const store = await ready(be);
+  await store.enqueue(sub("u1", "Bihar AMB::gone"), {});
+  const r = await sync.syncOnce(opts(store, be));
   assert.equal(r.skipped, 1);
   assert.equal(await store.queueLength(), 1);
+  assert.equal(submits(be).length, 0);
 });
 
-test("a queued submission stamped with another person's email is not sent under this login", async () => {
-  const store = await readyStore();
-  const drive = fakeDrive();
-  await store.enqueue(sub("u1", { user_id: "other@x.org" }), {});
-  const r = await sync.syncOnce(opts(store, drive));
-  assert.equal(r.skipped, 1);
-  assert.equal(drive.rows("visit").length, 0);
-  assert.equal(await store.queueLength(), 1);
+test("the sync code never deletes a queued record except after a confirmed send or a recorded rejection", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = (await readFile(new URL("../js/sync.js", import.meta.url), "utf8")).replace(/\/\/.*$/gm, "");
+  assert.equal([...src.matchAll(/store\.dequeue\(/g)].length, 2);
+  assert.doesNotMatch(src, /localStorage|googleapis|drive\.js|googleauth/);
 });
 
-test("the service worker leaves cross-origin and /api/ requests alone, so Google calls are never cached", async () => {
+test("the service worker leaves cross-origin and /api/ requests alone, so backend calls are never cached", async () => {
   const { readFile } = await import("node:fs/promises");
   const sw = await readFile(new URL("../sw.js", import.meta.url), "utf8");
   assert.match(sw, /url\.origin !== self\.location\.origin\) return/);
   assert.match(sw, /\/api\//);
   assert.match(sw, /req\.method !== 'GET'\) return/);
-});
-
-// ---- bootstrap -----------------------------------------------------------------------
-
-function bootDrive(specs) {
-  const d = fakeDrive();
-  d.projects = [PROJECT, { id: "P2", name: "WIFS" }];
-  d.files = { P1: [{ id: "a", name: "visit.spec.json" }, { id: "x", name: "visit.xlsx" }], P2: [{ id: "b", name: "other.spec.json" }] };
-  d.specs = specs;
-  return d;
-}
-
-test("bootstrap stores each project's form specs, tagged with their project", async () => {
-  const store = memStore();
-  const drive = bootDrive({ a: SPEC, b: { ...SPEC, form_id: "other" } });
-  const r = await sync.bootstrap({ store, drive, rootFolderId: "ROOT" });
-  assert.deepEqual(r.errors, []);
-  assert.equal(r.forms.length, 2);
-  assert.equal((await store.getForm("visit", "2026103101"))._project.id, "P1");
-  assert.equal((await store.getForm("other", "2026103101"))._project.name, "WIFS");
-  assert.ok(!drive.read.includes("x"), "only *.spec.json files are read");
-});
-
-test("a new form version is stored alongside the old one, never replacing it", async () => {
-  const store = memStore();
-  await sync.bootstrap({ store, drive: bootDrive({ a: SPEC, b: { ...SPEC, form_id: "other" } }), rootFolderId: "R" });
-  const v2 = { ...SPEC, version: "2026110101", nodes: [...SPEC.nodes, { type: "text", name: "extra" }] };
-  await sync.bootstrap({ store, drive: bootDrive({ a: v2, b: { ...SPEC, form_id: "other" } }), rootFolderId: "R" });
-  assert.ok(await store.getForm("visit", "2026103101"));
-  assert.ok(await store.getForm("visit", "2026110101"));
-  assert.equal((await store.getForm("visit", "2026103101")).nodes.length, SPEC.nodes.length);
-});
-
-test("an already-stored version is left exactly as it was", async () => {
-  const store = memStore();
-  await sync.bootstrap({ store, drive: bootDrive({ a: SPEC, b: { ...SPEC, form_id: "other" } }), rootFolderId: "R" });
-  const changed = { ...SPEC, title: "edited in place" };
-  const r = await sync.bootstrap({ store, drive: bootDrive({ a: changed, b: { ...SPEC, form_id: "other" } }), rootFolderId: "R" });
-  assert.equal((await store.getForm("visit", "2026103101")).title, undefined);
-  assert.equal(r.forms.find(f => f.form_id === "visit").downloaded, false);
-});
-
-test("one bad spec or project does not stop the others", async () => {
-  const store = memStore();
-  const drive = bootDrive({ a: { nope: true }, b: { ...SPEC, form_id: "other" } });
-  const r = await sync.bootstrap({ store, drive, rootFolderId: "R" });
-  assert.equal(r.errors.length, 1);
-  assert.ok(await store.getForm("other", "2026103101"));
-  const drive2 = bootDrive({ a: SPEC, b: { ...SPEC, form_id: "other" } });
-  drive2.listForms = async id => { if (id === "P1") throw err(500); return drive2.files[id]; };
-  const store2 = memStore();
-  const r2 = await sync.bootstrap({ store: store2, drive: drive2, rootFolderId: "R", sleep: noSleep(), maxAttempts: 1 });
-  assert.equal(r2.errors.length, 1);
-  assert.ok(await store2.getForm("other", "2026103101"));
-});
-
-test("bootstrap throws when the project list itself cannot be read", async () => {
-  const drive = bootDrive({});
-  drive.listProjects = async () => { throw err(500); };
-  await assert.rejects(sync.bootstrap({ store: memStore(), drive, rootFolderId: "R", sleep: noSleep(), maxAttempts: 1 }));
+  assert.match(sw, /'js\/projects\.js'/);
 });
