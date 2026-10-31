@@ -14,7 +14,13 @@ THE LOUD-FAILURE RULE
 EXPRESSION FORM
     pyxform rewrites `${field}` into XPath paths (`/data/a/b`, `../b`). Those are
     turned back into `${b}`: the spec addresses fields by flat name, and the engine
-    resolves the name against the current repeat row first, then outward.
+    resolves the name against the current repeat row first, then outward
+    (INNER-ROW-FIRST), then the top level of the form.
+    That rule is only safe because of the DUPLICATE-NAME GUARD: a field name may
+    appear once in the whole form, across groups, repeats and nesting levels, or
+    compilation raises `FormCompileError` naming both locations. So `${x}` always
+    means the one field called x; inner-row-first only decides WHICH ROW of a
+    repeat is read, never which of two fields. Read the two together.
 
 CHOICE FILTER
     pyxform moves `choice_filter` out of the bind into an XPath predicate on the
@@ -194,6 +200,7 @@ class _Compiler:
                 self.groups[el.get("ref")] = el
             elif tag == "repeat" and el.get("nodeset"):
                 self.repeats[el.get("nodeset")] = el
+        self.seen: dict[str, str] = {}
         self.data = next(
             (i[0] for i in model.findall(f"{XF}instance") if i.get("id") is None and len(i)),
             None,
@@ -240,6 +247,13 @@ class _Compiler:
             if top and name == "meta":
                 continue
             p = f"{path}/{name}"
+            if name in self.seen:
+                raise FormCompileError(
+                    f"the name '{name}' is used twice, at {self.seen[name]} and {p}; "
+                    "every question and group name must be unique in the whole form, "
+                    "because expressions refer to fields as ${name}"
+                )
+            self.seen[name] = p
             node = self.group(child, p, name) if len(child) else self.leaf(child, p, name)
             if node is not None:
                 out.append(node)

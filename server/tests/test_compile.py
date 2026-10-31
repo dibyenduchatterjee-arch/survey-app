@@ -150,3 +150,20 @@ def test_unknown_question_type_is_refused(xml):
     assert bad != xml
     with pytest.raises(FormCompileError, match="visit_location"):
         compile_spec(bad)
+
+
+def test_a_name_reused_in_a_nested_repeat_is_refused(xml):
+    bad = xml.replace("<dose_ml/>", "<child_name/>")
+    assert bad != xml
+    with pytest.raises(FormCompileError) as e:
+        compile_spec(bad)
+    msg = str(e.value)
+    assert "child_name" in msg
+    assert "/data/children/child_name" in msg and "/data/children/ifa_doses/child_name" in msg
+
+
+def test_a_name_reused_across_groups_is_refused(xml):
+    bad = xml.replace("<asha_name/>", "<district/>", 1)
+    assert bad != xml
+    with pytest.raises(FormCompileError, match="district"):
+        compile_spec(bad)
