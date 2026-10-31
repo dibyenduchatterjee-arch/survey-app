@@ -1,7 +1,7 @@
 // The Download CSV control: start an export job, poll it honestly, then hand over the file.
 //
-// SECURITY: the file link is fetched only through `api` (authFetch, so a signed-in session
-// is required) and is shown only after the job reports done. This page never constructs a
+// SECURITY: the CSV is fetched only through `api` (authFetch, so a signed-in session
+// is required, and our own RBAC decides) after the job reports done. The Drive link is secondary. This page never constructs a
 // Drive link itself and never offers a link that works without a session on our side. Who can
 // then open the Drive file is decided by Drive's own sharing, which is why the server must
 // keep the export folder private; see the task report.
@@ -25,7 +25,18 @@ export function safeDriveUrl(url) {
 }
 
 // Control for one form. `opts.pollMs`/`opts.giveUpMs`/`opts.now` exist for tests.
-export function exportControl(formId, { api, pollMs = POLL_MS, giveUpMs = GIVE_UP_MS, now = () => Date.now() } = {}) {
+// Hands the bytes to the browser as a normal download, then frees the object URL.
+export function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.hidden = true;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function exportControl(formId, { api, pollMs = POLL_MS, giveUpMs = GIVE_UP_MS, now = () => Date.now(), save = saveBlob } = {}) {
   const status = h('p', { class: 'export-status', role: 'status', 'aria-live': 'polite' });
   const bar = h('progress', { class: 'export-bar', hidden: true });
   const result = h('div', { class: 'export-result' });
@@ -63,9 +74,11 @@ export function exportControl(formId, { api, pollMs = POLL_MS, giveUpMs = GIVE_U
       try { j = await api.get(`/api/exports/${id}`); } catch (e) { return fail(e.message); }
       if (j.status === 'failed') return fail(j.error || 'The server did not say why.');
       if (j.status === 'done') {
-        let link;
-        try { link = await api.get(`/api/exports/${id}/download`); } catch (e) { return fail(e.message); }
-        return done(j, link);
+        let file;
+        try { file = await api.file(`/api/exports/${id}/download`); } catch (e) { return fail(e.message); }
+        const name = file.filename || `${formId}.csv`;
+        try { save(file.blob, name); } catch (e) { return fail('The file arrived but the browser would not save it: ' + e.message); }
+        return done(j, name);
       }
       const secs = Math.round((now() - t0) / 1000);
       const text = `${STAGE[j.status] || j.status}... ${secs}s`;
@@ -77,17 +90,14 @@ export function exportControl(formId, { api, pollMs = POLL_MS, giveUpMs = GIVE_U
     }
   }
 
-  function done(job, link) {
+  function done(job, name) {
     bar.hidden = true;
     clear(status);
-    const url = safeDriveUrl(link && link.url);
+    const url = safeDriveUrl(job.url);
     const rows = job.row_count != null ? `${job.row_count} submission${job.row_count === 1 ? '' : 's'}. ` : '';
     clear(result).append(h('p', { class: 'msg ok' },
-      h('strong', { text: 'Your CSV is ready. ' }), rows,
-      url
-        ? h('a', { class: 'button download-link', href: url, target: '_blank', rel: 'noopener noreferrer', text: 'Open the CSV in Drive' })
-        : h('span', { class: 'msg bad', text: 'The server gave a link that is not a Google Drive address, so it is not shown.' }),
-      h('span', { class: 'hint', text: ' Drive will ask you to sign in with your Evidence Action Google account.' })));
+      h('strong', { text: 'Downloaded ' }), h('code', { class: 'saved-name', text: name }), '. ', rows,
+      url ? h('span', { class: 'hint' }, ' Also saved to Drive: ', h('a', { class: 'drive-link', href: url, target: '_blank', rel: 'noopener noreferrer', text: 'open copy' })) : null));
     busy = false;
     button.disabled = false;
     button.textContent = 'Download again';

@@ -26,6 +26,14 @@ export function detailLines(detail) {
   return [String(detail)];
 }
 
+export function filenameFrom(cd) {
+  if (!cd) return null;
+  let m = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(cd);
+  if (m) { try { return decodeURIComponent(m[1].trim()); } catch { /* fall through */ } }
+  m = /filename\s*=\s*"?([^";]+)"?/i.exec(cd);
+  return m ? m[1].trim().replace(/[\/]/g, '_') : null;
+}
+
 export function createApi(authFetch) {
   async function request(path, { method = 'GET', json, form, query } = {}) {
     let url = path;
@@ -64,6 +72,20 @@ export function createApi(authFetch) {
     patch: (p, json) => request(p, { method: 'PATCH', json }),
     del: p => request(p, { method: 'DELETE' }),
     upload: (p, form) => request(p, { method: 'POST', form }),
+    // A file download: the bytes plus the filename the server chose in Content-Disposition.
+    async file(p) {
+      let res;
+      try { res = await authFetch(p, { method: 'GET' }); } catch { throw new ApiError(0, null, 'Could not reach the server. Check the connection and try again.'); }
+      if (!res.ok) {
+        let body = null;
+        try { body = await res.json(); } catch { /* not JSON */ }
+        let msg = detailLines(body && body.detail).join(' ') || `The server answered ${res.status}`;
+        if (res.status === 401) msg = 'You are signed out. Sign in again.';
+        if (res.status === 403) msg = 'Your role is not allowed to do this.';
+        throw new ApiError(res.status, body && body.detail, msg);
+      }
+      return { blob: await res.blob(), filename: filenameFrom(res.headers.get('Content-Disposition')) };
+    },
     // For binary content (photos). Returns the Response untouched, or throws ApiError.
     async blob(p) {
       let res;

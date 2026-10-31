@@ -4,7 +4,7 @@ import { enter } from '../console/js/session.js';
 import { mountForms } from '../console/js/forms.js';
 import { mountSubmissions } from '../console/js/submissions.js';
 import { mountHome } from '../console/js/home.js';
-import { exportControl, safeDriveUrl } from '../console/js/exports.js';
+import { exportControl, safeDriveUrl, saveBlob } from '../console/js/exports.js';
 import { mountAudit } from '../console/js/audit.js';
 
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
@@ -29,7 +29,7 @@ function stub(routes) {
       if (m === method && match) {
         let r = typeof fn === 'function' ? await fn(match, init, url) : fn;
         if (!(r && typeof r.status === 'number' && ('body' in r || 'blob' in r))) r = { status: 200, body: r };
-        if (r.blob) return new Response(r.blob, { status: r.status });
+        if (r.blob) return new Response(r.blob, { status: r.status, headers: r.headers || {} });
         return new Response(r.body === undefined ? null : JSON.stringify(r.body), { status: r.status, headers: { 'Content-Type': 'application/json' } });
       }
     }
@@ -230,28 +230,47 @@ export async function test_flagged_submissions_show_their_validation_failures() 
 
 const doneJob = { job_id: 9, form_id: 'amb', status: 'done', drive_file_id: 'FILE1', row_count: 42, error: null };
 
-export async function test_an_export_shows_progress_then_the_drive_link() {
+export async function test_an_export_shows_progress_then_downloads_the_csv() {
   let polls = 0;
+  const saved = [];
   const { api, calls } = stub([
     ['POST', /\/api\/exports$/, () => ({ status: 202, body: { job_id: 9 } })],
-    ['GET', /\/api\/exports\/9$/, () => { polls++; return polls < 3 ? { ...doneJob, status: polls === 1 ? 'pending' : 'running' } : doneJob; }],
-    ['GET', /\/api\/exports\/9\/download$/, { drive_file_id: 'FILE1', url: 'https://drive.google.com/file/d/FILE1/view' }],
+    ['GET', /\/api\/exports\/9$/, () => { polls++; return polls < 3 ? { ...doneJob, status: polls === 1 ? 'pending' : 'running' } : { ...doneJob, url: 'https://drive.google.com/file/d/FILE1/view' }; }],
+    ['GET', /\/api\/exports\/9\/download$/, { status: 200, blob: new Blob(['a,b\n1,2\n'], { type: 'text/csv' }), headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="amb_2026-10-31.csv"' } }],
   ]);
-  const el = exportControl('amb', { api, pollMs: 5 });
+  const el = exportControl('amb', { api, pollMs: 5, save: (blob, name) => saved.push({ blob, name }) });
   document.body.append(el);
   el.querySelector('button.download-csv').click();
   await until(() => /Waiting to start/.test(text(el.querySelector('.export-status'))), 'pending shown');
   assert(!el.querySelector('progress').hidden, 'progress bar visible while waiting');
   await until(() => /Building/.test(text(el.querySelector('.export-status'))), 'running shown');
-  const a = await until(() => el.querySelector('a.download-link'), 'download link');
-  eq(a.href, 'https://drive.google.com/file/d/FILE1/view');
-  assert(a.rel.includes('noopener'), 'noopener');
+  await until(() => el.querySelector('.saved-name'), 'download finished');
+  eq(saved.length, 1);
+  eq(saved[0].name, 'amb_2026-10-31.csv');
+  eq(await saved[0].blob.text(), 'a,b\n1,2\n');
   assert(text(el).includes('42 submissions'), 'row count shown');
   assert(el.querySelector('progress').hidden, 'progress gone when done');
+  const a = el.querySelector('a.drive-link');
+  eq(a.href, 'https://drive.google.com/file/d/FILE1/view');
+  assert(text(el).includes('Also saved to Drive'), 'Drive link is secondary');
   const dl = calls.findIndex(c => /download$/.test(c.url));
-  assert(dl > calls.findIndex(c => /exports\/9$/.test(c.url)), 'link requested through the API only after the job reported done');
-  assert(!document.body.innerHTML.includes('FILE1') || a.isConnected, 'no stray link');
+  assert(dl > calls.findIndex(c => /exports\/9$/.test(c.url)), 'file requested only after the job reported done');
   el.remove();
+}
+
+export async function test_saveblob_triggers_a_download_and_revokes_the_object_url() {
+  const origCreate = URL.createObjectURL, origRevoke = URL.revokeObjectURL;
+  const revoked = []; let clicked = null;
+  URL.createObjectURL = () => 'blob:test-1';
+  URL.revokeObjectURL = u => revoked.push(u);
+  const origClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () { clicked = { href: this.href, download: this.download }; };
+  try {
+    saveBlob(new Blob(['x']), 'f.csv');
+    eq(clicked, { href: 'blob:test-1', download: 'f.csv' });
+    await sleep(1200);
+    eq(revoked, ['blob:test-1']);
+  } finally { URL.createObjectURL = origCreate; URL.revokeObjectURL = origRevoke; HTMLAnchorElement.prototype.click = origClick; }
 }
 
 export async function test_a_failed_export_shows_the_servers_error_text() {
@@ -264,10 +283,23 @@ export async function test_a_failed_export_shows_the_servers_error_text() {
   el.querySelector('button.download-csv').click();
   const err = await until(() => el.querySelector('.export-error'), 'error');
   assert(err.textContent.includes('Drive quota exceeded for folder 1AbC'), err.textContent);
-  assert(!el.querySelector('a.download-link'), 'no link on failure');
+  assert(!el.querySelector('a'), 'no link on failure');
   assert(el.querySelector('progress').hidden);
   assert(!el.querySelector('button').disabled, 'can try again');
   el.remove();
+
+  // the job is done but the file request is refused: the server's words still show
+  const { api: api3 } = stub([
+    ['POST', /\/api\/exports$/, { status: 202, body: { job_id: 9 } }],
+    ['GET', /\/api\/exports\/9$/, doneJob],
+    ['GET', /\/download$/, { status: 409, body: { detail: 'Export file is no longer available' } }],
+  ]);
+  const el3 = exportControl('amb', { api: api3, pollMs: 5, save: () => { throw new Error('must not save'); } });
+  document.body.append(el3);
+  el3.querySelector('button.download-csv').click();
+  const e3 = await until(() => el3.querySelector('.export-error'), 'download error');
+  assert(e3.textContent.includes('no longer available'), e3.textContent);
+  el3.remove();
 
   // a 503 when starting (missing configuration) carries its words too
   const { api: api2 } = stub([['POST', /\/api\/exports$/, { status: 503, body: { detail: 'DRIVE_FOLDER_ID is not set: exports need a Drive folder' } }]]);
@@ -296,10 +328,10 @@ export async function test_the_download_needs_a_session_and_only_opens_drive_lin
   eq(safeDriveUrl(undefined), null);
   const { api: api2 } = stub([
     ['POST', /\/api\/exports$/, { status: 202, body: { job_id: 9 } }],
-    ['GET', /\/api\/exports\/9$/, doneJob],
-    ['GET', /\/download$/, { drive_file_id: 'F', url: 'https://evil.example/steal' }],
+    ['GET', /\/api\/exports\/9$/, { ...doneJob, url: 'https://evil.example/steal' }],
+    ['GET', /\/download$/, { status: 200, blob: new Blob(['x']), headers: { 'Content-Disposition': 'attachment; filename="x.csv"' } }],
   ]);
-  const el2 = exportControl('amb', { api: api2, pollMs: 5 });
+  const el2 = exportControl('amb', { api: api2, pollMs: 5, save: () => {} });
   document.body.append(el2);
   el2.querySelector('button.download-csv').click();
   await until(() => el2.querySelector('.export-result .msg'), 'result');
@@ -369,5 +401,18 @@ export async function test_the_audit_page_lists_entries_read_only() {
   await mountAudit(root, { api });
   assert(text(root).includes('user.update') && text(root).includes('is_active'), 'entry shown: ' + text(root));
   assert(calls.every(c => c.method === 'GET'), 'audit page only reads');
+  root.remove();
+}
+
+export async function test_the_audit_page_filters_by_actor_and_action() {
+  const { api, calls } = stub([['GET', /\/api\/audit/, { items: [], total: 0, limit: 50, offset: 0 }]]);
+  const root = mount();
+  await mountAudit(root, { api });
+  root.querySelector('input[name=actor_id]').value = '7';
+  root.querySelector('input[name=action]').value = 'user.update';
+  root.querySelector('form.filters').dispatchEvent(new Event('submit', { cancelable: true }));
+  await until(() => calls.length >= 2, 'filtered request');
+  const u = calls[calls.length - 1].url;
+  assert(u.includes('actor_id=7') && u.includes('action=user.update'), u);
   root.remove();
 }
