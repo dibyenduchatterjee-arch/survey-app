@@ -222,13 +222,14 @@ export function syncOnce(fetchImpl = defaultFetch(), { store = defaultStore } = 
 
 const enc = encodeURIComponent;
 
-// Downloads the caller's assigned forms and every dataset they can see. Each form
+// Downloads the caller's assigned forms, every dataset they can see and the client
+// config. Returns { forms, datasets, config, errors }; config is {} if it failed. Each form
 // version is stored under its own [form_id, version] key and nothing is ever
 // deleted or replaced, so a draft in progress finishes on the version it started
 // on. Drafts are not read or written here at all.
 export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultStore } = {}) {
   const authed = makeAuthFetch(fetchImpl, { store });
-  const out = { forms: [], datasets: [], errors: [] };
+  const out = { forms: [], datasets: [], config: {}, errors: [] };
 
   const listRes = await authed('/api/forms');
   if (!listRes.ok) throw new Error(`Could not list forms (${listRes.status})`);
@@ -255,6 +256,18 @@ export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultSto
     } catch (e) {
       out.errors.push({ form_id: f.form_id, version, error: String((e && e.message) || e) });
     }
+  }
+
+  // Client settings (max_media_bytes, the one media size cap). Forms work without
+  // it, so a failure is recorded and bootstrap carries on.
+  try {
+    const res = await authed('/api/config');
+    if (!res.ok) throw new Error(`config download failed (${res.status})`);
+    const cfg = await res.json();
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('config was not an object');
+    out.config = cfg;
+  } catch (e) {
+    out.errors.push({ config: true, error: String((e && e.message) || e) });
   }
 
   // Phase 1 has no pulldata-style external lookups (a Phase 2 item), so nothing in

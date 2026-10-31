@@ -694,6 +694,7 @@ function bootstrapRoutes(extra = {}) {
     ]),
     'GET /api/forms/amb_asha_visit/versions/2026103101/spec': json(200, SPEC_V1),
     'GET /api/forms/anganwadi/versions/2026103001/spec': json(200, SPEC_F2),
+    'GET /api/config': json(200, { max_media_bytes: 1048576 }),
     'GET /api/datasets': json(200, [{ name: 'asha_list', version: 1 }, { name: 'blocks', version: 1 }, { name: 'centres', version: 3 }]),
     'GET /api/datasets/asha_list': json(200, { name: 'asha_list', version: 1, rows: [{ id: '1', name: 'सीता' }] }),
     'GET /api/datasets/blocks': json(200, { name: 'blocks', version: 1, rows: [{ a: '1' }] }),
@@ -815,6 +816,26 @@ test("a server with no dataset listing is reported, not fatal, and forms still d
   const r = await sync.bootstrap(scriptedFetch(routes), { store });
   assert.equal(r.forms.length, 2);
   assert.ok(r.errors.some(e => e.dataset === '*'));
+});
+
+test("bootstrap returns the client config, so the renderer can size photos to the cap", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const r = await sync.bootstrap(scriptedFetch(bootstrapRoutes()), { store });
+  assert.equal(r.config.max_media_bytes, 1048576);
+  assert.deepEqual(r.errors, []);
+});
+
+test("a config fetch failure is recorded and bootstrap carries on", async () => {
+  for (const bad of [json(500, { detail: 'x' }), () => netError(), new Response('<html>', { status: 200 })]) {
+    const store = memStore();
+    await loggedIn(store);
+    const r = await sync.bootstrap(scriptedFetch(bootstrapRoutes({ 'GET /api/config': bad })), { store });
+    assert.deepEqual(r.config, {});
+    assert.ok(r.errors.some(e => e.config), 'config error should be recorded');
+    assert.equal(r.forms.length, 2, 'forms must still download');
+    assert.ok(await store.getDataset('asha_list'), 'datasets must still download');
+  }
 });
 
 test("bootstrap throws when the form list cannot be fetched, leaving the device as it was", async () => {
