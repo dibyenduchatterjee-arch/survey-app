@@ -109,3 +109,80 @@ node --test appsscript/tests/
 
 Covers the pure logic only. `doGet`, reading the Sheet, the web page itself and deployment run only
 inside Google and are **not** tested here.
+
+
+---
+
+# Phone backend (Web App API) - Evidence Action
+
+New file: `Backend.gs`. Paste it beside `Code.gs` (same steps as step 3 above, new file named `Backend`). It turns this Sheet into the server the phone app talks to. It runs **as you**, so field workers need **no Google account**. Each project has an **access code**; the code decides which project a phone can see.
+
+**Important:** the download page (`Page.html`) is now shown **only to you** (the owner). Anyone else, or anyone not signed in, sees "This page is not available". To let a colleague in, open Project Settings -> Script properties -> add `DOWNLOAD_EMAILS` = their email(s), comma separated.
+
+## English - set it up (about 15 minutes, once)
+
+1. **Paste.** In Extensions -> Apps Script click **+** -> **Script**, name it `Backend`, paste all of `appsscript/Backend.gs`, Ctrl+S. Also replace `Code.gs` with the new `appsscript/Code.gs` (one small change in `doGet`), and `appsscript.json` with ours (turn on *Show "appsscript.json" manifest file* in Project Settings first). **You should see:** three files - Code, Backend, Page.
+2. **Run `setupProjects`.** In the function drop-down (top bar) choose `setupProjects`, click **Run**. Google asks you to authorise (see below). **You should see:** a new tab **Projects** with five headings and one example row (Active = no).
+   *(After a reload of the Sheet there is also a menu **Evidence Action survey**.)*
+3. **Fill the Projects tab** - one row per project:
+   | Project name | Drive folder id | Data spreadsheet id | Access code | Active |
+   |---|---|---|---|---|
+   - *Drive folder id*: open the project's Drive folder; the id is the last part of the address (`.../folders/<this part>`). The `*.spec.json` form files and the `photos` folder live here.
+   - *Data spreadsheet id*: open the project's data Google Sheet; the id is the long part between `/d/` and `/edit`. This can be this same Sheet.
+   - *Access code*: **type a code (6+ letters or digits, for example `BIHAR2026`) and click out of the cell. It turns into a long scrambled text starting `sha256$`.** That is correct: the code is no longer readable anywhere. **Write the code down first** (password manager) - it cannot be shown again. Or use the menu **Evidence Action survey -> Set or change the code for the selected row**, leave the box empty and a code is made for you and shown once.
+   - *Active*: `yes` or `no`. `no` (or empty) switches the project off **immediately**, even for phones already signed in.
+4. **Check.** Menu **Evidence Action survey -> Check the Projects tab**. **You should see:** "No problems found" and the number of projects that can be opened.
+5. **Deploy.** **Deploy -> New deployment -> gear -> Web app.** Description `Survey API`. **Execute as: Me.** **Who has access: Anyone** (this is what lets workers without Google accounts use it; access still needs a valid code). Click **Deploy**.
+6. **Authorise** if asked: **Authorize access** -> your account -> *Google hasn't verified this app* -> **Advanced** -> **Go to ... (unsafe)** -> **Allow**. The script needs your Sheets and Drive because it works on your behalf. Once only (again after you change the code files).
+7. **Copy the Web app URL** (ends in `/exec`) and give it to whoever configures the phone app. **You should see**, if you paste it in a browser, "This page is not available" - that is correct (the API only answers the phone's POST requests).
+8. **Later changes to the code:** Deploy -> Manage deployments -> pencil -> Version **New version** -> Deploy. The URL stays the same.
+
+**Revoke or change access:** set Active to `no`, or set a new code (step 3). It takes effect on the phone's next request. If you think a code leaked, change it and, if needed, delete the `TOKEN_SECRET` script property (Project Settings) to end every session at once.
+
+**If something goes wrong**
+
+| You see | Do this |
+|---|---|
+| Phone says the code is not accepted | Check Active is `yes`, both ids are filled, and the code is the one you wrote down (case does not matter). Run *Check the Projects tab*. |
+| "Too many wrong codes" | Wait 5 minutes. After 40 wrong tries across all phones, opening pauses. |
+| Phone says "busy" or "server problem" | Nothing is lost; the phone keeps the record and tries again. If it lasts hours, you may have hit Google's daily limit (see the report); try next day. |
+| Authorization required again | Repeat step 6. |
+| The Projects tab has plain text in the code column | Retype the code in that cell so it is hashed. |
+
+## हिंदी - फ़ोन बैकएंड (Web App API) - एक बार का सेटअप (लगभग 15 मिनट)
+
+नई फ़ाइल: `Backend.gs`। इसे `Code.gs` के बराबर में पेस्ट कीजिए। यह इस Sheet को वह सर्वर बना देती है जिससे फ़ोन ऐप बात करता है। यह **आपके नाम से** चलती है, इसलिए फ़ील्ड वर्कर्स को **Google अकाउंट की ज़रूरत नहीं**। हर प्रोजेक्ट का एक **एक्सेस कोड** होता है; कोड तय करता है कि फ़ोन को कौन-सा प्रोजेक्ट दिखे।
+
+**ज़रूरी:** डाउनलोड पेज (`Page.html`) अब **सिर्फ़ आपको** दिखता है (मालिक को)। बाकी सबको, या जो साइन-इन नहीं है, "This page is not available" दिखेगा। किसी साथी को देखने देना हो तो Project Settings -> Script properties में `DOWNLOAD_EMAILS` नाम से उनके ईमेल (कॉमा से अलग) जोड़िए।
+
+1. **पेस्ट कीजिए।** Extensions -> Apps Script में **+** -> **Script**, नाम `Backend`, `appsscript/Backend.gs` का पूरा लिखा पेस्ट कीजिए, Ctrl+S। `Code.gs` भी नई वाली से बदल दीजिए (`doGet` में एक छोटा बदलाव है), और `appsscript.json` हमारी फ़ाइल से (पहले Project Settings में *Show "appsscript.json" manifest file* टिक कीजिए)। **दिखना चाहिए:** तीन फ़ाइलें - Code, Backend, Page।
+2. **`setupProjects` चलाइए।** ऊपर फ़ंक्शन की सूची में `setupProjects` चुनिए, **Run** दबाइए। Google अनुमति माँगेगा (नीचे देखिए)। **दिखना चाहिए:** **Projects** नाम का नया टैब, पाँच शीर्षक और एक उदाहरण पंक्ति (Active = no)। *(Sheet दोबारा खोलने पर **Evidence Action survey** मेन्यू भी दिखेगा।)*
+3. **Projects टैब भरिए** - हर प्रोजेक्ट की एक पंक्ति:
+   - *Project name*: प्रोजेक्ट का नाम।
+   - *Drive folder id*: प्रोजेक्ट का Drive फ़ोल्डर खोलिए; पते का आख़िरी हिस्सा (`.../folders/<यह हिस्सा>`) ही id है। फ़ॉर्म की `*.spec.json` फ़ाइलें और `photos` फ़ोल्डर यहीं रहते हैं।
+   - *Data spreadsheet id*: प्रोजेक्ट की डेटा Sheet खोलिए; `/d/` और `/edit` के बीच का लंबा हिस्सा। यह यही Sheet भी हो सकती है।
+   - *Access code*: **कोड लिखिए (कम से कम 6 अक्षर/अंक, जैसे `BIHAR2026`) और सेल से बाहर क्लिक कीजिए। वह `sha256$` से शुरू होने वाला लंबा गड़बड़ पाठ बन जाएगा।** यही सही है: कोड अब कहीं पढ़ा नहीं जा सकता। **पहले कोड कहीं सुरक्षित लिख लीजिए** - वह दोबारा नहीं दिखेगा। या मेन्यू **Evidence Action survey -> Set or change the code for the selected row** चुनिए; बॉक्स खाली छोड़ेंगे तो कोड खुद बनेगा और एक बार दिखेगा।
+   - *Active*: `yes` या `no`। `no` (या खाली) करते ही प्रोजेक्ट **तुरंत** बंद, पहले से साइन-इन फ़ोन भी।
+4. **जाँचिए।** मेन्यू **Evidence Action survey -> Check the Projects tab**। **दिखना चाहिए:** "No problems found" और कितने प्रोजेक्ट खुल सकते हैं।
+5. **Deploy कीजिए।** **Deploy -> New deployment -> गियर -> Web app।** Description `Survey API`। **Execute as: Me।** **Who has access: Anyone** (इसी से बिना Google अकाउंट वाले वर्कर काम कर पाते हैं; फिर भी सही कोड चाहिए)। **Deploy**।
+6. **अनुमति** माँगे तो: **Authorize access** -> अपना अकाउंट -> *Google hasn't verified this app* -> **Advanced** -> **Go to ... (unsafe)** -> **Allow**। स्क्रिप्ट आपकी Sheets और Drive इसलिए माँगती है कि वह आपके नाम से काम करती है। एक बार (कोड बदलने पर फिर)।
+7. **Web app URL** (अंत में `/exec`) कॉपी करके फ़ोन ऐप सेट करने वाले को दीजिए। ब्राउज़र में खोलने पर "This page is not available" दिखे तो ठीक है - API सिर्फ़ फ़ोन के POST का जवाब देती है।
+8. **बाद में कोड बदलें तो:** Deploy -> Manage deployments -> पेंसिल -> Version **New version** -> Deploy। URL वही रहता है।
+
+**पहुँच बंद या बदलना:** Active `no` कीजिए, या नया कोड डालिए। अगले अनुरोध से असर होता है। कोड लीक होने का शक हो तो कोड बदलिए; सारे सेशन एक साथ ख़त्म करने हों तो Project Settings में `TOKEN_SECRET` प्रॉपर्टी मिटा दीजिए।
+
+**कुछ गड़बड़ हो तो**
+
+- *फ़ोन कहे कि कोड मंज़ूर नहीं:* Active `yes` है? दोनों id भरे हैं? कोड वही है जो लिखा था (छोटे-बड़े अक्षर का फ़र्क नहीं)? *Check the Projects tab* चलाइए।
+- *"Too many wrong codes":* 5 मिनट रुकिए। सब फ़ोन मिलाकर 40 ग़लत कोशिशों के बाद खोलना रुक जाता है।
+- *"busy" या "server problem":* कुछ खोया नहीं; फ़ोन रिकॉर्ड रखकर दोबारा कोशिश करता है। घंटों चले तो Google की रोज़ की सीमा आ गई होगी; अगले दिन देखिए।
+- *फिर "Authorization required":* चरण 6 दोहराइए।
+- *कोड वाले कॉलम में सादा पाठ दिखे:* उस सेल में कोड दोबारा लिखिए ताकि वह हैश हो जाए।
+
+## Backend tests
+
+```
+node --test appsscript/tests/
+```
+
+`backend.test.js` runs the whole request flow (`dispatch`) against in-memory fakes of Sheets and Drive. It does **not** cover `doPost` itself, real Sheets/Drive access, deployment, or Apps Script's own crypto and lock calls.

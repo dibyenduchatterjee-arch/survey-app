@@ -44,7 +44,8 @@ function makeWorld(over) {
       const t = (w.sheets[p.spreadsheetId] || {})[name];
       return t ? { headers: t.headers.slice(), keyRows: t.rows.map(r => r.slice(0, n)) } : null;
     },
-    writeTab: (p, name, plan) => {
+    writeTab: (p, name, plan0) => {
+      const plan = plain(plan0);
       if (w.boom) throw new Error('secret internal detail: DriveApp exploded');
       const ss = (w.sheets[p.spreadsheetId] = w.sheets[p.spreadsheetId] || {});
       const t = (ss[name] = ss[name] || { headers: [], rows: [] });
@@ -187,14 +188,14 @@ test('an open session keeps working while opening is paused', () => {
 // ---- projects sheet -----------------------------------------------------------------------
 
 test('parseProjects: columns found by name in any order, Active read strictly', () => {
-  const rows = L.parseProjects([
+  const rows = plain(L.parseProjects([
     ['active', 'Access code', 'Project name', 'Data spreadsheet id', 'Drive folder id'],
     ['YES', stored('A1'), 'P1', 'ss1', 'f1'],
     ['y', stored('A2'), 'P2', 'ss2', 'f2'],
     ['maybe', stored('A3'), 'P3', 'ss3', 'f3'],
     ['', '', '', '', ''],
     ['yes', stored('A4'), 'P4', '', 'f4']
-  ]);
+  ]));
   assert.deepEqual(rows.map(r => [r.name, r.active, r.usable]), [['P1', true, true], ['P2', true, true], ['P3', false, true], ['P4', true, false]]);
   assert.equal(rows[0].rowNumber, 2);
   assert.equal(rows[3].rowNumber, 6);
@@ -543,4 +544,11 @@ test('nothing in the API deletes: no delete path on deps, none in the source', (
   const w = makeWorld();
   assert.deepEqual(Object.keys(w.deps).filter(k => /delete|remove|clear|trash/i.test(k)), []);
   assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'Backend.gs'), 'utf8'), /setTrashed|deleteRow|deleteSheet|\.remove\(|clearContent|\.clear\(/);
+});
+
+test('codeProblem: short codes and codes with spaces are not accepted', () => {
+  assert.notEqual(L.codeProblem('abc'), '');
+  assert.notEqual(L.codeProblem('abc def gh'), '');
+  assert.equal(L.codeProblem('abc123'), '');
+  assert.equal(L.codeProblem('   '), L.codeProblem(''));
 });

@@ -334,6 +334,14 @@ function joinParent(headers, rows, parentHeaders, parentRows, keyCol) {
 // ======================================================================================
 
 function doGet() {
+  // This page runs as the owner and can download every row. On the shared Web App deployment
+  // (which the phone API needs open to anyone) it is shown to the owner only.
+  var email = '', owner = '';
+  try { email = Session.getActiveUser().getEmail(); owner = Session.getEffectiveUser().getEmail(); } catch (e) { /* anonymous */ }
+  var extra = PropertiesService.getScriptProperties().getProperty('DOWNLOAD_EMAILS') || '';
+  if (!downloadPageAllowed(email, owner, extra)) {
+    return HtmlService.createHtmlOutput('<p style="font-family:sans-serif;padding:24px">This page is not available.</p>').setTitle('Evidence Action');
+  }
   return HtmlService.createHtmlOutputFromFile('Page')
     .setTitle('Evidence Action - Survey data download')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
