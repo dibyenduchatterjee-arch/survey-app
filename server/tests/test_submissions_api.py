@@ -800,3 +800,42 @@ def test_a_failure_while_attaching_rolls_back_the_row_and_removes_only_its_own_f
         store_submission(media={"household_photo": MediaPart("a.jpg", JPEG)}, **base)
     assert _count(db, MediaFile) == 0 and _count(db, Submission) == 1
     assert disk(media_root) == [bystander]
+
+
+def test_the_database_allows_one_file_per_question_per_submission(db, form, enum, media_root):
+    from sqlalchemy.exc import IntegrityError
+
+    store_submission(
+        db, form["fv"], enum, GOOD, {"children": [CHILD]}, {"household_photo": MediaPart("a.jpg", JPEG)},
+        str(uuidlib.uuid4()), fake_request(),
+    )
+    row = db.scalars(select(MediaFile)).one()
+    db.add(MediaFile(submission_id=row.submission_id, question_name=row.question_name, filename="2.jpg",
+                     content_type="image/jpeg", size=1, storage_path="x/2.jpg", sha256="0" * 64))
+    with pytest.raises(IntegrityError):
+        db.flush()
+    db.rollback()
+
+
+def test_a_concurrent_replay_that_wins_the_slot_leaves_one_row_and_no_stray_file(
+    db, form, enum, media_root, monkeypatch
+):
+    """Another replay attaches the same slot between our lookup and our insert."""
+    uid = str(uuidlib.uuid4())
+    base = dict(db=db, form_version=form["fv"], user=enum, data=GOOD, repeats={"children": [CHILD]},
+                uuid=uid, request=fake_request())
+    first, _ = store_submission(media={}, **base)
+    real = submissions._check_media
+
+    def racer_wins(media, spec):
+        out = real(media, spec)
+        db.add(MediaFile(submission_id=first.id, question_name="household_photo", filename="1.jpg",
+                         content_type="image/jpeg", size=3, storage_path=f"{uid}/1.jpg", sha256="1" * 64))
+        db.commit()
+        return out
+
+    monkeypatch.setattr(submissions, "_check_media", racer_wins)
+    sub, created = store_submission(media={"household_photo": MediaPart("a.jpg", JPEG)}, **base)
+    assert created is False and sub.id == first.id
+    assert db.scalars(select(MediaFile)).one().sha256 == "1" * 64  # the winner's row stands
+    assert disk(media_root) == []  # ours was never written

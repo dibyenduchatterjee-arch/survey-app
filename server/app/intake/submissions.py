@@ -290,7 +290,8 @@ def _check_media(media: dict[str, MediaPart], spec: dict) -> dict[str, tuple[str
 
 
 def _attach_new_media(
-    db: Session, existing: Submission, user: User, media: dict[str, MediaPart], request: Request
+    db: Session, existing: Submission, user: User, media: dict[str, MediaPart], request: Request,
+    _retry: bool = True,
 ) -> Submission:
     """A same-user replay may carry files for slots the stored submission has no file for.
 
@@ -336,7 +337,15 @@ def _attach_new_media(
                     sha256=hashlib.sha256(new[name].data).hexdigest(),
                 )
             )
-        db.flush()
+        try:
+            db.flush()  # the unique (submission, question) constraint decides a concurrent attach
+        except IntegrityError:
+            db.rollback()
+            if not _retry:
+                raise
+            # A concurrent replay won a slot. Nothing of ours was written; look again and
+            # attach whatever is still missing.
+            return _attach_new_media(db, existing, user, media, request, _retry=False)
         folder.mkdir(parents=True, exist_ok=True)
         for name in sorted(new):
             path = folder / stored[name]

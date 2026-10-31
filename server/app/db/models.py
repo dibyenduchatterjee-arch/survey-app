@@ -216,6 +216,11 @@ class RepeatRow(Base):
 
 class MediaFile(Base):
     __tablename__ = "media_files"
+    __table_args__ = (
+        # One file per question per submission. A retry or a concurrent replay cannot attach
+        # a second one: the database settles the race, as submissions.uuid does.
+        UniqueConstraint("submission_id", "question_name", name="uq_media_files_submission_question"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id"), index=True)

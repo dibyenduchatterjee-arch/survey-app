@@ -160,7 +160,8 @@ def upgrade() -> None:
     sa.Column('storage_path', sa.String(length=500), nullable=False),
     sa.Column('sha256', sa.String(length=64), nullable=False),
     sa.ForeignKeyConstraint(['submission_id'], ['submissions.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('submission_id', 'question_name', name='uq_media_files_submission_question')
     )
     with op.batch_alter_table('media_files', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_media_files_submission_id'), ['submission_id'], unique=False)
