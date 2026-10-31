@@ -474,3 +474,120 @@ export async function test_an_empty_config_falls_back_rather_than_downscaling_to
   assert(media.has('q_image') && media.get('q_image').size <= FALLBACK_MEDIA_BYTES, 'photo not sized to the fallback');
   form.remove();
 }
+
+// ---------------------------------------------------------------- Refresh forms (home screen)
+// app.js is imported lazily so a missing export fails these tests only, not the whole module.
+import * as syncMod from '../js/sync.js';
+const jsonRes = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const formSpec = (id, version, title = id) => ({ form_id: id, version, title: lbl(title), languages: ['default'], default_language: 'default', choices: {}, nodes: [{ type: 'text', name: 'q', label: lbl('Q') }] });
+
+// A server holding `forms` ({ id: version }) and optional broken pieces.
+function refreshServer({ forms, failList = false, failSpecFor = null, datasets = ['villages'] } = {}) {
+  return async (url) => {
+    const u = String(url);
+    if (u.endsWith('/api/forms')) return failList ? jsonRes(500, {}) : jsonRes(200, Object.entries(forms).map(([form_id, v]) => ({ form_id, current_version: v })));
+    const m = u.match(/\/api\/forms\/([^/]+)\/versions\/([^/]+)\/spec$/);
+    if (m) return m[1] === failSpecFor ? jsonRes(500, {}) : jsonRes(200, formSpec(m[1], m[2]));
+    if (u.endsWith('/api/config')) return jsonRes(200, { max_media_bytes: 100000 });
+    if (u.endsWith('/api/datasets')) return jsonRes(200, datasets.map(name => ({ name })));
+    if (/\/api\/datasets\//.test(u)) return jsonRes(200, { rows: [{ a: 1 }] });
+    return jsonRes(404, {});
+  };
+}
+async function freshDb() {
+  syncMod._resetSyncState();
+  await db.deleteDB(); await db.openDB();
+  await db.putSession({ access_token: 'A1', refresh_token: 'R1', user: { id: 1, role: 'enumerator' } });
+}
+
+export async function test_refresh_stores_the_new_form_version_and_reports_what_changed() {
+  const app = await import('../js/app.js');
+  await freshDb();
+  await db.putForm(formSpec('hh', '1'));
+  const r = await app.refreshForms({ fetchImpl: refreshServer({ forms: { hh: '2', other: '1' } }), online: () => true });
+  eq(r.status, 'ok');
+  assert(await db.getForm('hh', '2') && await db.getForm('other', '1') && await db.getForm('hh', '1'), 'new versions stored, old kept');
+  eq(r.newForms, 2);
+  assert(app.refreshMessage(r, 'en').includes('2'), 'message must carry the count');
+  // A second refresh finds nothing new and says so plainly, in both languages.
+  const r2 = await app.refreshForms({ fetchImpl: refreshServer({ forms: { hh: '2', other: '1' } }), online: () => true });
+  eq(r2.status, 'ok');
+  eq(r2.newForms, 0);
+  assert(/up to date/i.test(app.refreshMessage(r2, 'en')), app.refreshMessage(r2, 'en'));
+  assert(/[ऀ-ॿ]/.test(app.refreshMessage(r2, 'hi')), 'Hindi message must be Devanagari');
+}
+
+export async function test_refresh_leaves_an_open_draft_on_its_original_version() {
+  const app = await import('../js/app.js');
+  await freshDb();
+  await db.putForm(formSpec('hh', '1'));
+  await db.saveDraft({ id: 'd1', form_id: 'hh', version: '1', user_id: 1, data: { q: 'सीता' }, repeats: {} });
+  const before = JSON.stringify(await db.getDraft('d1'));
+  await app.refreshForms({ fetchImpl: refreshServer({ forms: { hh: '2' } }), online: () => true });
+  eq(JSON.stringify(await db.getDraft('d1')), before, 'the draft record must be byte-for-byte unchanged');
+  assert(await db.getForm('hh', '1'), 'the version the draft started on must still be there to resume on');
+  assert(await db.getForm('hh', '2'), 'the new version is available for new forms');
+  eq((await db.listDrafts()).length, 1);
+}
+
+export async function test_refresh_leaves_the_queue_and_rejected_untouched() {
+  const app = await import('../js/app.js');
+  await freshDb();
+  await db.enqueue({ uuid: 'q1', form_id: 'hh', version: '1', data: { q: 'a' }, repeats: {} }, { p: new Blob(['x'], { type: 'image/jpeg' }) });
+  await db.putRejected({ uuid: 'r1', form_id: 'hh', version: '1', status: 422, message: 'no', submission: { uuid: 'r1' }, media: [] });
+  const snap = async () => JSON.stringify([await db.peekQueue(10), await db.listRejected(), (await db.getMedia('q1')).length]);
+  const before = await snap();
+  for (const fetchImpl of [refreshServer({ forms: { hh: '2' } }), refreshServer({ forms: {}, failList: true }), refreshServer({ forms: { hh: '2' }, failSpecFor: 'hh' })]) {
+    await app.refreshForms({ fetchImpl, online: () => true });
+  }
+  await app.refreshForms({ fetchImpl: refreshServer({ forms: {} }), online: () => false });
+  eq(await snap(), before, 'queue, media and rejected must be identical after any refresh');
+}
+
+export async function test_a_partial_refresh_is_reported_as_partial_not_success() {
+  const app = await import('../js/app.js');
+  await freshDb();
+  const r = await app.refreshForms({ fetchImpl: refreshServer({ forms: { good: '1', bad: '1' }, failSpecFor: 'bad' }), online: () => true });
+  eq(r.status, 'partial');
+  assert(await db.getForm('good', '1'), 'the form that did download is kept');
+  eq(r.newForms, 1);
+  const en = app.refreshMessage(r, 'en');
+  assert(/not|could/i.test(en) && /again/i.test(en), 'partial message must say something failed and offer retry: ' + en);
+  assert(!/^everything|^done/i.test(en), 'must not read as success');
+  assert(en.includes('1'), 'still says what did update');
+}
+
+export async function test_a_refresh_that_cannot_list_forms_says_it_failed_and_can_be_retried() {
+  const app = await import('../js/app.js');
+  await freshDb();
+  const r = await app.refreshForms({ fetchImpl: refreshServer({ forms: {}, failList: true }), online: () => true });
+  eq(r.status, 'failed');
+  assert(/again/i.test(app.refreshMessage(r, 'en')));
+  const thrown = await app.refreshForms({ fetchImpl: async () => { throw new TypeError('Failed to fetch'); }, online: () => true });
+  eq(thrown.status, 'failed', 'a network exception is a failure, not a crash');
+}
+
+export async function test_an_offline_refresh_says_a_connection_is_needed_and_does_not_fetch() {
+  const app = await import('../js/app.js');
+  await freshDb();
+  let calls = 0;
+  const r = await app.refreshForms({ fetchImpl: async () => { calls++; return jsonRes(200, []); }, online: () => false });
+  eq(r.status, 'offline');
+  eq(calls, 0, 'offline must not even try');
+  assert(/internet/i.test(app.refreshMessage(r, 'en')) && /[ऀ-ॿ]/.test(app.refreshMessage(r, 'hi')));
+}
+
+export async function test_the_home_screen_has_a_refresh_button_in_both_languages_with_a_44px_target() {
+  const app = await import('../js/app.js');
+  await cssReady;
+  for (const lang of ['en', 'hi']) {
+    const label = app.refreshLabel(lang);
+    assert(label && label !== 'refresh', 'label missing in ' + lang);
+    if (lang === 'hi') assert(/[ऀ-ॿ]/.test(label));
+  }
+  assert(/refresh forms/i.test(app.refreshLabel('en')));
+  const btn = app.refreshButton({ lang: 'en', onrefresh() {} });
+  const host = mount(btn);
+  assert(btn.getBoundingClientRect().height >= 44, 'touch target under 44px: ' + btn.getBoundingClientRect().height);
+  host.remove();
+}
