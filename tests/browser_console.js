@@ -127,6 +127,68 @@ export async function test_a_publish_error_shows_the_offending_question_name() {
   root3.remove();
 }
 
+const PROJ_LIST = [{ id: 1, name: 'Default project' }, { id: 2, name: 'IFA syrup' }];
+const fieldOf = init => init.body.get('project_id');
+
+export async function test_an_upload_sends_the_chosen_project_id() {
+  const { api, calls } = stub([
+    ['GET', /\/api\/projects$/, () => PROJ_LIST],
+    ['POST', /\/api\/forms$/, () => ({ status: 201, body: { form_id: 'f', version: '1', warnings: [] } })],
+    ['GET', /\/spec$/, SPEC],
+  ]);
+  const root = mount();
+  await mountForms(root, { api, user: { role: 'admin' } });
+  await until(() => root.querySelector('select.upload-project option[value="2"]'), 'project list');
+  await pickFile(root.querySelector('input[type=file]'));
+  root.querySelector('button.upload').click();
+  assert(text(root).includes('Choose the project'), 'refuses to guess when several projects exist');
+  eq(calls.filter(c => c.method === 'POST').length, 0, 'nothing sent without a project');
+  root.querySelector('select.upload-project').value = '2';
+  root.querySelector('button.upload').click();
+  await until(() => root.querySelector('table.questions'), 'result');
+  const post = calls.find(c => c.method === 'POST');
+  eq(fieldOf(post.init), '2');
+  root.remove();
+}
+
+export async function test_a_project_required_422_shows_the_named_projects_as_choices() {
+  const sent = [];
+  const { api } = stub([
+    ['POST', /\/api\/forms$/, (m, init) => {
+      sent.push(init.body.get('project_id'));
+      if (!init.body.get('project_id')) return { status: 422, body: { detail: { error: 'project_required', message: 'Say which project this form belongs to (project_id).', projects: PROJ_LIST } } };
+      return { status: 201, body: { form_id: 'f', version: '1', warnings: [] } };
+    }],
+    ['GET', /\/spec$/, SPEC],
+  ]);
+  const root = mount();
+  await mountForms(root, { api, user: { role: 'supervisor' } });
+  await pickFile(root.querySelector('input[type=file]'));
+  root.querySelector('button.upload').click();
+  await until(() => root.querySelector('.project-choices'), 'choices');
+  const btns = [...root.querySelectorAll('button.choose-project')];
+  eq(btns.map(b => b.textContent), ['Upload to Default project', 'Upload to IFA syrup']);
+  assert(!root.querySelector('.error-text') && !text(root).includes('project_required'), 'no raw error');
+  btns[1].click();
+  await until(() => root.querySelector('table.questions'), 'uploaded after choosing');
+  eq(sent, [null, '2']);
+  root.remove();
+}
+
+export async function test_a_422_for_a_supervisor_in_no_project_shows_the_message_without_choices() {
+  const { api } = stub([
+    ['POST', /\/api\/forms$/, () => ({ status: 422, body: { detail: { error: 'project_required', message: 'You are not a member of any project; ask an admin to add you to one before uploading a form.', projects: [] } } })],
+  ]);
+  const root = mount();
+  await mountForms(root, { api, user: { role: 'supervisor' } });
+  await pickFile(root.querySelector('input[type=file]'));
+  root.querySelector('button.upload').click();
+  await until(() => root.querySelector('.project-choices'), 'message');
+  assert(text(root).includes('ask an admin to add you'));
+  eq(root.querySelectorAll('button.choose-project').length, 0);
+  root.remove();
+}
+
 // ------------------------------------------------------------------ submissions
 
 const summary = (i, status = 'received') => ({
@@ -509,6 +571,18 @@ export async function test_moving_a_form_between_projects_updates_both() {
   await until(() => pcard(root, 2).querySelector('.counts').textContent.includes('3 forms'), 'destination has 3 forms');
   await until(() => pcard(root, 1).querySelector('.counts').textContent.includes('0 forms'), 'source emptied');
   assert(calls.some(x => x.method === 'PUT' && /\/api\/projects\/2\/forms\/old_form$/.test(x.url)), 'PUT to the destination');
+  const after = text(root);
+  assert(after.includes('keeps it'), 'says direct grants stay');
+  root.remove();
+}
+
+export async function test_the_move_warning_says_direct_assignments_survive_and_default_project() {
+  const { api, ctx } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  const w = pcard(root, 2).querySelector('.move-warning').textContent;
+  assert(/given this form directly/.test(w) && /keeps it/.test(w), 'direct assignments stay: ' + w);
+  assert(w.includes('Default project') && w.includes('only in the old project'), 'Default project and old-project members: ' + w);
   root.remove();
 }
 
@@ -563,7 +637,7 @@ export async function test_a_supervisor_sees_only_what_the_api_returns() {
   const root = mount();
   await mountProjects(root, ctx(api));
   eq(root.querySelectorAll('.project-card').length, 1);
-  assert(!text(root).includes('Default project'));
+  assert(![...root.querySelectorAll('.project-name')].some(n => n.textContent === 'Default project'), 'default project not listed');
   assert(!root.querySelector('button.add-member'), 'no add control for a supervisor');
   root.remove();
 }
