@@ -75,7 +75,9 @@ Five things the spec implies but no single feature test naturally covers. Each l
 - Test: `server/tests/test_health.py`, `server/tests/conftest.py`
 
 **Interfaces:**
-- Produces: `Settings` (pydantic-settings) with fields `database_url: str`, `jwt_secret: SecretStr`, `media_key: SecretStr`, `media_root: Path`, `cors_origins: list[str]`; `get_settings() -> Settings` cached. `app: FastAPI` in `main.py`. `client` pytest fixture returning `TestClient`.
+- Produces: `Settings` (pydantic-settings) with fields `database_url: str`, `jwt_secret: SecretStr`, `media_key: SecretStr`, `media_root: Path`, `cors_origins: list[str]`, `max_media_bytes: int = 5 * 1024 * 1024`; `get_settings() -> Settings` cached.
+
+`max_media_bytes` is the **one** media size cap in the system. Task 11 rejects an upload above it; Task 19 downscales photos below it. It is defined once here so the two cannot disagree. `app: FastAPI` in `main.py`. `client` pytest fixture returning `TestClient`.
 
 - [ ] **Step 1: Create the venv and install dependencies**
 
@@ -164,10 +166,12 @@ def test_only_one_current_version_per_form(db):
     # publishing v2 clears is_current on v1
     assert [v.version for v in form.versions if v.is_current] == ["2"]
 
-def test_audit_log_has_no_update_or_delete(db):
-    assert not hasattr(AuditLog, "__allow_unmapped_update__")
-    # audit rows are written only through core.audit; assert the model has no mutable
-    # relationship back-references that would let a route edit one
+def test_audit_rows_are_never_mutated_by_the_api():
+    """Append-only is enforced by discipline plus this test. SQLite cannot express a
+    table-level grant, so the deployment adds one on PostgreSQL (see OPERATIONS.md)."""
+    src = " ".join(p.read_text(encoding="utf-8") for p in (ROOT/"server/app/api").rglob("*.py"))
+    assert "delete(AuditLog)" not in src
+    assert not re.search(r"\baudit(_row|_log)?\.\w+\s*=", src)
 ```
 
 - [ ] **Step 2: Run and confirm failure** — `.venv/Scripts/python.exe -m pytest server/tests/test_models.py -v`
@@ -580,7 +584,9 @@ Walk the spec depth-first. Evaluate `relevant` first; a node that is not relevan
 
 **Interfaces:**
 - Consumes: `validate_submission()` (Task 10), `require_role` (Task 5).
-- Produces: `POST /api/submissions` (multipart: `submission` JSON part + media parts) → `201 {uuid, status, failures}` or `200` with the original receipt on replay; `GET /api/submissions?form_id&status&page` (supervisor+, enumerators see only their own); `GET /api/submissions/{uuid}`. `encrypt_bytes(data: bytes) -> bytes` / `decrypt_bytes(blob: bytes) -> bytes` in `crypto.py`. `likely_duplicates(db, submission) -> list[Submission]`.
+- Produces: `store_submission(db, form_version, user, data, repeats, media, uuid, request) -> tuple[Submission, bool]` as a **module-level function** returning the submission and whether it was newly created; `POST /api/submissions` (multipart: `submission` JSON part + media parts) → `201 {uuid, status, failures}` or `200` with the original receipt on replay; `GET /api/submissions?form_id&status&page` (supervisor+, enumerators see only their own); `GET /api/submissions/{uuid}`. `encrypt_bytes(data: bytes) -> bytes` / `decrypt_bytes(blob: bytes) -> bytes` in `crypto.py`. `likely_duplicates(db, submission) -> list[Submission]`.
+
+`store_submission` carries **all** the intake rules — assignment check, size cap, magic-byte check, validation, transaction, idempotency. The route is a thin caller that only translates HTTP. Task 12's OpenRosa endpoint calls the same function, so both clients share one idempotency rule and one validation path by construction rather than by careful duplication.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -610,7 +616,7 @@ def test_received_at_is_the_server_clock_not_the_device_clock():     # Review Fo
     payload["finished_at"] = "2001-01-01T00:00:00Z"
     assert client.post(...).json()["received_at"][:4] != "2001"
 
-def test_an_oversized_photo_is_refused_and_leaves_no_orphan_media(): # Review Focus 5
+def test_a_photo_over_settings_max_media_bytes_is_refused_with_no_orphan(): # Review Focus 5
     r = client.post("/api/submissions", files=huge)
     assert r.status_code == 413
     assert db.query(Submission).count() == 0 and list(MEDIA_ROOT.iterdir()) == []
@@ -674,7 +680,7 @@ def test_replaying_the_same_instance_id_does_not_duplicate(): ...   # Review Foc
 
 - [ ] **Step 3: Implement `openrosa.py`**
 
-HTTP Basic against the same user table. The posted `xml_submission_file` is parsed into the same `{data, repeats}` shape Task 11 uses, then handed to the same storage path, so both clients share one code path and one idempotency rule. `meta/instanceID` becomes the submission UUID.
+HTTP Basic against the same user table. The posted `xml_submission_file` is parsed into the same `{data, repeats}` shape Task 11 uses, then passed to Task 11's `store_submission()`. This endpoint contains no intake logic of its own — if it needs a rule, the rule belongs in `store_submission`. `meta/instanceID` becomes the submission UUID.
 
 - [ ] **Step 4: Run the tests** → PASS
 
@@ -773,7 +779,7 @@ def test_export_writes_an_audit_row(): ...
 
 - [ ] **Step 3: Implement `drive.py`, `sheets.py`, then `exports.py`**
 
-Both wrappers take an already-built client, which is what makes them testable. Retry `429` and `5xx` three times with exponential backoff; treat `4xx` other than `429` as permanent. `exports.py` runs the job in a FastAPI `BackgroundTasks` and updates `ExportJob.status` through `running → done | failed`, always recording the error text on failure.
+Both wrappers take an already-built client, which is what makes them testable. Retry `429` and `5xx` three times with exponential backoff; treat `4xx` other than `429` as permanent. Exported filenames are `<form_id>_<timestamp>.csv`, `<form_id>_<repeat_path>_<timestamp>.csv` and `<form_id>_media_<timestamp>.zip`. `exports.py` runs the job in a FastAPI `BackgroundTasks` and updates `ExportJob.status` through `running → done | failed`, always recording the error text on failure.
 
 - [ ] **Step 4: Run the tests** → PASS
 
@@ -956,7 +962,7 @@ export async function test_every_spec_type_renders_an_input()      // no "unsupp
 export async function test_a_select_one_renders_its_choice_labels_in_hindi()
 export async function test_typing_an_answer_updates_the_engine()
 export async function test_a_constraint_error_is_shown_next_to_the_question()
-export async function test_downscale_reduces_a_large_photo_below_the_cap()   // Review Focus 5
+export async function test_downscale_reduces_a_large_photo_below_max_media_bytes()  // Review Focus 5
 export async function test_capture_location_rejects_when_accuracy_never_improves()
 export async function test_capture_location_returns_accuracy_alongside_the_point()
 ```
@@ -965,7 +971,7 @@ export async function test_capture_location_returns_accuracy_alongside_the_point
 
 - [ ] **Step 3: Implement `render.js`, `index.html` and `app.css`**
 
-One renderer per spec type; the dispatcher throws on an unknown type rather than rendering a blank, so a gap is loud. `captureLocation` uses `watchPosition`, resolves once accuracy is within `minAccuracy`, and on timeout rejects with the best fix so far attached so the UI can offer it for deliberate acceptance. `downscaleImage` draws to a canvas and exports JPEG at quality 0.8. Touch targets are at least 44 px and the layout is single-column, for a phone held one-handed in the field.
+One renderer per spec type; the dispatcher throws on an unknown type rather than rendering a blank, so a gap is loud. `captureLocation` uses `watchPosition`, resolves once accuracy is within `minAccuracy`, and on timeout rejects with the best fix so far attached so the UI can offer it for deliberate acceptance. `downscaleImage` draws to a canvas and exports JPEG at quality 0.8, retrying at a smaller edge until the blob is under `maxBytes`, which the caller reads from the server's `max_media_bytes` (surfaced in the bootstrap response) so the cap is never written twice. Touch targets are at least 44 px and the layout is single-column, for a phone held one-handed in the field.
 
 - [ ] **Step 4: Re-run the harness** → all pass
 
