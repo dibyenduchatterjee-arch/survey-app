@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     login_rate_limit_per_username: int = Field(default=5, ge=1)
     login_rate_limit_per_ip: int = Field(default=60, ge=1)
     login_rate_limit_window_seconds: int = Field(default=900, ge=1)
+    # Google exports (Task 14). Unset by default; an export request with the key file or the
+    # folder missing is refused with a 503 naming the setting, never silently skipped.
+    # Path to the service-account JSON key. Never logged, never returned.
+    google_service_account_file: Path | None = None
+    # Drive folder the CSVs land in (the folder must be shared with the service account).
+    drive_folder_id: str | None = None
+    # Optional: a Google Sheet whose tab (named for the form) is refreshed with the main CSV.
+    google_sheet_id: str | None = None
 
     @field_validator("jwt_secret")
     @classmethod
