@@ -5,12 +5,13 @@ Timestamps are timezone-aware UTC. `Submission.received_at` is set by the server
 ordering or expiry (the server never trusts a device clock).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Date,
     Float,
     ForeignKey,
     Index,
@@ -292,7 +293,12 @@ class ExportJob(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    form_id: Mapped[int] = mapped_column(ForeignKey("forms.id"))
+    # A job covers ONE form (form_id set) or a whole project (project_id set, form_id null).
+    form_id: Mapped[int | None] = mapped_column(ForeignKey("forms.id"))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    # Inclusive calendar days (UTC) on submissions.received_at; null means unbounded.
+    date_from: Mapped[date | None] = mapped_column(Date)
+    date_to: Mapped[date | None] = mapped_column(Date)
     requested_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     requested_at: Mapped[datetime] = mapped_column(default=utcnow)
     status: Mapped[str] = mapped_column(String(20), default="pending")

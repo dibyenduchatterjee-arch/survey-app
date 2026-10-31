@@ -1,8 +1,23 @@
 """Export jobs: build the CSVs (and the media zip), put them in Drive, refresh the Sheet.
 
-POST /api/exports {form_id}          -> 202 {job_id}; the work runs in a FastAPI BackgroundTask
+POST /api/exports {form_id | project_id, date_from?, date_to?}
+                                     -> 202 {job_id}; the work runs in a FastAPI BackgroundTask
 GET  /api/exports/{job_id}           -> the job: status, drive_file_id, sheet_id, row_count, error
-GET  /api/exports/{job_id}/download  -> the main CSV itself, streamed once the job is done
+GET  /api/exports/{job_id}/download  -> the main CSV (one form) or a zip of every form's files (a
+                                        project), streamed once the job is done
+
+FILTERS. `form_id` (one form) and `project_id` (every form in the project) are alternatives; both,
+or neither, is a 422. `date_from` / `date_to` are ISO days (YYYY-MM-DD), both inclusive, and filter
+on `Submission.received_at`, the server's own clock, never the device's. A day is a UTC day, the
+same clock as the `received_at` column in the CSV, so the file can be checked against the range.
+Who may export what is decided only by `app.core.access` (`staff_can_see_form` /
+`staff_can_see_project`); a refusal is the same 404 as a form or project that does not exist.
+A range that matches nothing is not an error: the job is done with row_count 0, the CSV has its
+header row only, and the job says so in `message`.
+
+A PROJECT EXPORT is `build_csvs` run once per form, each file named `<form_id>_..._<stamp>`, plus one
+media zip for the whole project. The download is those same files in one zip, built on request
+(whether or not Drive is configured); in Drive each file is uploaded on its own as for one form.
 
 Supervisor and admin only. A job's status moves pending -> running -> done | failed, and a failed
 job keeps its error text and is never deleted: the person who asked needs to see why.
@@ -34,19 +49,19 @@ import re
 import zipfile
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import audit
-from app.core.access import staff_can_see_form
+from app.core.access import staff_can_see_form, staff_can_see_project
 from app.core.config import Settings, get_settings
 from app.core.rbac import require_role
-from app.db.models import ExportJob, Form, FormVersion, Submission, User
+from app.db.models import ExportJob, Form, FormVersion, Project, Submission, User
 from app.db.session import SessionLocal, get_session
 from app.export.csv_export import build_csvs
 from app.export.drive import DriveUploader, ExportConfigError, GoogleError, build_google_client, redact
@@ -100,7 +115,31 @@ def get_job_session() -> SessionFactory:
 class ExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    form_id: Annotated[str, StringConstraints(min_length=1, max_length=150)]
+    form_id: Annotated[str, StringConstraints(min_length=1, max_length=150)] | None = None
+    project_id: int | None = Field(default=None, strict=True)
+    date_from: date | None = None
+    date_to: date | None = None
+
+    @field_validator("date_from", "date_to", mode="before")
+    @classmethod
+    def _iso_day(cls, v: object) -> object:
+        """Only YYYY-MM-DD: not a timestamp, not a datetime, not DD/MM/YYYY (which is ambiguous)."""
+        if v is not None and not (isinstance(v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v)):
+            raise ValueError("must be a date written YYYY-MM-DD")
+        return v
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "ExportRequest":
+        if self.form_id is not None and self.project_id is not None:
+            raise ValueError(
+                "Give form_id (one form) or project_id (every form in the project), not both: "
+                "a project export already includes all of its forms"
+            )
+        if self.form_id is None and self.project_id is None:
+            raise ValueError("Give form_id (one form) or project_id (every form in a project)")
+        if self.date_from and self.date_to and self.date_to < self.date_from:
+            raise ValueError("date_to is earlier than date_from: the range would be empty by mistake")
+        return self
 
 
 class JobStarted(BaseModel):
@@ -109,27 +148,54 @@ class JobStarted(BaseModel):
 
 class JobOut(BaseModel):
     job_id: int
-    form_id: str
+    form_id: str | None  # one form, or null for a project export
+    project_id: int | None
+    project_name: str | None
+    date_from: date | None
+    date_to: date | None
     status: str
     requested_at: datetime
     drive_file_id: str | None
     drive_url: str | None  # information only; access is through /download
     sheet_id: str | None
     row_count: int | None
+    message: str | None  # set when the job is done and matched nothing
     error: str | None
 
 
-def _job_out(job: ExportJob, form_id: str) -> JobOut:
+def _range_text(date_from: date | None, date_to: date | None) -> str:
+    if date_from and date_to:
+        return f"{date_from.isoformat()} to {date_to.isoformat()}"
+    if date_from:
+        return f"from {date_from.isoformat()}"
+    if date_to:
+        return f"up to {date_to.isoformat()}"
+    return "all dates"
+
+
+def _job_out(job: ExportJob, form_key: str | None, project_name: str | None) -> JobOut:
     at = job.requested_at if job.requested_at.tzinfo else job.requested_at.replace(tzinfo=UTC)
+    message = None
+    if job.status == "done" and job.row_count == 0:
+        what = f"project {project_name}" if job.project_id is not None else f"form {form_key}"
+        message = (
+            f"No submissions matched ({what}, {_range_text(job.date_from, job.date_to)}). "
+            "The CSV holds the column headings only."
+        )
     return JobOut(
         job_id=job.id,
-        form_id=form_id,
+        form_id=form_key,
+        project_id=job.project_id,
+        project_name=project_name,
+        date_from=job.date_from,
+        date_to=job.date_to,
         status=job.status,
         requested_at=at,
         drive_file_id=job.drive_file_id,
         drive_url=f"https://drive.google.com/file/d/{job.drive_file_id}/view" if job.drive_file_id else None,
         sheet_id=job.sheet_id,
         row_count=job.row_count,
+        message=message,
         error=job.error,
     )
 
@@ -145,6 +211,12 @@ def _stamped(name: str, form_id: str, stamp: str) -> str:
     return f"{stem}_{stamp}{dot}{ext}"
 
 
+def _safe_name(text: str, fallback: str) -> str:
+    """A file or header name: ASCII letters, digits and _.- only (a Devanagari name falls back)."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", text)
+    return safe if re.search(r"[A-Za-z0-9]", safe) else fallback
+
+
 def _sheet_rows(main_csv: bytes) -> list[list[str]]:
     return list(csv.reader(io.StringIO(main_csv.decode("utf-8-sig"), newline="")))
 
@@ -154,24 +226,94 @@ def _error_text(e: BaseException) -> str:
     return redact(text)[:2000]
 
 
-def _load_export_data(db: Session, form_pk: int) -> tuple[Form, FormVersion, list[Submission]]:
-    form = db.get(Form, form_pk)
+def _bounds(date_from: date | None, date_to: date | None) -> tuple[datetime | None, datetime | None]:
+    """[start, end) in UTC for inclusive calendar days: end is midnight after date_to."""
+    start = datetime.combine(date_from, time.min, tzinfo=UTC) if date_from else None
+    end = None
+    if date_to and date_to < date.max:
+        end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=UTC)
+    return start, end
+
+
+Collected = list[tuple[Form, FormVersion, list[Submission]]]
+
+
+def _load_form_data(
+    db: Session, form: Form, date_from: date | None, date_to: date | None
+) -> tuple[FormVersion | None, list[Submission]]:
     version = db.scalars(
         select(FormVersion)
         .where(FormVersion.form_id == form.id)
         .order_by(FormVersion.is_current.desc(), FormVersion.id.desc())
     ).first()
-    if version is None:
-        raise GoogleError("This form has no uploaded version, so there is nothing to export")
-    subs = list(
-        db.scalars(
-            select(Submission)
-            .join(FormVersion, Submission.form_version_id == FormVersion.id)
-            .where(FormVersion.form_id == form.id)
-            .order_by(Submission.id)
-        )
+    query = (
+        select(Submission)
+        .join(FormVersion, Submission.form_version_id == FormVersion.id)
+        .where(FormVersion.form_id == form.id)
+        .order_by(Submission.id)
     )
-    return form, version, subs
+    start, end = _bounds(date_from, date_to)
+    if start is not None:
+        query = query.where(Submission.received_at >= start)
+    if end is not None:
+        query = query.where(Submission.received_at < end)
+    return version, list(db.scalars(query))
+
+
+def _load_export_data(db: Session, job: ExportJob) -> Collected:
+    """Every form the job covers with its spec and the submissions inside the job's range.
+
+    A single form with no uploaded version fails the job with a reason. In a project such a form
+    is skipped (nothing can have been collected on it); a project with none left fails the same way.
+    """
+    if job.form_id is not None:
+        forms = [db.get(Form, job.form_id)]
+    else:
+        forms = list(db.scalars(select(Form).where(Form.project_id == job.project_id).order_by(Form.id)))
+    out: Collected = []
+    for form in forms:
+        version, subs = _load_form_data(db, form, job.date_from, job.date_to)
+        if version is not None:
+            out.append((form, version, subs))
+    if not out:
+        raise GoogleError(
+            "This form has no uploaded version, so there is nothing to export"
+            if job.form_id is not None
+            else "No form in this project has an uploaded version, so there is nothing to export"
+        )
+    return out
+
+
+def _form_files(form: Form, version: FormVersion, subs: list[Submission], stamp: str) -> dict[str, bytes]:
+    """`build_csvs` output with each file stamped and named for its form; the main file is first."""
+    built = build_csvs(version.json_spec, subs)
+    spec_id = next(iter(built)).removesuffix(".csv")  # the id inside the spec, which names the files
+    named = {}
+    for n, d in built.items():
+        if spec_id != form.form_id and n.startswith(spec_id):
+            n = form.form_id + n[len(spec_id) :]  # the form's own id, so two forms never share a name
+        named[_stamped(n, form.form_id, stamp)] = d
+    return named
+
+
+def _bundle(files: dict[str, bytes], media: tuple[str, bytes] | None) -> bytes:
+    """One zip of a project's files (and its media zip, when it has any) for the download."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+        if media is not None:
+            z.writestr(media[0], media[1])
+    return buf.getvalue()
+
+
+def _has_files(media_zip: bytes) -> bool:
+    return bool(zipfile.ZipFile(io.BytesIO(media_zip)).namelist())
+
+
+def _project_slug(db: Session, project_id: int) -> str:
+    p = db.get(Project, project_id)
+    return _safe_name(p.name if p else "", f"project_{project_id}")
 
 
 def run_export(
@@ -190,28 +332,31 @@ def run_export(
         job.status = "running"
         db.commit()
         try:
-            form, version, subs = _load_export_data(db, job.form_id)
+            collected = _load_export_data(db, job)
             if uploader is not None:
-                files = build_csvs(version.json_spec, subs)
-                media_zip = build_media_zip(subs)
                 stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-
-                main_name = next(iter(files))  # build_csvs puts the main file first
-                for name, data in files.items():
-                    mime = "text/plain" if name.endswith(".txt") else "text/csv"
-                    file_id = uploader.upload(folder_id, _stamped(name, form.form_id, stamp), data, mime)
-                    if name == main_name:
-                        job.drive_file_id = file_id
-                        db.commit()  # keep the id even if a later step fails
-                if zipfile.ZipFile(io.BytesIO(media_zip)).namelist():
-                    uploader.upload(folder_id, f"{form.form_id}_media_{stamp}.zip", media_zip, "application/zip")
-
-                if sheets is not None and sheet_id:
-                    sheets.replace(sheet_id, form.form_id, _sheet_rows(files[main_name]))
-                    job.sheet_id = sheet_id
+                first = True
+                for form, version, subs in collected:
+                    files = _form_files(form, version, subs, stamp)
+                    main_name = next(iter(files))  # build_csvs puts the main file first
+                    for name, data in files.items():
+                        mime = "text/plain" if name.endswith(".txt") else "text/csv"
+                        file_id = uploader.upload(folder_id, name, data, mime)
+                        if name == main_name and first:
+                            job.drive_file_id = file_id
+                            db.commit()  # keep the id even if a later step fails
+                            first = False
+                    if sheets is not None and sheet_id:
+                        sheets.replace(sheet_id, form.form_id, _sheet_rows(files[main_name]))
+                        job.sheet_id = sheet_id
+                media_zip = build_media_zip([s for _, _, subs in collected for s in subs])
+                if _has_files(media_zip):
+                    owner = collected[0][0].form_id if job.form_id is not None else _project_slug(db, job.project_id)
+                    uploader.upload(folder_id, f"{owner}_media_{stamp}.zip", media_zip, "application/zip")
             else:
-                build_csvs(version.json_spec, subs)  # fail now, not at download, if it cannot be built
-            job.row_count = len(subs)
+                for _, version, subs in collected:
+                    build_csvs(version.json_spec, subs)  # fail now, not at download, if it cannot be built
+            job.row_count = sum(len(subs) for _, _, subs in collected)
             job.status = "done"
             job.error = None
             db.commit()
@@ -241,13 +386,26 @@ def start_export(
 ) -> JobStarted:
     if uploader is not None and not settings.drive_folder_id:
         raise HTTPException(status_code=503, detail="DRIVE_FOLDER_ID is not set: exports need a Drive folder")
-    form = db.scalars(select(Form).where(Form.form_id == body.form_id)).first()
-    if form is None or not staff_can_see_form(db, user, form.id):  # same 404 either way
-        raise HTTPException(status_code=404, detail="Form not found")
-    job = ExportJob(form_id=form.id, requested_by=user.id, status="pending")
+    detail: dict = {}
+    if body.form_id is not None:
+        form = db.scalars(select(Form).where(Form.form_id == body.form_id)).first()
+        if form is None or not staff_can_see_form(db, user, form.id):  # same 404 either way
+            raise HTTPException(status_code=404, detail="Form not found")
+        scope = {"form_id": form.id}
+        detail["form_id"] = form.form_id
+    else:
+        if db.get(Project, body.project_id) is None or not staff_can_see_project(db, user, body.project_id):
+            raise HTTPException(status_code=404, detail="Project not found")  # same 404 either way
+        scope = {"project_id": body.project_id}
+        detail["project_id"] = body.project_id
+    if body.date_from:
+        detail["date_from"] = body.date_from.isoformat()
+    if body.date_to:
+        detail["date_to"] = body.date_to.isoformat()
+    job = ExportJob(**scope, date_from=body.date_from, date_to=body.date_to, requested_by=user.id, status="pending")
     db.add(job)
     db.flush()
-    audit.record(db, user.id, "export.start", "export_job", job.id, request, {"form_id": form.form_id})
+    audit.record(db, user.id, "export.start", "export_job", job.id, request, detail)
     db.commit()
     background.add_task(
         run_export, job.id, session_factory, uploader, sheets, settings.drive_folder_id, settings.google_sheet_id
@@ -255,19 +413,25 @@ def start_export(
     return JobStarted(job_id=job.id)
 
 
-def _load(db: Session, user: User, job_id: int) -> tuple[ExportJob, str]:
-    row = db.execute(
-        select(ExportJob, Form.form_id).join(Form, ExportJob.form_id == Form.id).where(ExportJob.id == job_id)
-    ).first()
-    if row is None or not staff_can_see_form(db, user, row[0].form_id):  # same 404 either way
-        raise HTTPException(status_code=404, detail="Export job not found")
-    return row[0], row[1]
+def _load(db: Session, user: User, job_id: int) -> tuple[ExportJob, str | None, str | None]:
+    """The job, its form_id (one form) and project name (a project); one 404 for missing and not-yours."""
+    job = db.get(ExportJob, job_id)
+    if job is not None:
+        if job.form_id is not None:
+            allowed = staff_can_see_form(db, user, job.form_id)
+        else:
+            allowed = job.project_id is not None and staff_can_see_project(db, user, job.project_id)
+        if allowed:
+            form_key = db.scalar(select(Form.form_id).where(Form.id == job.form_id)) if job.form_id else None
+            project = db.get(Project, job.project_id) if job.project_id else None
+            return job, form_key, project.name if project else None
+    raise HTTPException(status_code=404, detail="Export job not found")
 
 
 @router.get("/exports/{job_id}", response_model=JobOut)
 def get_export(job_id: int, user: User = Depends(_staff), db: Session = Depends(get_session)) -> JobOut:
-    job, form_id = _load(db, user, job_id)
-    return _job_out(job, form_id)
+    job, form_key, project_name = _load(db, user, job_id)
+    return _job_out(job, form_key, project_name)
 
 
 @router.get("/exports/{job_id}/download")
@@ -277,14 +441,43 @@ def download_export(
     uploader: DriveUploader | None = Depends(get_drive_uploader),
     db: Session = Depends(get_session),
 ) -> Response:
-    """The main CSV, byte for byte (the BOM is what makes Devanagari open in Excel).
+    """One form: its main CSV, byte for byte (the BOM is what makes Devanagari open in Excel).
+    A project: a zip of every form's files. Either way within the job's date range.
 
-    From Drive when the job put it there, otherwise built here from the current data.
+    A form's CSV comes from Drive when the job put it there, otherwise it is built here from the
+    current data. A project's zip is always built here.
     """
-    job, form_key = _load(db, user, job_id)
+    job, form_key, project_name = _load(db, user, job_id)
     if job.status != "done":
         detail = job.error if job.status == "failed" and job.error else f"Export is {job.status}, not done"
         raise HTTPException(status_code=409, detail=detail)
+    requested = job.requested_at if job.requested_at.tzinfo else job.requested_at.replace(tzinfo=UTC)
+    stamp = requested.strftime("%Y%m%dT%H%M%SZ")
+    if job.date_from and job.date_to:
+        span = f"_{job.date_from.isoformat()}_to_{job.date_to.isoformat()}"
+    elif job.date_from:
+        span = f"_from_{job.date_from.isoformat()}"
+    elif job.date_to:
+        span = f"_to_{job.date_to.isoformat()}"
+    else:
+        span = ""
+    if job.form_id is None:
+        slug = _safe_name(project_name or "", f"project_{job.project_id}")
+        try:
+            collected = _load_export_data(db, job)
+            files: dict[str, bytes] = {}
+            for form, version, subs in collected:
+                files.update(_form_files(form, version, subs, stamp))
+            media_zip = build_media_zip([s for _, _, subs in collected for s in subs])
+            media = (f"{slug}_media_{stamp}.zip", media_zip) if _has_files(media_zip) else None
+            data = _bundle(files, media)
+        except Exception as e:  # noqa: BLE001 - say why, never a bare 500
+            raise HTTPException(status_code=500, detail=_error_text(e)) from None
+        return Response(
+            content=data,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{slug}{span}_{stamp}.zip"'},
+        )
     if job.drive_file_id:
         if uploader is None:
             raise HTTPException(status_code=503, detail="This export is in Drive, and Drive is no longer configured")
@@ -294,15 +487,13 @@ def download_export(
             raise HTTPException(status_code=502, detail=_error_text(e)) from None
     else:
         try:
-            _, version, subs = _load_export_data(db, job.form_id)
+            _, version, subs = _load_export_data(db, job)[0]
             data = next(iter(build_csvs(version.json_spec, subs).values()))
         except Exception as e:  # noqa: BLE001 - say why, never a bare 500
             raise HTTPException(status_code=500, detail=_error_text(e)) from None
-    requested = job.requested_at if job.requested_at.tzinfo else job.requested_at.replace(tzinfo=UTC)
-    stamp = requested.strftime("%Y%m%dT%H%M%SZ")
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", form_key)  # a header value, never raw text
+    safe = _safe_name(form_key, "form")  # a header value, never raw text
     return Response(
         content=data,
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{safe}_{stamp}.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe}{span}_{stamp}.csv"'},
     )
