@@ -18,17 +18,23 @@ const plain = x => JSON.parse(JSON.stringify(x));
 const sha = s => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const hmac = (s, k) => crypto.createHmac('sha256', k).update(s, 'utf8').digest('hex');
 
-const HEADER = ['Project name', 'Drive folder id', 'Data spreadsheet id', 'Access code', 'Active'];
-const stored = (code, salt) => L.makeStoredCode(code, salt || 'saltsalt01', sha, 5);
+const PROJ_HEADER = ['Project name', 'Drive folder id', 'Data spreadsheet id'];
+const PEOPLE_HEADER = ['Person name', 'Access code', 'Project', 'Active'];
+const tagOf = n => hmac(n, 'lookup-key').slice(0, 16);
+const stored = (code, salt, noTag) => L.makeStoredCode(code, salt || 'saltsalt01', sha, 5, noTag ? '' : tagOf(code.trim().toUpperCase()));
 const SPEC_A = { form_id: 'amb_visit', version: 3, nodes: [] };
 const SPEC_B = { form_id: 'school_visit', version: 1, nodes: [] };
 
 function makeWorld(over) {
   const w = Object.assign({
-    projects: [HEADER,
-      ['Bihar AMB', 'folderA', 'ssA', stored('AMB12345', 'saltAAAA01'), 'yes'],
-      ['Odisha Schools', 'folderB', 'ssB', stored('ODI67890', 'saltBBBB01'), 'yes'],
-      ['Old Pilot', 'folderC', 'ssC', stored('PILOT999', 'saltCCCC01'), 'no']],
+    projects: [PROJ_HEADER,
+      ['Bihar AMB', 'folderA', 'ssA'],
+      ['Odisha Schools', 'folderB', 'ssB']],
+    people: [PEOPLE_HEADER,
+      ['Sunita Devi', stored('AMB12345', 'saltAAAA01'), 'Bihar AMB', 'yes'],
+      ['Ravi Kumar', stored('RAVI55555', 'saltRRRR01'), 'bihar amb', 'yes'],
+      ['Mohan Das', stored('ODI67890', 'saltBBBB01'), 'Odisha Schools', 'yes'],
+      ['Old Pilot', stored('PILOT999', 'saltCCCC01'), 'Bihar AMB', 'no']],
     sheets: {}, photos: [], fails: [], now: Date.UTC(2026, 9, 31, 10, 0, 0), busy: false, boom: false,
     specs: {
       folderA: [{ name: 'amb_visit.spec.json', text: JSON.stringify(SPEC_A) }, { name: 'notes.txt', text: 'x' }],
@@ -38,6 +44,8 @@ function makeWorld(over) {
   w.deps = {
     now: () => w.now,
     readProjectsValues: () => w.projects,
+    readPeopleValues: () => w.people,
+    tagOf,
     sha256hex: sha, hmacHex: hmac, secret: 'unit-test-secret',
     listSpecFiles: p => w.specs[p.folderId] || [],
     readTab: (p, name, n) => {
@@ -75,7 +83,7 @@ const UUID2 = '22222222-aaaa-4bbb-8ccc-000000000002';
 test('stored code does not contain the code, and verifies only the right one (case-insensitive)', () => {
   const s = stored('Amb12345');
   assert.ok(!s.toLowerCase().includes('amb12345'));
-  assert.match(s, /^sha256\$\d+\$[A-Za-z0-9]+\$[0-9a-f]{64}$/);
+  assert.match(s, /^sha256\$\d+\$[A-Za-z0-9]+\$[0-9a-f]{64}(\$[0-9a-f]{16})?$/);
   assert.equal(L.verifyCode('AMB12345', s, sha), true);
   assert.equal(L.verifyCode('  amb12345 ', s, sha), true);
   assert.equal(L.verifyCode('AMB12346', s, sha), false);
@@ -103,11 +111,13 @@ test('generateCode: right length, unambiguous alphabet, rejects biased bytes', (
 
 // ---- open ---------------------------------------------------------------------------------
 
-test('wrong code, unknown code, blank code and inactive project are refused identically', () => {
+test('wrong code, unknown code, blank code and inactive person are refused identically', () => {
   const w = makeWorld();
   const wrong = w.open('NOPE0000');
   assert.equal(wrong.ok, false);
-  assert.deepEqual(w.open('PILOT999'), wrong);        // valid code, project switched off
+  assert.deepEqual(w.open('PILOT999'), wrong);        // valid code, person switched off
+  w.people.push(['Ghost', stored('GHOST123', 'saltGGGG01'), 'No Such Project', 'yes']);
+  assert.deepEqual(w.open('GHOST123'), wrong);        // valid code, project not on the Projects tab
   assert.deepEqual(w.open(''), wrong);
   assert.deepEqual(w.open(undefined), wrong);
   assert.deepEqual(w.open('amb1234'), wrong);          // near miss
@@ -120,11 +130,14 @@ test('a valid code opens its own project only; case of the typed code does not m
   const a = w.open('amb12345');
   assert.equal(a.ok, true);
   assert.equal(a.project, 'Bihar AMB');
+  assert.equal(a.person, 'Sunita Devi');
   assert.ok(a.token && a.expires_at);
   assert.ok(!JSON.stringify(a).includes('folderA') && !JSON.stringify(a).includes('ssA'), 'no Drive ids leak');
   const b = w.open('ODI67890');
   assert.equal(b.project, 'Odisha Schools');
+  assert.equal(b.person, 'Mohan Das');
   assert.notEqual(a.token, b.token);
+  assert.equal(w.open('ravi55555').person, 'Ravi Kumar');   // another person, same project, own code
 });
 
 test('forms: a token returns only its own project specs', () => {
@@ -136,16 +149,16 @@ test('forms: a token returns only its own project specs', () => {
   assert.deepEqual(fb.forms.map(f => f.form_id), ['school_visit']);
 });
 
-test('setting Active to no, or changing the code, ends an open session at once', () => {
+test('setting a person to Active no, or changing their code, ends their session at once', () => {
   const w = makeWorld();
   const tok = w.open('AMB12345').token;
   assert.equal(w.call({ action: 'forms', token: tok }).ok, true);
-  w.projects[1][4] = 'No';
+  w.people[1][3] = 'No';
   const r = w.call({ action: 'forms', token: tok });
   assert.equal(r.ok, false); assert.equal(r.error, 'session');
-  w.projects[1][4] = 'yes';
+  w.people[1][3] = 'yes';
   assert.equal(w.call({ action: 'forms', token: tok }).ok, true);
-  w.projects[1][3] = stored('NEWCODE77', 'saltAAAA02');
+  w.people[1][1] = stored('NEWCODE77', 'saltAAAA02');
   assert.equal(w.call({ action: 'forms', token: tok }).error, 'session');
   assert.equal(w.open('AMB12345').ok, false);
   assert.equal(w.open('NEWCODE77').ok, true);
@@ -187,45 +200,93 @@ test('an open session keeps working while opening is paused', () => {
 
 // ---- projects sheet -----------------------------------------------------------------------
 
-test('parseProjects: columns found by name in any order, Active read strictly', () => {
-  const rows = plain(L.parseProjects([
-    ['active', 'Access code', 'Project name', 'Data spreadsheet id', 'Drive folder id'],
-    ['YES', stored('A1'), 'P1', 'ss1', 'f1'],
-    ['y', stored('A2'), 'P2', 'ss2', 'f2'],
-    ['maybe', stored('A3'), 'P3', 'ss3', 'f3'],
-    ['', '', '', '', ''],
-    ['yes', stored('A4'), 'P4', '', 'f4']
-  ]));
-  assert.deepEqual(rows.map(r => [r.name, r.active, r.usable]), [['P1', true, true], ['P2', true, true], ['P3', false, true], ['P4', true, false]]);
-  assert.equal(rows[0].rowNumber, 2);
-  assert.equal(rows[3].rowNumber, 6);
+test('removing one person ends only that person, the rest of the project carries on', () => {
+  const w = makeWorld();
+  const sunita = w.open('AMB12345').token, ravi = w.open('RAVI55555').token;
+  w.people[1][3] = 'no';
+  assert.equal(w.call({ action: 'forms', token: sunita }).error, 'session');
+  assert.equal(w.call({ action: 'forms', token: ravi }).ok, true);
 });
 
-test('a project with a missing folder or spreadsheet id cannot be opened', () => {
+test('a code shared by two active people is refused: it cannot say who is collecting', () => {
+  const w = makeWorld();
+  w.people.push(['Copycat', stored('AMB12345', 'saltDDDD01'), 'Bihar AMB', 'yes']);
+  assert.equal(w.open('AMB12345').error, 'refused');
+});
+
+test('people with an old hash that has no lookup tag still sign in; a sign-in hashes few rows', () => {
+  const w = makeWorld();
+  w.people[1][1] = stored('AMB12345', 'saltAAAA01', true);
+  assert.equal(w.open('AMB12345').ok, true);
+  const big = makeWorld();
+  for (let i = 0; i < 76; i++) big.people.push(['P' + i, stored('CODE' + (100000 + i), 'saltP' + String(i).padStart(5, '0')), 'Bihar AMB', 'yes']);
+  let calls = 0;
+  big.deps.sha256hex = x => { calls++; return sha(x); };
+  assert.equal(big.open('CODE100010').person, 'P10');
+  assert.ok(calls < 1500, 'digest calls ' + calls);   // untagged would be about 25,000
+});
+
+test('submitted_by comes from the code: the phone cannot claim another name', () => {
+  const w = makeWorld();
+  const r = w.call(sub(w.open('RAVI55555').token, UUID1, [mainTab(UUID1, { district: 'Gaya', _submitted_by: 'Someone Else' })]));
+  assert.equal(r.ok, true);
+  const t = w.sheets.ssA.amb_visit;
+  assert.equal(t.rows[0][t.headers.indexOf('_submitted_by')], 'Ravi Kumar');
+  assert.equal(t.headers.filter(h => h === '_submitted_by').length, 1);
+});
+
+test('submitted_by fills the existing column when the sheet already has one', () => {
+  const w = makeWorld();
+  w.sheets.ssA = { amb_visit: { headers: ['uuid', 'district', '_submitted_by'], rows: [] } };
+  w.call(sub(w.open('AMB12345').token, UUID1, [mainTab(UUID1, { district: 'Gaya' })]));
+  const t = w.sheets.ssA.amb_visit;
+  assert.deepEqual(t.headers.slice(0, 3), ['uuid', 'district', '_submitted_by']);
+  assert.equal(t.rows[0][2], 'Sunita Devi');
+});
+
+test('parseProjects and parsePeople: columns found by name in any order, Active read strictly', () => {
+  const pr = plain(L.parseProjects([['Data spreadsheet id', 'project name', 'Drive folder id'], ['s1', 'P1', 'f1'], ['', '', ''], ['s2', 'P2', '']]));
+  assert.deepEqual(pr.map(p => [p.name, p.folderId, p.spreadsheetId, p.usable]), [['P1', 'f1', 's1', true], ['P2', '', 's2', false]]);
+  assert.equal(pr[1].rowNumber, 4);
+  const pe = plain(L.parsePeople([['active', 'Project', 'Access code', 'Person name'],
+    ['YES', 'P1', stored('A1'), 'A'], ['y', 'P1', stored('A2'), 'B'], ['maybe', 'P1', stored('A3'), 'C'], ['', 'P1', stored('A4'), 'D']]));
+  assert.deepEqual(pe.map(p => [p.name, p.active, p.projectName]), [['A', true, 'P1'], ['B', true, 'P1'], ['C', false, 'P1'], ['D', false, 'P1']]);
+});
+
+test('a project with a missing folder or spreadsheet id, or a duplicated name, cannot be opened', () => {
   const w = makeWorld();
   w.projects[1][2] = '';
   assert.equal(w.open('AMB12345').error, 'refused');
-});
-
-test('a missing Projects tab (no rows) refuses everyone', () => {
-  const w = makeWorld({ projects: [] });
+  w.projects[1][2] = 'ssA';
+  assert.equal(w.open('AMB12345').ok, true);
+  w.projects.push(['bihar amb', 'folderX', 'ssX']);
   assert.equal(w.open('AMB12345').error, 'refused');
 });
 
-test('projectProblems flags plain-text codes and missing ids', () => {
-  const p = L.parseProjects([HEADER, ['Plain', 'f', 's', 'letmein', 'yes'], ['NoIds', '', '', stored('Z'), 'yes'], ['Fine', 'f', 's', stored('Z'), 'yes']]);
-  const msgs = L.projectProblems(p);
-  assert.equal(msgs.length, 2);
-  assert.match(msgs[0], /row 2/i); assert.match(msgs[0], /not been hashed|plain/i);
-  assert.match(msgs[1], /row 3/i);
+test('a missing Projects or People tab (no rows) refuses everyone', () => {
+  assert.equal(makeWorld({ projects: [] }).open('AMB12345').error, 'refused');
+  assert.equal(makeWorld({ people: [] }).open('AMB12345').error, 'refused');
 });
 
-test('setup row: right headers, example row inactive and without a usable code', () => {
-  assert.deepEqual(plain(L.PROJECT_HEADERS), HEADER);
-  const ex = plain(L.exampleProjectRow());
-  assert.equal(ex.length, 5);
-  assert.equal(String(ex[4]).toLowerCase(), 'no');
-  assert.equal(L.isStoredCode(ex[3]), false);
+test('projectProblems flags plain-text codes, missing codes, unknown or duplicate projects', () => {
+  const projects = L.parseProjects([PROJ_HEADER, ['P1', 'f', 's'], ['P1', 'f', 's'], ['P2', '', 's'], ['P3', 'f', 's']]);
+  const people = L.parsePeople([PEOPLE_HEADER,
+    ['Plain', 'letmein', 'P3', 'yes'], ['NoCode', '', 'P3', 'yes'], ['Lost', stored('Z'), 'Nowhere', 'yes'], ['Fine', stored('Z'), 'P3', 'yes'], ['Off', 'letmein', 'P3', 'no']]);
+  const msgs = L.projectProblems(projects, people).join('\n');
+  assert.match(msgs, /Projects row 4/); assert.match(msgs, /appears 2 times/);
+  assert.match(msgs, /People row 2 \(Plain\).*plain text/); assert.match(msgs, /People row 3 \(NoCode\).*no access code/);
+  assert.match(msgs, /People row 4 \(Lost\).*Nowhere/);
+  assert.doesNotMatch(msgs, /Fine/);
+});
+
+test('setup rows: right headings, example rows inactive and without a usable code', () => {
+  assert.deepEqual(plain(L.PROJECT_HEADERS), PROJ_HEADER);
+  assert.deepEqual(plain(L.PEOPLE_HEADERS), PEOPLE_HEADER);
+  assert.equal(plain(L.exampleProjectRow()).length, 3);
+  const ex = plain(L.examplePersonRow());
+  assert.equal(ex.length, 4);
+  assert.equal(String(ex[3]).toLowerCase(), 'no');
+  assert.equal(L.isStoredCode(ex[1]), false);
 });
 
 // ---- the download page: only the owner -----------------------------------------------------
@@ -261,8 +322,8 @@ test('submit appends one row, uuid first, script-stamped received columns at the
   const r = w.call(sub(tokenA(w), UUID1));
   assert.equal(r.ok, true); assert.equal(r.status, 'created');
   const t = w.sheets.ssA.amb_visit;
-  assert.deepEqual(t.headers, ['uuid', 'district', 'child', '_received_at', '_received_date_ist']);
-  assert.deepEqual(t.rows[0], [UUID1, 'Gaya', 'Asha', '2026-10-31T10:00:00.000Z', '2026-10-31']);
+  assert.deepEqual(t.headers, ['uuid', 'district', 'child', '_received_at', '_received_date_ist', '_submitted_by']);
+  assert.deepEqual(t.rows[0], [UUID1, 'Gaya', 'Asha', '2026-10-31T10:00:00.000Z', '2026-10-31', 'Sunita Devi']);
   assert.equal(w.sheets.ssB, undefined, 'project B untouched');
 });
 
@@ -317,9 +378,9 @@ test('a new field adds a column at the right-hand end and existing rows stay ali
   assert.equal(r.ok, true);
   assert.deepEqual(r.added_columns, { amb_visit: ['weight_kg'] });
   const t = w.sheets.ssA.amb_visit;
-  assert.deepEqual(t.headers, ['uuid', 'district', 'child', '_received_at', '_received_date_ist', 'weight_kg']);
-  assert.deepEqual(t.rows[0], [UUID1, 'Gaya', 'Asha', '2026-10-31T10:00:00.000Z', '2026-10-31', '']);
-  assert.deepEqual(t.rows[1], [UUID2, 'Patna', 'Ravi', '2026-10-31T10:00:00.000Z', '2026-10-31', 12.5]);
+  assert.deepEqual(t.headers, ['uuid', 'district', 'child', '_received_at', '_received_date_ist', '_submitted_by', 'weight_kg']);
+  assert.deepEqual(t.rows[0], [UUID1, 'Gaya', 'Asha', '2026-10-31T10:00:00.000Z', '2026-10-31', 'Sunita Devi', '']);
+  assert.deepEqual(t.rows[1], [UUID2, 'Patna', 'Ravi', '2026-10-31T10:00:00.000Z', '2026-10-31', 'Sunita Devi', 12.5]);
 });
 
 test('columns are never reordered or removed: another order or fewer fields fits the sheet', () => {
@@ -327,8 +388,8 @@ test('columns are never reordered or removed: another order or fewer fields fits
   w.sheets.ssA = { amb_visit: { headers: ['uuid', 'child', 'district', 'extra', '_received_at', '_received_date_ist'], rows: [] } };
   w.call(sub(tokenA(w), UUID1, [mainTab(UUID1, { district: 'Gaya', child: 'Asha' })]));
   const t = w.sheets.ssA.amb_visit;
-  assert.deepEqual(t.headers, ['uuid', 'child', 'district', 'extra', '_received_at', '_received_date_ist']);
-  assert.deepEqual(t.rows[0], [UUID1, 'Asha', 'Gaya', '', '2026-10-31T10:00:00.000Z', '2026-10-31']);
+  assert.deepEqual(t.headers, ['uuid', 'child', 'district', 'extra', '_received_at', '_received_date_ist', '_submitted_by']);
+  assert.deepEqual(t.rows[0], [UUID1, 'Asha', 'Gaya', '', '2026-10-31T10:00:00.000Z', '2026-10-31', 'Sunita Devi']);
 });
 
 test('an older sheet without received columns gets them added at the end', () => {
@@ -336,8 +397,8 @@ test('an older sheet without received columns gets them added at the end', () =>
   w.sheets.ssA = { amb_visit: { headers: ['uuid', 'district', 'child'], rows: [['old', 'Gaya', 'Z']] } };
   w.call(sub(tokenA(w), UUID1));
   const t = w.sheets.ssA.amb_visit;
-  assert.deepEqual(t.headers, ['uuid', 'district', 'child', '_received_at', '_received_date_ist']);
-  assert.deepEqual(t.rows[0], ['old', 'Gaya', 'Z', '', '']);
+  assert.deepEqual(t.headers, ['uuid', 'district', 'child', '_received_at', '_received_date_ist', '_submitted_by']);
+  assert.deepEqual(t.rows[0], ['old', 'Gaya', 'Z', '', '', '']);
 });
 
 const repeatTab = (uuid, n) => ({
@@ -435,7 +496,7 @@ test('size limits: too many rows or columns is too_large', () => {
 test('submit with a bad or revoked token writes nothing', () => {
   const w = makeWorld();
   const tok = tokenA(w);
-  w.projects[1][4] = 'no';
+  w.people[1][3] = 'no';
   const r = w.call(sub(tok, UUID1));
   assert.equal(r.error, 'session'); assert.deepEqual(w.sheets, {});
   assert.equal(w.call(sub('x.y.z.w', UUID1)).error, 'session');

@@ -19,7 +19,9 @@
  */
 
 var PROJECTS_TAB = 'Projects';
-var PROJECT_HEADERS = ['Project name', 'Drive folder id', 'Data spreadsheet id', 'Access code', 'Active'];
+var PEOPLE_TAB = 'People';
+var PROJECT_HEADERS = ['Project name', 'Drive folder id', 'Data spreadsheet id'];
+var PEOPLE_HEADERS = ['Person name', 'Access code', 'Project', 'Active'];
 
 var SESSION_TTL_MS = 6 * 3600 * 1000;          // a working day; the phone simply opens again after that
 var HASH_ROUNDS = 300;
@@ -38,8 +40,9 @@ var MAX_NAME_CHARS = 100;
 
 var STAMP_RECEIVED = '_received_at';           // UTC, ISO text, e.g. 2026-10-31T10:00:00.000Z
 var STAMP_RECEIVED_IST = '_received_date_ist'; // Indian calendar date, e.g. 2026-10-31
-var STAMP_COLS = [STAMP_RECEIVED, STAMP_RECEIVED_IST];
-var RESERVED_TABS = ['projects'];
+var STAMP_SUBMITTED_BY = '_submitted_by';       // the person's name, from THEIR code, never from the phone
+var STAMP_COLS = [STAMP_RECEIVED, STAMP_RECEIVED_IST, STAMP_SUBMITTED_BY];
+var RESERVED_TABS = ['projects', 'people'];
 
 var CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';   // no I, L, O, 0, 1: easy to read out and type
 var PHOTO_TYPES = {
@@ -72,17 +75,17 @@ function hashRounds_(code, salt, rounds, sha) {
 }
 
 /** 'sha256$<rounds>$<salt>$<hex>' - what goes in the Access code cell. */
-function makeStoredCode(code, salt, sha, rounds) {
+function makeStoredCode(code, salt, sha, rounds, tag) {
   var n = normalizeCode_(code);
   if (!n) throw new Error('empty code');
   rounds = rounds || HASH_ROUNDS;
-  return 'sha256$' + rounds + '$' + salt + '$' + hashRounds_(n, salt, rounds, sha);
+  return 'sha256$' + rounds + '$' + salt + '$' + hashRounds_(n, salt, rounds, sha) + (tag ? '$' + tag : '');
 }
 
 function parseStored_(s) {
-  var m = /^sha256\$(\d{1,5})\$([A-Za-z0-9]{8,64})\$([0-9a-f]{64})$/.exec(String(s === null || s === undefined ? '' : s).trim());
+  var m = /^sha256\$(\d{1,5})\$([A-Za-z0-9]{8,64})\$([0-9a-f]{64})(?:\$([0-9a-f]{16}))?$/.exec(String(s === null || s === undefined ? '' : s).trim());
   if (!m || +m[1] > 20000) return null;
-  return { rounds: +m[1], salt: m[2], hash: m[3] };
+  return { rounds: +m[1], salt: m[2], hash: m[3], tag: m[4] || '' };
 }
 
 function isStoredCode(s) {
@@ -116,7 +119,11 @@ function generateCode(bytes, length) {
 // ---- the Projects sheet ---------------------------------------------------------------------
 
 function exampleProjectRow() {
-  return ['Example project (edit me)', 'PASTE-DRIVE-FOLDER-ID', 'PASTE-DATA-SPREADSHEET-ID', '', 'no'];
+  return ['Example project (edit me)', 'PASTE-DRIVE-FOLDER-ID', 'PASTE-DATA-SPREADSHEET-ID'];
+}
+
+function examplePersonRow() {
+  return ['Example person (edit me)', '', 'Example project (edit me)', 'no'];
 }
 
 function hdrKey_(h) {
@@ -128,87 +135,130 @@ function isActive_(v) {
   return s === 'yes' || s === 'y' || s === 'true' || s === '1';   // anything else, including blank, is off
 }
 
-function projectId_(p, sha) {
-  return sha(p.folderId + '|' + p.spreadsheetId).slice(0, 16);
-}
-
-/** Raw sheet values -> project records. Columns are found by name, in any order. */
-function parseProjects(values) {
+/** Raw sheet values -> [{ rowNumber, get(key) }]. Columns are found by heading, in any order; blank rows dropped. */
+function readTable_(values) {
   if (!values || values.length < 2) return [];
   var idx = {}, head = values[0];
   for (var c = 0; c < head.length; c++) idx[hdrKey_(head[c])] = c;
-  function get(row, key) {
-    var i = idx[key];
-    return i === undefined || row[i] === undefined || row[i] === null ? '' : String(row[i]).trim();
-  }
   var out = [];
   for (var r = 1; r < values.length; r++) {
-    var row = values[r];
-    var blank = true;
+    var row = values[r], blank = true;
     for (var k = 0; k < row.length; k++) if (String(row[k] === null || row[k] === undefined ? '' : row[k]).trim() !== '') blank = false;
     if (blank) continue;
-    var p = {
+    out.push({
       rowNumber: r + 1,
-      name: get(row, 'projectname'),
-      folderId: get(row, 'drivefolderid'),
-      spreadsheetId: get(row, 'dataspreadsheetid'),
-      stored: get(row, 'accesscode'),
-      active: isActive_(get(row, 'active'))
-    };
-    p.usable = !!(p.folderId && p.spreadsheetId);
-    out.push(p);
+      get: (function (row) {
+        return function (key) {
+          var i = idx[key];
+          return i === undefined || row[i] === undefined || row[i] === null ? '' : String(row[i]).trim();
+        };
+      })(row)
+    });
   }
   return out;
 }
 
-/** Plain-language problems the owner should fix; empty when the sheet is fine. */
-function projectProblems(projects) {
-  var msgs = [];
+/** Projects tab -> [{ rowNumber, name, folderId, spreadsheetId, usable }]. No codes live here. */
+function parseProjects(values) {
+  return readTable_(values).map(function (t) {
+    var p = { rowNumber: t.rowNumber, name: t.get('projectname'), folderId: t.get('drivefolderid'), spreadsheetId: t.get('dataspreadsheetid') };
+    p.usable = !!(p.name && p.folderId && p.spreadsheetId);
+    return p;
+  });
+}
+
+/** People tab -> [{ rowNumber, name, stored, projectName, active }]. */
+function parsePeople(values) {
+  return readTable_(values).map(function (t) {
+    return { rowNumber: t.rowNumber, name: t.get('personname'), stored: t.get('accesscode'), projectName: t.get('project'), active: isActive_(t.get('active')) };
+  });
+}
+
+/** The one usable project with this name (case-insensitive), or null if none or if the name is ambiguous. */
+function resolveProject_(projects, name) {
+  var key = String(name || '').trim().toLowerCase();
+  if (!key) return null;
+  var hits = projects.filter(function (p) { return p.name.toLowerCase() === key; });
+  return hits.length === 1 && hits[0].usable ? hits[0] : null;
+}
+
+/** Plain-language problems the owner should fix; empty when both tabs are fine. */
+function projectProblems(projects, people) {
+  var msgs = [], names = {};
   projects.forEach(function (p) {
-    var label = 'Row ' + p.rowNumber + (p.name ? ' (' + p.name + ')' : '');
+    var label = 'Projects row ' + p.rowNumber + (p.name ? ' (' + p.name + ')' : '');
+    if (!p.usable) msgs.push(label + ': the name, Drive folder id or data spreadsheet id is empty, so nobody can be given this project.');
+    var k = p.name.toLowerCase();
+    if (k) names[k] = (names[k] || 0) + 1;
+  });
+  Object.keys(names).forEach(function (k) {
+    if (names[k] > 1) msgs.push('Projects: the name "' + k + '" appears ' + names[k] + ' times. Names must be unique, so everyone on that project is locked out until fixed.');
+  });
+  (people || []).forEach(function (p) {
+    var label = 'People row ' + p.rowNumber + (p.name ? ' (' + p.name + ')' : '');
     if (p.stored && !isStoredCode(p.stored)) {
-      msgs.push(label + ': the access code has not been hashed (it is plain text). Retype it in the cell, or use the menu "Set or change the code for the selected row".');
+      msgs.push(label + ': the access code has not been hashed (it is plain text). Use the menu "Set or change the code for the selected row".');
     } else if (!p.stored && p.active) {
-      msgs.push(label + ': Active is yes but there is no access code, so nobody can open this project.');
+      msgs.push(label + ': Active is yes but there is no access code, so this person cannot open anything.');
     }
-    if (!p.usable) msgs.push(label + ': the Drive folder id or the data spreadsheet id is empty, so this project cannot be opened.');
+    if (p.active && !resolveProject_(projects, p.projectName)) {
+      msgs.push(label + ': the project "' + p.projectName + '" is not on the Projects tab exactly once, or is incomplete.');
+    }
   });
   return msgs;
 }
 
-/** The active, complete project whose code this is, or null. Checks every row so timing does not say which. */
-function findProject(projects, code, sha) {
-  var found = null;
-  for (var i = 0; i < projects.length; i++) {
-    var p = projects[i];
-    if (!p.active || !p.usable) continue;
-    if (verifyCode(code, p.stored, sha) && !found) found = p;
+/**
+ * The active person whose code this is, with their project: { person, project }, or null.
+ * tagOf (optional) turns a typed code into the short lookup tag stored beside the hash, so only
+ * the person it points to is hashed in full. A code that matches two active people is refused:
+ * it cannot say who is collecting.
+ */
+function findPerson(people, projects, code, sha, tagOf) {
+  var n = normalizeCode_(code);
+  var tag = tagOf && n ? tagOf(n) : '';
+  var hits = [];
+  for (var i = 0; i < people.length; i++) {
+    var p = people[i];
+    if (!p.active) continue;
+    var parsed = parseStored_(p.stored);
+    if (!parsed) continue;
+    if (tag && parsed.tag && parsed.tag !== tag) continue;       // cannot be this person's code
+    var project = resolveProject_(projects, p.projectName);
+    if (!project) continue;
+    if (verifyCode(code, p.stored, sha)) hits.push({ person: p, project: project });
   }
-  return found;
+  return hits.length === 1 ? hits[0] : null;
 }
 
-// ---- session token: stateless, signed, re-checked against the sheet on every call ------------
+// ---- session token: stateless, signed, re-checked against the sheets on every call ------------
 
-function signToken_(project, now, sha, hmac, secret) {
-  var parsed = parseStored_(project.stored);
-  var body = projectId_(project, sha) + '.' + parsed.hash.slice(0, 12) + '.' + (now + SESSION_TTL_MS);
+function personId_(person, sha) {
+  return sha(person.name.toLowerCase() + '|' + person.projectName.toLowerCase()).slice(0, 16);
+}
+
+function signToken_(person, now, sha, hmac, secret) {
+  var parsed = parseStored_(person.stored);
+  var body = personId_(person, sha) + '.' + parsed.hash.slice(0, 12) + '.' + (now + SESSION_TTL_MS);
   return body + '.' + hmac(body, secret);
 }
 
-/** The project this token still belongs to, or null (expired, forged, switched off, code changed). */
-function verifyToken_(token, projects, now, sha, hmac, secret) {
+/** { person, project } this token still belongs to, or null (expired, forged, person switched off, code changed). */
+function verifyToken_(token, people, projects, now, sha, hmac, secret) {
   if (typeof token !== 'string' || token.length > 300) return null;
   var parts = token.split('.');
   if (parts.length !== 4) return null;
   var body = parts[0] + '.' + parts[1] + '.' + parts[2];
   if (!constantTimeEqual_(hmac(body, secret), parts[3])) return null;
   if (!(+parts[2] > now)) return null;
-  for (var i = 0; i < projects.length; i++) {
-    var p = projects[i];
-    if (!p.active || !p.usable) continue;
+  for (var i = 0; i < people.length; i++) {
+    var p = people[i];
+    if (!p.active) continue;
     var parsed = parseStored_(p.stored);
-    if (!parsed) continue;
-    if (projectId_(p, sha) === parts[0] && parsed.hash.slice(0, 12) === parts[1]) return p;
+    if (!parsed || parsed.hash.slice(0, 12) !== parts[1]) continue;
+    if (personId_(p, sha) !== parts[0]) continue;
+    var project = resolveProject_(projects, p.projectName);
+    if (project) return { person: p, project: project };
   }
   return null;
 }
@@ -421,8 +471,9 @@ function planTab(tab, existing, stamps) {
   return { name: tab.name, headers: cols.headers, existingCols: existingHeaders.length, added: existingHeaders.length ? cols.added : [], rows: rows, skipped: skipped };
 }
 
-function makeStamps_(now) {
+function makeStamps_(now, person) {
   var o = {};
+  o[STAMP_SUBMITTED_BY] = person.name;
   o[STAMP_RECEIVED] = new Date(now).toISOString();
   o[STAMP_RECEIVED_IST] = istDateKey(now);
   return o;
@@ -433,8 +484,8 @@ function makeStamps_(now) {
 // ======================================================================================
 
 function authorise_(body, deps) {
-  var projects = parseProjects(deps.readProjectsValues());
-  return verifyToken_(body.token, projects, deps.now(), deps.sha256hex, deps.hmacHex, deps.secret);
+  return verifyToken_(body.token, parsePeople(deps.readPeopleValues()), parseProjects(deps.readProjectsValues()),
+    deps.now(), deps.sha256hex, deps.hmacHex, deps.secret);
 }
 
 function doOpen_(body, deps) {
@@ -443,30 +494,30 @@ function doOpen_(body, deps) {
   if (fails.length >= FAIL_LIMIT) {
     return fail_('too_many_attempts', 'Too many wrong codes just now. Wait a few minutes and try again.', true, FAIL_PAUSE_S);
   }
-  var projects = parseProjects(deps.readProjectsValues());
-  var p = findProject(projects, body.code, deps.sha256hex);
-  if (!p) {
+  var hit = findPerson(parsePeople(deps.readPeopleValues()), parseProjects(deps.readProjectsValues()), body.code, deps.sha256hex, deps.tagOf);
+  if (!hit) {
     if (deps.addFailure) deps.addFailure(now);
     return refused_();
   }
   return {
-    ok: true, project: p.name,
-    token: signToken_(p, now, deps.sha256hex, deps.hmacHex, deps.secret),
+    ok: true, project: hit.project.name, person: hit.person.name,
+    token: signToken_(hit.person, now, deps.sha256hex, deps.hmacHex, deps.secret),
     expires_at: new Date(now + SESSION_TTL_MS).toISOString(),
     ttl_s: SESSION_TTL_MS / 1000
   };
 }
 
 function doForms_(body, deps) {
-  var p = authorise_(body, deps);
-  if (!p) return sessionExpired_();
-  var parsed = parseSpecFiles(deps.listSpecFiles(p));
-  return { ok: true, project: p.name, forms: parsed.forms, skipped: parsed.skipped };
+  var auth = authorise_(body, deps);
+  if (!auth) return sessionExpired_();
+  var parsed = parseSpecFiles(deps.listSpecFiles(auth.project));
+  return { ok: true, project: auth.project.name, person: auth.person.name, forms: parsed.forms, skipped: parsed.skipped };
 }
 
 function doSubmit_(body, deps) {
-  var project = authorise_(body, deps);
-  if (!project) return sessionExpired_();
+  var auth = authorise_(body, deps);
+  if (!auth) return sessionExpired_();
+  var project = auth.project, person = auth.person;
   var v = validateSubmission(body);
   if (!v.ok) return fail_(v.error, v.message, false);
   var sub = v.sub;
@@ -474,7 +525,7 @@ function doSubmit_(body, deps) {
   // A replay needs no photo uploads: look before uploading (the check is repeated under the lock).
   if (sub.photos.length) {
     var pre = deps.readTab(project, sub.main.name, 1);
-    var already = planTab(sub.main, pre, makeStamps_(deps.now()));
+    var already = planTab(sub.main, pre, makeStamps_(deps.now(), person));
     if (!already.error && already.skipped === 1) return { ok: true, status: 'duplicate', uuid: sub.uuid };
   }
 
@@ -485,7 +536,7 @@ function doSubmit_(body, deps) {
 
   return deps.withLock(function () {
     var now = deps.now();
-    var stamps = makeStamps_(now);
+    var stamps = makeStamps_(now, person);
     var mainPlan = planTab(sub.main, deps.readTab(project, sub.main.name, 1), stamps);
     if (mainPlan.error) return fail_(mainPlan.error, mainPlan.message, false);
     if (mainPlan.skipped === 1) return { ok: true, status: 'duplicate', uuid: sub.uuid };
@@ -567,8 +618,22 @@ function randomBytes_(count) {
   return out;
 }
 
-function projectsSheet_() {
-  return SpreadsheetApp.getActive().getSheetByName(PROJECTS_TAB);
+function tabValues_(name) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 5)).getValues();
+}
+
+/** Short keyed tag of a code, stored beside its hash so a sign-in hashes one person, not all of them. */
+function lookupTag_(normalizedCode) {
+  var props = PropertiesService.getScriptProperties();
+  var k = props.getProperty('LOOKUP_KEY');
+  if (!k) { k = sha256hex_(Utilities.getUuid() + Utilities.getUuid() + Date.now()); props.setProperty('LOOKUP_KEY', k); }
+  return hmacHex_(normalizedCode, k).slice(0, 16);
+}
+
+function storeCode_(code) {
+  return makeStoredCode(code, newSalt_(), sha256hex_, HASH_ROUNDS, lookupTag_(normalizeCode_(code)));
 }
 
 function realDeps_() {
@@ -582,11 +647,9 @@ function realDeps_() {
   var cache = CacheService.getScriptCache();
   return {
     now: function () { return Date.now(); },
-    readProjectsValues: function () {
-      var sh = projectsSheet_();
-      if (!sh || sh.getLastRow() < 2) return [];
-      return sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 5)).getValues();
-    },
+    readProjectsValues: function () { return tabValues_(PROJECTS_TAB); },
+    readPeopleValues: function () { return tabValues_(PEOPLE_TAB); },
+    tagOf: lookupTag_,
     sha256hex: sha256hex_,
     hmacHex: hmacHex_,
     secret: secret_(),
@@ -670,31 +733,41 @@ function doPost(e) {
 
 // ---- Projects tab, menu and code helpers ---------------------------------------------------------
 
-/** Run once. Creates the Projects tab with its headers and one example row, if it is not there. */
+/** Run once. Creates the Projects and People tabs with their headings and an example row each, if not there. */
 function setupProjects() {
   secret_();                                                // make the signing secret now
+  lookupTag_('x');                                          // and the lookup key
   var ss = SpreadsheetApp.getActive();
-  var sh = ss.getSheetByName(PROJECTS_TAB);
-  if (sh) {
-    SpreadsheetApp.getUi().alert('The Projects tab already exists. Nothing was changed.');
-    return;
+  var made = [];
+  if (!ss.getSheetByName(PROJECTS_TAB)) {
+    var pr = ss.insertSheet(PROJECTS_TAB);
+    pr.getRange(1, 1, 1, PROJECT_HEADERS.length).setValues([PROJECT_HEADERS]).setFontWeight('bold');
+    pr.getRange(2, 1, 1, PROJECT_HEADERS.length).setValues([exampleProjectRow()]);
+    pr.setFrozenRows(1);
+    pr.setColumnWidth(1, 220); pr.setColumnWidth(2, 260); pr.setColumnWidth(3, 260);
+    made.push(PROJECTS_TAB);
   }
-  sh = ss.insertSheet(PROJECTS_TAB);
-  sh.getRange(1, 1, 1, PROJECT_HEADERS.length).setValues([PROJECT_HEADERS]).setFontWeight('bold');
-  sh.getRange('D:D').setNumberFormat('@');
-  sh.getRange(2, 1, 1, PROJECT_HEADERS.length).setValues([exampleProjectRow()]);
-  sh.setFrozenRows(1);
-  sh.setColumnWidth(1, 220); sh.setColumnWidth(2, 260); sh.setColumnWidth(3, 260); sh.setColumnWidth(4, 360);
-  sh.getRange('E2:E200').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['yes', 'no'], true).build());
-  sh.getRange('D1').setNote('Type a code here. It turns into a scrambled value as soon as you leave the cell; write the code down somewhere safe first, it cannot be shown again.');
-  SpreadsheetApp.getUi().alert('The Projects tab is ready. Fill in one row per project: name, Drive folder id, data spreadsheet id, an access code, and Active = yes.');
+  if (!ss.getSheetByName(PEOPLE_TAB)) {
+    var pe = ss.insertSheet(PEOPLE_TAB);
+    pe.getRange(1, 1, 1, PEOPLE_HEADERS.length).setValues([PEOPLE_HEADERS]).setFontWeight('bold');
+    pe.getRange('B:B').setNumberFormat('@');
+    pe.getRange(2, 1, 1, PEOPLE_HEADERS.length).setValues([examplePersonRow()]);
+    pe.setFrozenRows(1);
+    pe.setColumnWidth(1, 220); pe.setColumnWidth(2, 380); pe.setColumnWidth(3, 260);
+    pe.getRange('D2:D500').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['yes', 'no'], true).build());
+    pe.getRange('B1').setNote('Do not type codes here. Use the menu "Evidence Action survey > Set or change the code for the selected row". Codes are shown once and cannot be recovered.');
+    made.push(PEOPLE_TAB);
+  }
+  SpreadsheetApp.getUi().alert(made.length
+    ? 'Created: ' + made.join(', ') + '. Fill Projects (one row per project), then People (one row per person: name, project name exactly as on the Projects tab, Active = yes), then set each person\'s code from the menu.'
+    : 'The Projects and People tabs already exist. Nothing was changed.');
 }
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Evidence Action survey')
-    .addItem('Set up the Projects tab', 'setupProjects')
+    .addItem('Set up the Projects and People tabs', 'setupProjects')
     .addItem('Set or change the code for the selected row', 'setCodeForSelectedRow')
-    .addItem('Check the Projects tab', 'checkProjects')
+    .addItem('Check the Projects and People tabs', 'checkProjects')
     .addToUi();
 }
 
@@ -704,60 +777,65 @@ function codeColumn_(sh) {
   return 0;
 }
 
-/** Typing a code into the Access code column replaces it with its salted hash straight away. */
+/**
+ * Safety net: a code typed straight into the People tab's Access code column is replaced by its
+ * hash at once. Prefer the menu helper: Sheets version history keeps what was typed before this ran.
+ */
 function onEdit(e) {
   try {
     var r = e.range, sh = r.getSheet();
-    if (sh.getName() !== PROJECTS_TAB) return;
+    if (sh.getName() !== PEOPLE_TAB) return;
     var col = codeColumn_(sh);
     if (!col || col < r.getColumn() || col > r.getLastColumn()) return;
     for (var row = Math.max(r.getRow(), 2); row <= r.getLastRow(); row++) {
       var cell = sh.getRange(row, col), v = cell.getValue();
       if (v === '' || v === null || isStoredCode(v)) continue;
       if (codeProblem(v)) { cell.setNote(codeProblem(v) + ' Retype a longer code.'); continue; }
-      cell.setNumberFormat('@').setValue(makeStoredCode(String(v), newSalt_(), sha256hex_)).clearNote();
+      cell.setNumberFormat('@').setValue(storeCode_(String(v))).clearNote();
     }
   } catch (err) { console.error(String(err)); }
 }
 
-/** Menu: set or change the code on the selected row. Leave the box empty to have one made. */
+/** Menu: set or change the code of the person on the selected People row. Empty box = a generated code, shown once. */
 function setCodeForSelectedRow() {
   var ui = SpreadsheetApp.getUi();
   var sh = SpreadsheetApp.getActiveSheet();
   var row = sh.getActiveCell().getRow();
-  if (sh.getName() !== PROJECTS_TAB || row < 2) { ui.alert('Click a project row on the Projects tab first (not the header row).'); return; }
+  if (sh.getName() !== PEOPLE_TAB || row < 2) { ui.alert('Click a person row on the People tab first (not the header row).'); return; }
   var col = codeColumn_(sh);
-  if (!col) { ui.alert('The Projects tab has no "Access code" column.'); return; }
-  var ans = ui.prompt('New access code', 'Type a code (at least 6 letters or digits), or leave empty to make one for you.', ui.ButtonSet.OK_CANCEL);
+  if (!col) { ui.alert('The People tab has no "Access code" column.'); return; }
+  var who = String(sh.getRange(row, 1).getValue() || 'row ' + row);
+  var ans = ui.prompt('New access code for ' + who, 'Leave empty to have a strong code made for you (recommended). Or type one of at least 6 letters or digits.', ui.ButtonSet.OK_CANCEL);
   if (ans.getSelectedButton() !== ui.Button.OK) return;
   var typed = ans.getResponseText().trim(), shown = '';
   if (!typed) { typed = generateCode(randomBytes_(64), 8); shown = typed; }
   var problem = codeProblem(typed);
   if (problem) { ui.alert(problem); return; }
-  sh.getRange(row, col).setNumberFormat('@').setValue(makeStoredCode(typed, newSalt_(), sha256hex_));
+  sh.getRange(row, col).setNumberFormat('@').setValue(storeCode_(typed));
   ui.alert(shown
-    ? 'The new code for row ' + row + ' is:\n\n' + shown + '\n\nWrite it down now. It cannot be shown again. Phones signed in with the old code stop working.'
-    : 'The code for row ' + row + ' has been changed. Phones signed in with the old code stop working.');
+    ? 'The new code for ' + who + ' is:\n\n' + shown + '\n\nWrite it down now and give it to them. It cannot be shown again. Their old code stops working.'
+    : 'The code for ' + who + ' has been changed. Their old code stops working.');
 }
 
-/** Menu: tells the owner, in plain words, what is wrong with the Projects tab. */
+/** Menu: tells the owner, in plain words, what is wrong with the two tabs. */
 function checkProjects() {
   var ui = SpreadsheetApp.getUi();
-  var sh = projectsSheet_();
-  if (!sh) { ui.alert('There is no Projects tab yet. Run "Set up the Projects tab".'); return; }
-  var values = sh.getLastRow() < 2 ? [] : sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 5)).getValues();
-  var projects = parseProjects(values);
-  var problems = projectProblems(projects);
-  var live = projects.filter(function (p) { return p.active && p.usable && isStoredCode(p.stored); }).length;
-  ui.alert((problems.length ? 'Please fix:\n\n' + problems.join('\n\n') + '\n\n' : 'No problems found.\n\n') + live + ' project(s) can be opened by a phone right now.');
+  if (!SpreadsheetApp.getActive().getSheetByName(PROJECTS_TAB) || !SpreadsheetApp.getActive().getSheetByName(PEOPLE_TAB)) {
+    ui.alert('The Projects or People tab is missing. Run "Set up the Projects and People tabs".'); return;
+  }
+  var projects = parseProjects(tabValues_(PROJECTS_TAB));
+  var people = parsePeople(tabValues_(PEOPLE_TAB));
+  var problems = projectProblems(projects, people);
+  var live = people.filter(function (p) { return p.active && isStoredCode(p.stored) && resolveProject_(projects, p.projectName); }).length;
+  ui.alert((problems.length ? 'Please fix:\n\n' + problems.join('\n\n') + '\n\n' : 'No problems found.\n\n') + live + ' person(s) can open a project from a phone right now.');
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     makeStoredCode: makeStoredCode, verifyCode: verifyCode, isStoredCode: isStoredCode, generateCode: generateCode,
-    codeProblem: codeProblem, parseProjects: parseProjects, projectProblems: projectProblems, findProject: findProject,
+    codeProblem: codeProblem, parseProjects: parseProjects, parsePeople: parsePeople, projectProblems: projectProblems, findPerson: findPerson,
     downloadPageAllowed: downloadPageAllowed, parseSpecFiles: parseSpecFiles, parseBody: parseBody,
     validateSubmission: validateSubmission, planTab: planTab, planColumns: planColumns, dispatch: dispatch,
-    PROJECT_HEADERS: PROJECT_HEADERS, exampleProjectRow: exampleProjectRow
+    PROJECT_HEADERS: PROJECT_HEADERS, PEOPLE_HEADERS: PEOPLE_HEADERS, exampleProjectRow: exampleProjectRow, examplePersonRow: examplePersonRow
   };
 }
