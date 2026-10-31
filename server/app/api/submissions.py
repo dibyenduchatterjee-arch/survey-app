@@ -24,7 +24,7 @@ overwrite the winner's. Any failure after that rolls back the rows and removes t
 
 MULTIPART REQUEST for POST /api/submissions
     part "submission"   JSON text (or a file part holding JSON), <= 1 MiB: a SubmissionIn
-    part "<question>"   one file per image question of the form; the PART NAME is the
+    part "<question>"   one file per upload question (image/audio/video/file) of the form; the PART NAME is the
                         question name, the client's file name is ignored. <= 20 parts.
 Responses: 201 on first receipt, 200 on a replay, both the same Receipt body.
 """
@@ -228,14 +228,65 @@ def _replay(existing: Submission, user: User) -> tuple[Submission, bool]:
     return existing, False
 
 
-def _sniff(data: bytes) -> tuple[str, str] | None:
-    """(extension, content type) from the file's own bytes; the client's claim is ignored."""
-    if data[:3] == b"\xff\xd8\xff":
-        return "jpg", "image/jpeg"
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return "png", "image/png"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "webp", "image/webp"
+# What each media question type accepts, decided by the BYTES (the client's file name and
+# content type are ignored). A file whose bytes do not match its question's type is refused.
+_IMAGE = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+
+
+def _sniff_image(d: bytes) -> str | None:
+    if d[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if d[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if d[:4] == b"RIFF" and d[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _sniff_container(d: bytes, kind: str) -> str | None:
+    """Recorded audio/video: webm (EBML), mp4/m4a/3gp (ftyp), plus audio-only ogg/mp3/wav."""
+    if d[:4] == b"\x1a\x45\xdf\xa3":  # Matroska/WebM, e.g. webm+opus from a browser
+        return "webm"
+    if d[4:8] == b"ftyp":  # ISO base media: what Android and iOS recorders produce
+        return "m4a" if kind == "audio" else "mp4"
+    if kind != "audio":
+        return None
+    if d[:4] == b"OggS":
+        return "ogg"
+    if d[:3] == b"ID3" or (len(d) > 1 and d[0] == 0xFF and d[1] & 0xE0 == 0xE0):  # mp3 / ADTS aac
+        return "mp3"
+    if d[:4] == b"RIFF" and d[8:12] == b"WAVE":
+        return "wav"
+    return None
+
+
+_TYPES = {
+    "webm": {"audio": "audio/webm", "video": "video/webm"},
+    "mp4": {"video": "video/mp4"},
+    "m4a": {"audio": "audio/mp4"},
+    "ogg": {"audio": "audio/ogg"},
+    "mp3": {"audio": "audio/mpeg"},
+    "wav": {"audio": "audio/wav"},
+}
+# Phase 1 allow-list for a generic `file` question: images, PDF, and zip-based documents
+# (xlsx/docx/zip). Nothing else, and never anything a server might execute.
+_FILE_OTHER = {"pdf": "application/pdf", "zip": "application/zip"}
+
+
+def _sniff(data: bytes, kind: str) -> tuple[str, str] | None:
+    """(extension, content type) for `data` as a question of type `kind`, or None."""
+    if kind == "image" or kind == "file":
+        ext = _sniff_image(data)
+        if ext:
+            return ext, _IMAGE[ext]
+    if kind in ("audio", "video"):
+        ext = _sniff_container(data, kind)
+        return (ext, _TYPES[ext][kind]) if ext else None
+    if kind == "file":
+        if data[:5] == b"%PDF-":
+            return "pdf", _FILE_OTHER["pdf"]
+        if data[:4] == b"PK\x03\x04":
+            return "zip", _FILE_OTHER["zip"]
     return None
 
 
@@ -245,8 +296,9 @@ def _walk(nodes: list[dict]):
         yield from _walk(n.get("children", []))
 
 
-def _media_questions(spec: dict) -> set[str]:
-    return {n["name"] for n in _walk(spec["nodes"]) if n["type"] == "image"}
+def _media_questions(spec: dict) -> dict[str, str]:
+    """Question name -> its type, for every question that takes an upload."""
+    return {n["name"]: n["type"] for n in _walk(spec["nodes"]) if n["type"] in ("image", "audio", "video", "file")}
 
 
 def _repeat_names(spec: dict) -> set[str]:
@@ -323,10 +375,10 @@ def store_submission(
     sniffed: dict[str, tuple[str, str]] = {}
     for name, part in media.items():
         if name not in slots:
-            raise IntakeRefused(422, "A file was sent for a question that takes no image")
-        kind = _sniff(part.data)
+            raise IntakeRefused(422, "A file was sent for a question that takes no upload")
+        kind = _sniff(part.data, slots[name])
         if kind is None:
-            raise IntakeRefused(415, "A file is not a JPEG, PNG or WebP image")
+            raise IntakeRefused(415, f"A file's contents are not an accepted {slots[name]} format")
         sniffed[name] = kind
 
     spec = form_version.json_spec
@@ -428,8 +480,16 @@ def likely_duplicates(db: Session, submission: Submission) -> list[Submission]:
     trimmed and case-folded; blank answers are ignored; a key with no answered value
     matches nothing. Nothing is ever deleted or changed.
 
+    TWO MODES. Default (no configured key): catches EXACT RE-ENTRY only - the same filled
+    form arriving under two UUIDs (finalise tapped twice, an app bug). geopoint and media
+    differ on every submission, so they are excluded from the key; device metadata is not
+    in the answers at all. Near-duplicates (the same household entered twice with slightly
+    different answers) are caught only by a CONFIGURED key naming the identifying
+    questions. Per-form configuration belongs on the form record (Phase 2).
+
     Scans the form's submissions in Python (O(n) in the form's size): fine for the
-    detail view that calls it, not for a hot path.
+    single-submission detail view that calls it. NEVER call it per row from a list
+    endpoint.
     """
     fv = db.get(FormVersion, submission.form_version_id)
     form = db.get(Form, fv.form_id)

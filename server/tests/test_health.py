@@ -51,3 +51,22 @@ def test_settings_accept_32_char_jwt_secret(monkeypatch):
     get_settings.cache_clear()
     assert get_settings().jwt_secret.get_secret_value() == "x" * 32
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("short", ["", "short-media-key-0123456789"])  # empty, 25 chars
+def test_settings_refuse_short_or_empty_media_key(monkeypatch, short):
+    monkeypatch.setenv("MEDIA_KEY", short)
+    get_settings.cache_clear()
+    with pytest.raises(ValidationError) as e:
+        get_settings()
+    assert "MEDIA_KEY must be at least 32 characters" in str(e.value)
+    if short:
+        assert short not in str(e.value)  # a rejected key must not be echoed
+    get_settings.cache_clear()
+
+
+def test_settings_accept_32_char_media_key(monkeypatch):
+    monkeypatch.setenv("MEDIA_KEY", "k" * 32)
+    get_settings.cache_clear()
+    assert get_settings().media_key.get_secret_value() == "k" * 32
+    get_settings.cache_clear()

@@ -37,6 +37,6 @@ def test_a_different_key_cannot_decrypt(monkeypatch):
     from pydantic import SecretStr
 
     blob = encrypt_bytes(b"photo")
-    monkeypatch.setattr(get_settings(), "media_key", SecretStr("some-other-media-key-0123456789"))
+    monkeypatch.setattr(get_settings(), "media_key", SecretStr("some-other-media-key-0123456789-abcdef"))
     with pytest.raises(InvalidTag):
         decrypt_bytes(blob)

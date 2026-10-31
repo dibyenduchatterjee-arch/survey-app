@@ -55,6 +55,17 @@ class Settings(BaseSettings):
             )
         return v
 
+    @field_validator("media_key")
+    @classmethod
+    def _media_key_long_enough(cls, v: SecretStr) -> SecretStr:
+        # A short key makes encryption at rest decorative: it can be brute-forced offline.
+        if len(v.get_secret_value()) < 32:
+            raise ValueError(
+                "MEDIA_KEY must be at least 32 characters; generate one with "
+                '`python -c "import secrets; print(secrets.token_urlsafe(48))"`'
+            )
+        return v
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors_origins(cls, v):

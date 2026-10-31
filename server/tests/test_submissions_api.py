@@ -297,7 +297,7 @@ def test_a_file_whose_magic_bytes_are_not_an_image_is_refused(client, db, form, 
 
 
 def test_one_bad_file_among_good_ones_leaves_nothing(db, form, enum, media_root, monkeypatch):
-    monkeypatch.setattr(submissions, "_media_questions", lambda spec: {"household_photo", "child_photo"})
+    monkeypatch.setattr(submissions, "_media_questions", lambda spec: {"household_photo": "image", "child_photo": "image"})
     media = {"household_photo": MediaPart("a.jpg", JPEG), "child_photo": MediaPart("b.jpg", b"x")}
     with pytest.raises(IntakeRefused) as e:
         store_submission(db, form["fv"], enum, GOOD, {}, media, str(uuidlib.uuid4()), fake_request())
@@ -366,7 +366,7 @@ def test_a_media_write_failure_rolls_back_rows_and_earlier_files(db, form, enum,
         return real(data)
 
     monkeypatch.setattr(submissions, "encrypt_bytes", flaky)
-    monkeypatch.setattr(submissions, "_media_questions", lambda spec: {"household_photo", "child_photo"})
+    monkeypatch.setattr(submissions, "_media_questions", lambda spec: {"household_photo": "image", "child_photo": "image"})
     media = {"household_photo": MediaPart("a.jpg", JPEG), "child_photo": MediaPart("b.jpg", JPEG)}
     with pytest.raises(OSError):
         store_submission(db, form["fv"], enum, GOOD, {}, media, str(uuidlib.uuid4()), fake_request())
@@ -546,3 +546,88 @@ def test_the_detail_lists_likely_duplicates_for_staff_only(client, db, form, enu
     d = client.get(f"/api/submissions/{u2}", headers=_hdr(form["sup"])).json()
     assert d["likely_duplicates"] == [u1]
     assert client.get(f"/api/submissions/{u2}", headers=_hdr(enum)).json()["likely_duplicates"] == []
+
+
+# ---- accepted media types follow the question's declared type ---------------------------
+
+WEBM = b"\x1a\x45\xdf\xa3" + b"\x03" * 64
+MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x04" * 64
+OGG = b"OggS\x00" + b"\x05" * 64
+MP3 = b"ID3\x03\x00" + b"\x06" * 64
+WAV = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x07" * 32
+PDF = b"%PDF-1.7\n" + b"\x08" * 32
+ZIP = b"PK\x03\x04" + b"\x09" * 32
+EXE = b"MZ\x90\x00" + b"\x0a" * 32
+HTML = b"<html><script>alert(1)</script></html>"
+
+
+@pytest.fixture
+def media_form(db, form):
+    """The AMB spec plus one audio, one video and one file question."""
+    spec = json.loads(json.dumps(form["fv"].json_spec))
+    spec["nodes"] += [
+        {"type": "audio", "name": "voice_note"},
+        {"type": "video", "name": "clip"},
+        {"type": "file", "name": "document"},
+    ]
+    form["fv"].json_spec = spec
+    db.commit()
+    return form
+
+
+def one(client, user, form, name, content):
+    return post(client, user, payload(form, media={name: ("whatever.jpg", content)})[1])
+
+
+@pytest.mark.parametrize(
+    "name,content,ext,ctype",
+    [
+        ("household_photo", JPEG, "jpg", "image/jpeg"),
+        ("household_photo", PNG, "png", "image/png"),
+        ("voice_note", WEBM, "webm", "audio/webm"),
+        ("voice_note", MP4, "m4a", "audio/mp4"),
+        ("voice_note", OGG, "ogg", "audio/ogg"),
+        ("voice_note", MP3, "mp3", "audio/mpeg"),
+        ("voice_note", WAV, "wav", "audio/wav"),
+        ("clip", WEBM, "webm", "video/webm"),
+        ("clip", MP4, "mp4", "video/mp4"),
+        ("document", PDF, "pdf", "application/pdf"),
+        ("document", ZIP, "zip", "application/zip"),
+        ("document", PNG, "png", "image/png"),
+    ],
+)
+def test_each_question_type_accepts_its_formats_by_sniffed_bytes(
+    client, db, media_form, enum, media_root, name, content, ext, ctype
+):
+    assert one(client, enum, media_form, name, content).status_code == 201
+    m = db.scalars(select(MediaFile)).one()
+    assert (m.content_type, m.storage_path.rsplit(".", 1)[1]) == (ctype, ext)  # the claimed .jpg is ignored
+    assert decrypt_bytes((media_root / m.storage_path).read_bytes()) == content
+
+
+@pytest.mark.parametrize(
+    "name,content",
+    [
+        ("household_photo", MP3), ("household_photo", WEBM), ("household_photo", PDF),
+        ("voice_note", JPEG), ("voice_note", PDF), ("voice_note", EXE),
+        ("clip", OGG), ("clip", MP3), ("clip", WAV), ("clip", JPEG),
+        ("document", EXE), ("document", HTML), ("document", WEBM), ("document", b""),
+    ],
+)
+def test_bytes_that_do_not_match_the_questions_declared_type_are_refused(
+    client, db, media_form, enum, media_root, name, content
+):
+    assert one(client, enum, media_form, name, content).status_code == 415
+    nothing_left(db, media_root)
+
+
+def test_a_duplicate_is_found_even_though_gps_and_photo_differ_every_time(db, form, enum):
+    a, _ = store_submission(
+        db, form["fv"], enum, {**GOOD, "visit_location": "25.60 85.10 0 5"}, {"children": [CHILD]},
+        {"household_photo": MediaPart("a.jpg", JPEG)}, str(uuidlib.uuid4()), fake_request(),
+    )
+    b, _ = store_submission(
+        db, form["fv"], enum, {**GOOD, "visit_location": "25.61 85.12 0 9"}, {"children": [CHILD]},
+        {"household_photo": MediaPart("b.jpg", JPEG + b"different")}, str(uuidlib.uuid4()), fake_request(),
+    )
+    assert [s.id for s in likely_duplicates(db, b)] == [a.id]

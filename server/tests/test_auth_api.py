@@ -235,7 +235,7 @@ class _Req:
 def _settings(**kw):
     from app.core.config import Settings
 
-    return Settings(jwt_secret="x" * 40, media_key="m", **kw)
+    return Settings(jwt_secret="x" * 40, media_key="m" * 40, **kw)
 
 
 def test_proxy_settings_default_to_off():
