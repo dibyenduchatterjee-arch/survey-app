@@ -33,6 +33,7 @@ from app.db.session import get_session
 router = APIRouter(prefix="/api", tags=["admin"])
 
 _admin = require_role("admin")
+_admin_or_supervisor = require_role("admin", "supervisor")  # read-only assignment listing
 
 Role = Literal["admin", "supervisor", "enumerator"]
 
@@ -138,6 +139,12 @@ class AssignmentOut(BaseModel):
     form_id: str
 
 
+class AssignmentListItem(AssignmentOut):
+    username: str
+    full_name: str
+    form_title: str
+
+
 class AuditEntry(BaseModel):
     id: int
     at: datetime
@@ -225,6 +232,8 @@ def update_user(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # A role change deliberately does not revoke refresh tokens: require_role reads the role
+    # from the database on every request, so it takes effect on the very next call.
     new_role = changes.get("role", user.role)
     new_active = changes.get("is_active", user.is_active)
     loses_admin = user.role == "admin" and user.is_active and not (new_role == "admin" and new_active)
@@ -262,6 +271,31 @@ def update_user(
 
 
 # ---- assignments -----------------------------------------------------------
+
+
+@router.get("/assignments", response_model=list[AssignmentListItem])
+def list_assignments(
+    user_id: int | None = None,
+    form_id: str | None = Query(default=None, max_length=150),  # the form's public id
+    _: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
+) -> list[AssignmentListItem]:
+    query = (
+        select(Assignment.id, Assignment.user_id, Form.form_id, User.username, User.full_name, Form.title)
+        .join(User, User.id == Assignment.user_id)
+        .join(Form, Form.id == Assignment.form_id)
+        .order_by(Assignment.id)
+    )
+    if user_id is not None:
+        query = query.where(Assignment.user_id == user_id)
+    if form_id is not None:
+        query = query.where(Form.form_id == form_id)
+    return [
+        AssignmentListItem(
+            id=i, user_id=uid, form_id=fid, username=uname, full_name=fname, form_title=title
+        )
+        for i, uid, fid, uname, fname, title in db.execute(query).all()
+    ]
 
 
 @router.post("/assignments", response_model=AssignmentOut, status_code=201)

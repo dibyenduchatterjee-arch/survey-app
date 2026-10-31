@@ -115,6 +115,8 @@ def test_a_non_admin_cannot_manage_users(client, as_, role):
     body = {"user_id": 1, "form_id": "f"}
     assert client.post("/api/assignments", json=body, headers=h).status_code == 403
     assert client.delete("/api/assignments/1", headers=h).status_code == 403
+    if role == "enumerator":
+        assert client.get("/api/assignments", headers=h).status_code == 403
 
 
 def test_no_token_is_401(client):
@@ -292,6 +294,36 @@ def test_assignment_errors(client, db, adm, user_factory):
     assert client.post("/api/assignments", json=ok, headers=h).status_code == 409
     assert client.delete("/api/assignments/999", headers=h).status_code == 404
     assert db.scalar(select(func.count()).select_from(Assignment)) == 1
+
+
+def test_list_assignments_with_filters_and_roles(client, db, adm, as_, user_factory):
+    a, h = adm
+    _form(db, a.id)
+    db.add(Form(form_id="other", title="Other", created_by=a.id))
+    db.commit()
+    w1 = user_factory(username="w1", full_name="Worker One")
+    w2 = user_factory(username="w2")
+    for uid, fid in [(w1.id, "amb_visit"), (w1.id, "other"), (w2.id, "amb_visit")]:
+        body = {"user_id": uid, "form_id": fid}
+        assert client.post("/api/assignments", json=body, headers=h).status_code == 201
+    allrows = client.get("/api/assignments", headers=h)
+    assert allrows.status_code == 200 and len(allrows.json()) == 3
+    first = allrows.json()[0]
+    assert set(first) == {"id", "user_id", "form_id", "username", "full_name", "form_title"}
+    assert first["username"] == "w1" and first["form_title"] == "AMB visit"
+    by_user = client.get(f"/api/assignments?user_id={w1.id}", headers=h).json()
+    assert {r["form_id"] for r in by_user} == {"amb_visit", "other"}
+    by_form = client.get("/api/assignments?form_id=amb_visit", headers=h).json()
+    assert {r["user_id"] for r in by_form} == {w1.id, w2.id}
+    assert client.get(f"/api/assignments?form_id=other&user_id={w2.id}", headers=h).json() == []
+    # the id it returns is the one DELETE takes
+    assert client.delete(f"/api/assignments/{first['id']}", headers=h).status_code == 204
+    assert len(client.get("/api/assignments", headers=h).json()) == 2
+    _, sh = as_("supervisor", "sup")
+    assert client.get("/api/assignments", headers=sh).status_code == 200
+    _, eh = as_("enumerator", "enum")
+    assert client.get("/api/assignments", headers=eh).status_code == 403
+    assert client.get("/api/assignments").status_code == 401
 
 
 # ---- audit viewing ---------------------------------------------------------
