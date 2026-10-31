@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -197,13 +197,30 @@ class UserBrief(BaseModel):
 
 @router.get("/users", response_model=list[UserOut] | list[UserBrief])
 def list_users(
-    user: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+    request: Request,
+    username: str | None = None,
+    user: User = Depends(_admin_or_supervisor),
+    db: Session = Depends(get_session),
 ) -> list[UserOut] | list[UserBrief]:
-    """Admin: the full records. Supervisor: id, username, full name and role only, so they can
-    choose members for their projects. Creating, changing and deactivating stay admin-only."""
-    users = db.scalars(select(User).order_by(User.id))
+    """Admin: every user, full records. Supervisor: id, username, full name and role of
+
+    * the people already in a project the supervisor is in (themselves included), and
+    * with `?username=`, the ONE active account with exactly that username, so a supervisor
+      can add someone new to a project without being handed the whole directory of frontline
+      workers. No partial match, no wildcard: a name must already be known to be found.
+
+    Creating, changing and deactivating users stay admin-only.
+    """
     if user.role == "admin":
-        return [_user_out(u) for u in users]
+        return [_user_out(u) for u in db.scalars(select(User).order_by(User.id))]
+    if username:
+        audit.record(db, user.id, "user.lookup", "user", username[:100], request, None)
+        db.commit()
+        found = db.scalars(select(User).where(User.username == username, User.is_active.is_(True))).all()
+        return [UserBrief(id=u.id, username=u.username, full_name=u.full_name, role=u.role) for u in found]
+    mine = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
+    people = select(ProjectMember.user_id).where(ProjectMember.project_id.in_(mine))
+    users = db.scalars(select(User).where(or_(User.id.in_(people), User.id == user.id)).order_by(User.id))
     return [UserBrief(id=u.id, username=u.username, full_name=u.full_name, role=u.role) for u in users]
 
 

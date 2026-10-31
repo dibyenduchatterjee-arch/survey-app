@@ -22,14 +22,66 @@ def w(client, db, user_factory):
     return {"c": client, "db": db, "mk": user_factory, "admin": admin, "p": ps}
 
 
-def test_a_supervisor_lists_users_with_only_four_fields(w):
+def _member(w, user, project):
+    w["db"].add(ProjectMember(project_id=w["p"][project].id, user_id=user.id))
+    w["db"].commit()
+
+
+def test_a_supervisor_lists_only_people_in_their_own_projects_with_four_fields(w):
     sup = w["mk"](username="sup", role="supervisor")
-    w["mk"](username="enum", role="enumerator", full_name="Enu Merator")
+    mate = w["mk"](username="mate", role="enumerator", full_name="Enu Merator")
+    other_sup = w["mk"](username="sup_b", role="supervisor")
+    stranger = w["mk"](username="stranger", role="enumerator")
+    loner = w["mk"](username="loner", role="enumerator")  # in no project at all
+    _member(w, sup, "A")
+    _member(w, mate, "A")
+    _member(w, other_sup, "B")
+    _member(w, stranger, "B")
     r = w["c"].get("/api/users", headers=_h(sup))
     assert r.status_code == 200
     assert all(set(u) == {"id", "username", "full_name", "role"} for u in r.json())
-    assert {u["username"] for u in r.json()} == {"adm", "sup", "enum"}
+    assert {u["username"] for u in r.json()} == {"sup", "mate"}
     assert "hash" not in r.text and "phone" not in r.text
+    assert loner.username not in r.text and stranger.username not in r.text
+
+
+def test_a_supervisor_in_no_project_sees_only_themselves(w):
+    sup = w["mk"](username="sup", role="supervisor")
+    w["mk"](username="enum", role="enumerator")
+    assert [u["username"] for u in w["c"].get("/api/users", headers=_h(sup)).json()] == ["sup"]
+
+
+def test_a_supervisor_can_look_up_one_user_by_exact_username_to_add_them(w):
+    sup = w["mk"](username="sup", role="supervisor")
+    _member(w, sup, "A")
+    new = w["mk"](username="asha_priya", role="enumerator", full_name="Priya")
+    c, h = w["c"], _h(sup)
+    got = c.get("/api/users?username=asha_priya", headers=h)
+    assert got.status_code == 200
+    assert got.json() == [{"id": new.id, "username": "asha_priya", "full_name": "Priya", "role": "enumerator"}]
+    for partial in ("asha", "asha_pri", "ASHA_PRIYA", "%", "asha_priya "):
+        assert c.get("/api/users", params={"username": partial}, headers=h).json() == [], partial
+    assert c.get("/api/users?username=nobody", headers=h).json() == []
+    # ... and the person found can then be added, which is the whole point of the lookup.
+    a = w["p"]["A"].id
+    assert c.post(f"/api/projects/{a}/members", json={"user_id": new.id}, headers=h).status_code == 201
+    assert "asha_priya" in c.get("/api/users", headers=h).text
+
+
+def test_a_lookup_never_returns_a_deactivated_account(w):
+    sup = w["mk"](username="sup", role="supervisor")
+    w["mk"](username="gone", role="enumerator", is_active=False)
+    assert w["c"].get("/api/users?username=gone", headers=_h(sup)).json() == []
+
+
+def test_the_supervisor_lookup_is_audited(w):
+    from app.db.models import AuditLog
+
+    sup = w["mk"](username="sup", role="supervisor")
+    w["mk"](username="target", role="enumerator")
+    w["c"].get("/api/users?username=target", headers=_h(sup))
+    row = w["db"].query(AuditLog).filter_by(action="user.lookup").one()
+    assert row.actor_user_id == sup.id and row.object_id == "target"
 
 
 def test_the_admin_list_is_unchanged_and_enumerators_are_refused(w):
