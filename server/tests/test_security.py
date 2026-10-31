@@ -97,9 +97,6 @@ def test_unsigned_alg_none_token_is_rejected():
         decode_access_token(forged)
 
 
-# The short test secret trips PyJWT's HS384 key-length warning when signing the
-# fixture token; that concerns the test key, not the code under test.
-@pytest.mark.filterwarnings("ignore::jwt.warnings.InsecureKeyLengthWarning")
 def test_other_hmac_algorithm_is_rejected():
     tok = jwt.encode(_payload(datetime.now(UTC)), _secret(), algorithm="HS384")
     with pytest.raises(TokenInvalid):

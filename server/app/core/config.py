@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     fail loudly at startup rather than fall back to something guessable.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     database_url: str = "sqlite:///./server/survey.db"
     jwt_secret: SecretStr
@@ -25,6 +25,17 @@ class Settings(BaseSettings):
     # The single media size cap for the whole system: uploads above it are
     # rejected (Task 11) and photos are downscaled to fit below it (Task 19).
     max_media_bytes: int = 5 * 1024 * 1024
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _jwt_secret_long_enough(cls, v: SecretStr) -> SecretStr:
+        # A guessable HS256 secret lets anyone mint a token for any user and role.
+        if len(v.get_secret_value()) < 32:
+            raise ValueError(
+                "JWT_SECRET must be at least 32 characters; generate one with "
+                '`python -c "import secrets; print(secrets.token_urlsafe(48))"`'
+            )
+        return v
 
     @field_validator("cors_origins", mode="before")
     @classmethod
