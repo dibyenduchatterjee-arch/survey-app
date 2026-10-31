@@ -516,7 +516,7 @@ function projectWorld(role = 'admin') {
     ['GET', /\/api\/forms$/, () => w.projects.flatMap(p => p.forms.map(f => ({ form_id: f.form_id, title: f.title, current_version: '1' })))],
     ['GET', /\/api\/users$/, () => w.users],
   ];
-  return { w, ...stub(routes), ctx: api => ({ api, user: { id: 1, username: 'm', role } }) };
+  return { w, ...stub(routes), ctx: (api, confirm = () => true) => ({ api, confirm, user: { id: 1, username: 'm', role } }) };
 }
 
 const pcard = (root, id) => root.querySelector(`.project-card[data-project="${id}"]`);
@@ -583,6 +583,24 @@ export async function test_the_move_warning_says_direct_assignments_survive_and_
   const w = pcard(root, 2).querySelector('.move-warning').textContent;
   assert(/given this form directly/.test(w) && /keeps it/.test(w), 'direct assignments stay: ' + w);
   assert(w.includes('Default project') && w.includes('only in the old project'), 'Default project and old-project members: ' + w);
+  root.remove();
+}
+
+export async function test_moving_a_form_asks_first_naming_form_and_projects_and_stops_if_dismissed() {
+  const { api, ctx, calls, w } = projectWorld();
+  const root = mount();
+  const asked = [];
+  await mountProjects(root, ctx(api, m => { asked.push(m); return false; }));
+  const c = pcard(root, 2);
+  c.querySelector('select.move-form-id').value = 'old_form';
+  c.querySelector('button.move-form').click();
+  await sleep(50);
+  eq(asked.length, 1);
+  const m = asked[0];
+  assert(m.includes('पुराना फ़ॉर्म') && m.includes('Default project') && m.includes('IFA syrup'), 'names form, source, destination: ' + m);
+  assert(m.includes('lose access') && m.includes('keeps it'), 'states loss and kept direct grants: ' + m);
+  eq(calls.filter(x => x.method === 'PUT').length, 0, 'no PUT when dismissed');
+  eq(w.projects[0].forms.length, 1, 'form still in the source');
   root.remove();
 }
 
