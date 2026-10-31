@@ -1,51 +1,48 @@
-// Offline sync, Drive-only: bootstrap (form specs down from Drive) and the upload queue
-// (answers up to Google Sheets, photos up to Drive). There is no server.
+// Offline sync against the Apps Script backend: bootstrap (each held project's form specs down)
+// and the upload queue (submissions up, one at a time). The Apps Script does the Drive and
+// Sheets work; the phone never talks to Google directly.
 //
 // What this file guarantees, because an ASHA's day of household visits depends on it:
 //
-//   * A queued submission leaves the device in exactly two ways: it is confirmed in the
-//     project's spreadsheet (its row is there, or was already there), or Google
-//     definitively refused it and the full refusal, answers and photos were first written
-//     to the rejection record (db.js `rejected` store). Every other outcome (a 5xx, a 429
-//     that outlasts the retries, a dropped connection, an expired sign-in, a failed local
-//     write) leaves it queued.
-//   * Uploads are one at a time, oldest first, with jittered exponential backoff on
-//     429 and 5xx.
-//   * A forced re-sign-in touches nothing in the queue. Nothing in this file writes to the
-//     queue except dequeue-after-success.
+//   * A queued submission leaves the device in exactly two ways: the backend confirmed it
+//     (`created`, or `duplicate` meaning its row is already there), or the backend definitively
+//     refused it (bad_request, too_large, layout_mismatch) and the full refusal, answers and
+//     photos were first written to the rejection record (db.js `rejected` store). Every other
+//     outcome (busy, server_error, a quota refusal, an HTML error page, a dropped connection,
+//     an expired or withdrawn project code, a failed local write) leaves it queued.
+//   * Uploads are one at a time, oldest first, with jittered exponential backoff when the
+//     backend says retry.
+//   * Signing out of a project, or losing access to it, touches nothing in the queue. Nothing in
+//     this file writes to the queue except dequeue-after-success.
 //
-// IDEMPOTENCY WITHOUT A SERVER. Appending to a sheet twice makes two rows, and a dropped
-// connection mid-append is exactly when that happens. So:
-//   1. Before appending, the tab's first column is read and the submission is skipped if its
-//      uuid is already there.
-//   2. The uuid is column 1 of every tab (`uuid`, or `parent_uuid` on a repeat tab), so a
-//      duplicate that slips through is easy to find and delete later.
-//   3. The ORDER makes a half-finished submission recoverable: photos, then repeat rows
-//      (each checked on its own key: parent uuid + row indexes), and the main row LAST.
-//      The main row's presence therefore means everything before it landed.
-// Check-then-append still has a small race window (two devices syncing the same uuid in the
-// same second, or a lost reply read before the row becomes visible). Column 1 is the safety
-// net for that; it is not airtight.
+// IDEMPOTENCY. The submission's uuid is minted once, when the form is finished, and travels
+// with the queued record. Every retry sends THAT uuid, so the backend (which checks the uuid
+// before appending, under a lock) answers `duplicate` instead of writing a second row. This
+// file never mints a uuid.
 //
-// The Drive calls come from drive.js (readColumns, ensureColumns included).
-// `drive`, `store`, `getUser`, `sleep` and `random` are parameters so the logic is testable
-// in Node with no network.
+// MORE THAN ONE PROJECT. Each stored form spec is tagged `_project: {id, name}` (id = the
+// project's key on this phone) and its form_id is prefixed with that key, so the same form in
+// two projects is two separate forms on the phone. A queued submission carries the prefixed
+// form_id, which is how it finds its project, its token and nothing else.
+//
+// `store`, `fetchImpl`, `url`, `sleep` and `random` are parameters so the logic is testable in
+// Node with no network.
 
 import * as defaultStore from './db.js';
-import * as driveModule from './drive.js';
+import { ApiError, callApi, listProjects, tokenFor } from './projects.js';
 
 export const BACKOFF_BASE_MS = 5_000;       // between whole sync runs, after a failed run
 export const BACKOFF_CAP_MS = 300_000;
 export const SYNC_INTERVAL_MS = 60_000;
-const RETRY_BASE_MS = 1_000;                // between attempts on one Google call
+const RETRY_BASE_MS = 1_000;                // between attempts on one call
 const RETRY_CAP_MS = 30_000;
 const MAX_ATTEMPTS = 5;
 const BATCH = 200;
 const MAX_CONSECUTIVE_KEEPS = 3;
-// Statuses that mean "Google will never accept this", so retrying cannot help.
-const REJECT_STATUSES = new Set([400, 403, 404, 413, 422]);
-// A 403 with one of these reasons is Google's rate limiter, not a permission problem.
-const QUOTA_403 = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded|dailyLimitExceeded|RATE_LIMIT|RESOURCE_EXHAUSTED/i;
+// The only replies that mean "the backend will never accept this", so retrying cannot help.
+const REFUSALS = new Set(['bad_request', 'too_large', 'layout_mismatch']);
+// A refusal that is really Google's rate limiter or quota talking.
+const QUOTA_TEXT = /quota|rate.?limit|too many (times|requests|simultaneous)|exceeded|service invoked/i;
 
 // ---- shared state ----------------------------------------------------------------
 
@@ -63,45 +60,26 @@ export function backoffDelay(failures) {
   return Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (failures - 1));
 }
 
-// Old call shape was fn(fetchImpl, {store}); the new one is fn({store, drive, ...}).
-// A function or nothing in the first slot is the legacy fetchImpl: ignored.
-function normalise(a, b) {
-  const first = a && typeof a === 'object' ? a : null;
-  return first || (b && typeof b === 'object' ? b : {});
-}
+const normalise = a => (a && typeof a === 'object' ? a : {});
 
-// ---- the Drive layer -------------------------------------------------------------
-
-const defaultDrive = () => ({
-  listProjects: driveModule.listProjects,
-  listForms: driveModule.listForms,
-  readSpec: driveModule.readSpec,
-  uploadMedia: driveModule.uploadMedia,
-  findOrCreateSpreadsheet: driveModule.findOrCreateSpreadsheet,
-  ensureTab: driveModule.ensureTab,
-  appendRow: driveModule.appendRow,
-  readColumns: driveModule.readColumns,
-  ensureColumns: driveModule.ensureColumns,
-  listProjectsIn: driveModule.listProjectsIn,
-});
-
-async function defaultGetUser() {
-  return (await import('./googleauth.js')).currentUser();
-}
-
-async function defaultRootFolder() {
-  try { return (await import('../config.js')).config.rootFolderId; } catch { return undefined; }
+// Stored forms are namespaced by project: `<project key>::<form id>`.
+const SEP = '::';
+export const namespacedFormId = (projectKey, formId) => `${projectKey}${SEP}${formId}`;
+export function splitFormId(id) {
+  const s = String(id);
+  const i = s.indexOf(SEP);
+  return i < 0 ? { project: '', form: s } : { project: s.slice(0, i), form: s.slice(i + SEP.length) };
 }
 
 // ---- retry and error classification ----------------------------------------------
 
-const isAuth = e => !!e && (e.code === 'needs_signin' || e.status === 401);
-const isQuota403 = e => !!e && e.status === 403 && QUOTA_403.test(String(e.body || e.message || ''));
-const isTransient = e => !!e && !isAuth(e) && (e.retryable === true || e.status === 429 || e.status >= 500 || isQuota403(e));
-const isRefusal = e => !!e && !isAuth(e) && !isTransient(e) && REJECT_STATUSES.has(e.status);
+const isQuota = e => !!e && e instanceof ApiError && !REFUSALS.has(e.code) && QUOTA_TEXT.test(`${e.code} ${e.message}`);
+const isTransient = e => !!e && (e.retry === true || isQuota(e));
+const isRefusal = e => !!e && e instanceof ApiError && REFUSALS.has(e.code) && !e.retry;
+const isAccessLost = e => !!e && (e.code === 'revoked');
 
 class Exhausted extends Error {
-  constructor(cause) { super('Google kept failing: ' + ((cause && cause.message) || cause)); this.cause = cause; this.exhausted = true; }
+  constructor(cause) { super('The server kept failing: ' + ((cause && cause.message) || cause)); this.cause = cause; this.exhausted = true; this.retryAfterMs = (cause && cause.retryAfterMs) || 0; }
 }
 class Skip extends Error {}
 
@@ -114,9 +92,9 @@ function makeRetry({ sleep, random, maxAttempts }) {
         last = e;
         if (attempt === maxAttempts) break;
         const ceiling = Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
-        let wait = ceiling * (0.5 + random() * 0.5);          // jitter: 76 phones must not retry in step
-        if (e.retryAfterMs) wait = Math.max(wait, e.retryAfterMs);
-        await sleep(wait);
+        // Jitter: 76 phones must not retry in step. The server's own retry_after_s is a minute or
+        // two; it is honoured between whole sync runs (see out.retryInMs), not by sleeping here.
+        await sleep(ceiling * (0.5 + random() * 0.5));
       }
     }
     throw new Exhausted(last);
@@ -126,8 +104,8 @@ function makeRetry({ sleep, random, maxAttempts }) {
 function config(o) {
   return {
     store: o.store || defaultStore,
-    drive: o.drive || defaultDrive(),
-    getUser: o.getUser || defaultGetUser,
+    fetchImpl: o.fetchImpl,
+    url: o.url,
     retry: makeRetry({
       sleep: o.sleep || (ms => new Promise(r => setTimeout(r, ms))),
       random: o.random || Math.random,
@@ -136,9 +114,31 @@ function config(o) {
   };
 }
 
+// Calls the backend for one project with its token. A `session` reply means the token lapsed or
+// was revoked: re-open once with the stored code and send again. If the backend then refuses the
+// code, access has been withdrawn (ApiError 'revoked'): the caller keeps the queue as it is.
+async function projectCall(ctx, key, body) {
+  const { store, fetchImpl, url } = ctx;
+  let token = await tokenFor(key, { fetchImpl, store, url });
+  try {
+    return await callApi({ ...body, token }, { fetchImpl, url });
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.code !== 'session') throw e;
+    token = await tokenFor(key, { fetchImpl, store, url, force: true });
+    try {
+      return await callApi({ ...body, token }, { fetchImpl, url });
+    } catch (e2) {
+      // Still "session" straight after a good re-open: treat as a hiccup and try again later.
+      if (e2 instanceof ApiError && e2.code === 'session') throw new ApiError('session', e2.message, { retry: true });
+      throw e2;
+    }
+  }
+}
+
 // ---- layout of the spreadsheet ---------------------------------------------------
 
-const META = ['_gps', '_started_at', '_finished_at', '_device_id', '_submitted_by', '_form_version'];
+// No _submitted_by: the backend stamps the person's name from their code.
+const META = ['_gps', '_started_at', '_finished_at', '_device_id', '_form_version'];
 
 // Questions that become columns: groups are transparent; repeats and notes are not columns.
 function questions(nodes) {
@@ -163,7 +163,7 @@ function repeats(nodes, path = []) {
   return out;
 }
 
-// Tab names: Sheets forbids [ ] * ? : / \ and caps at 100 characters.
+// Tab names: [A-Za-z0-9_-], at most 100 characters (the backend refuses anything else).
 const tabName = (formId, path = []) => [formId, ...path].join('_').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 100);
 
 // Rows of the repeat at `path` for one submission: [{ keys: [outer idx..., idx], data }].
@@ -181,10 +181,12 @@ function repeatRows(sub, path) {
   return level;
 }
 
+// Cells must be string, number, boolean or empty; lists and objects are flattened.
 function cell(v) {
   if (v === undefined || v === null) return '';
   if (Array.isArray(v)) return v.map(String).join(' ');
   if (typeof v === 'object') return JSON.stringify(v);
+  if (typeof v === 'number' && !Number.isFinite(v)) return '';
   return v;
 }
 
@@ -192,9 +194,66 @@ function gpsCell(item) {
   return Number.isFinite(item.gps_lat) && Number.isFinite(item.gps_lon) ? `${item.gps_lat} ${item.gps_lon}` : '';
 }
 
-const keyOf = cells => cells.map(c => String(c).trim().toLowerCase()).join('|');
+const MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'audio/webm', 'audio/mpeg', 'audio/mp4']);
+const mimeOf = blob => String((blob && blob.type) || '').split(';')[0].trim().toLowerCase();
 
-const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'audio/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'video/mp4': 'mp4', 'video/webm': 'webm' };
+async function toBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+// The request body for one queued submission. Pure apart from reading the photos.
+// Repeat tabs first, the main tab last (the backend writes in that order anyway).
+export async function buildSubmitBody(item, spec, media) {
+  const formName = spec._form_id || splitFormId(spec.form_id).form;
+  const qs = questions(spec.nodes);
+  const tabs = [];
+  const tabQuestions = new Map();     // tab name -> question names it holds
+  for (const { path, node } of repeats(spec.nodes)) {
+    const rows = repeatRows(item, path);
+    if (!rows.length) continue;
+    const rqs = questions(node.children);
+    const keyCols = ['parent_uuid', ...path.slice(0, -1).map(p => `${p}_row_index`), 'row_index'];
+    const name = tabName(formName, path);
+    tabs.push({
+      name, kind: 'repeat', key: keyCols,
+      rows: rows.map(({ keys, data }) => {
+        const row = { parent_uuid: item.uuid, row_index: keys[keys.length - 1] };
+        path.slice(0, -1).forEach((p, i) => { row[`${p}_row_index`] = keys[i]; });
+        for (const q of rqs) row[q.name] = cell(data[q.name]);
+        return row;
+      }),
+    });
+    tabQuestions.set(name, new Set(rqs.map(q => q.name)));
+  }
+  const mainName = tabName(formName);
+  const main = { uuid: item.uuid };
+  for (const q of qs) main[q.name] = cell((item.data || {})[q.name]);
+  Object.assign(main, {
+    _gps: gpsCell(item),
+    _started_at: item.started_at || '',
+    _finished_at: item.finished_at || '',
+    _device_id: item.device_id || '',
+    _form_version: String(item.version || spec.version),
+  });
+  tabs.push({ name: mainName, kind: 'main', key: ['uuid'], rows: [main] });
+  tabQuestions.set(mainName, new Set(qs.map(q => q.name)));
+
+  // Photos: the backend puts the Drive link in the named cell, so that cell is sent empty (it is,
+  // since a photo question has no typed answer).
+  const photos = [];
+  for (const m of media) {
+    const mime = mimeOf(m.blob);
+    const where = [mainName, ...[...tabQuestions.keys()].filter(n => n !== mainName)].find(n => tabQuestions.get(n).has(m.question));
+    if (!where) continue;                              // a photo for a question no tab holds
+    const p = { question: m.question, mime: MIME.has(mime) ? mime : (mime || 'application/octet-stream'), data_base64: await toBase64(m.blob) };
+    if (where !== mainName) { p.tab = where; p.row = 0; }
+    photos.push(p);
+  }
+  return { action: 'submit', uuid: item.uuid, tabs, photos };
+}
 
 // ---- the rejection record --------------------------------------------------------
 
@@ -208,8 +267,8 @@ function recordRejection(store, item, media, err) {
     uuid: item.uuid,
     form_id: item.form_id,
     version: item.version,
-    status: err.status,
-    code: null,
+    status: null,
+    code: err.code,
     message: String(err.message || '').slice(0, 500),
     rejected_at: new Date().toISOString(),
     submission,
@@ -218,7 +277,7 @@ function recordRejection(store, item, media, err) {
 }
 
 // Puts a refused submission back on the queue, answers and photos included, for
-// when the cause has been fixed (access granted, folder restored).
+// when the cause has been fixed (a layout repaired, a form corrected).
 export async function retryRejected(uuid, { store = defaultStore } = {}) {
   const rec = await store.getRejected(uuid);
   if (!rec) throw new Error('No rejected submission with that id');
@@ -230,105 +289,50 @@ export async function retryRejected(uuid, { store = defaultStore } = {}) {
 
 // ---- uploading -------------------------------------------------------------------
 
-// One submission, start to finish. Throws on any failure; returns 'created' or 'replay'.
-async function sendOne(item, spec, media, user, ctx, sheets) {
-  const { drive, retry } = ctx;
-  const project = spec._project;
-  const ssKey = project.id;
-  if (!sheets.has(ssKey)) {
-    sheets.set(ssKey, await retry(() => drive.findOrCreateSpreadsheet(project.id, `${project.name} - data`)));
-  }
-  const ss = sheets.get(ssKey);
-
-  // Main tab first: uuid is column 1.
-  const qs = questions(spec.nodes);
-  const mainTab = tabName(spec.form_id);
-  const mainHeader = ['uuid', ...qs.map(q => q.name), ...META];
-  await retry(() => drive.ensureTab(ss, mainTab, mainHeader));
-  // A newer form version may carry questions the tab has no column for. Add them (at the right-hand
-  // end; columns are never reordered or removed) BEFORE writing, so no answer is ever dropped.
-  await retry(() => drive.ensureColumns(ss, mainTab, mainHeader));
-  const seen = await retry(() => drive.readColumns(ss, mainTab, 1));
-  const uuidKey = keyOf([item.uuid]);
-  if (seen.some(r => keyOf([r[0] ?? '']) === uuidKey)) return 'replay';
-
-  // 1. photos
-  const links = {};
-  for (const m of media) {
-    const ext = EXT[m.blob && m.blob.type] || 'bin';
-    const up = await retry(() => drive.uploadMedia(project.id, `${item.uuid}_${m.question}.${ext}`, m.blob));
-    links[m.question] = up.link;
-  }
-  const answer = (data, name) => (name in links ? links[name] : cell(data[name]));
-
-  // 2. repeat rows, each checked on its own key so a half-written set is completed, not repeated
-  for (const { path, node } of repeats(spec.nodes)) {
-    const rows = repeatRows(item, path);
-    if (!rows.length) continue;
-    const rqs = questions(node.children);
-    const keyCols = ['parent_uuid', ...path.slice(0, -1).map(p => `${p}_row_index`), 'row_index'];
-    const tab = tabName(spec.form_id, path);
-    const repHeader = [...keyCols, ...rqs.map(q => q.name)];
-    await retry(() => drive.ensureTab(ss, tab, repHeader));
-    await retry(() => drive.ensureColumns(ss, tab, repHeader));
-    const have = new Set((await retry(() => drive.readColumns(ss, tab, keyCols.length))).map(r => keyOf(r.slice(0, keyCols.length))));
-    for (const { keys, data } of rows) {
-      if (have.has(keyOf([item.uuid, ...keys]))) continue;
-      const row = { parent_uuid: item.uuid, row_index: keys[keys.length - 1] };
-      path.slice(0, -1).forEach((p, i) => { row[`${p}_row_index`] = keys[i]; });
-      for (const q of rqs) row[q.name] = answer(data, q.name);
-      await retry(() => drive.appendRow(ss, tab, row));
-    }
-  }
-
-  // 3. the main row, last
-  const row = { uuid: item.uuid };
-  for (const q of qs) row[q.name] = answer(item.data || {}, q.name);
-  Object.assign(row, {
-    _gps: gpsCell(item),
-    _started_at: item.started_at || '',
-    _finished_at: item.finished_at || '',
-    _device_id: item.device_id || '',
-    _submitted_by: (typeof item.user_id === 'string' && item.user_id.includes('@') ? item.user_id : user.email) || '',
-    _form_version: String(item.version || spec.version),
-  });
-  await retry(() => drive.appendRow(ss, mainTab, row));
-  return 'created';
+// One submission, start to finish. Throws on any failure; returns 'created' or 'duplicate'.
+async function sendOne(item, spec, media, ctx) {
+  const body = await buildSubmitBody(item, spec, media);
+  const reply = await ctx.retry(() => projectCall(ctx, spec._project.id, body));
+  return reply.status === 'duplicate' ? 'duplicate' : 'created';
 }
 
 async function run(ctx) {
-  const { store, getUser } = ctx;
-  const out = { uploaded: 0, replayed: 0, failed: 0, rejected: 0, skipped: 0, remaining: 0, authRequired: false, retryInMs: 0 };
+  const { store } = ctx;
+  const out = { uploaded: 0, replayed: 0, failed: 0, rejected: 0, skipped: 0, remaining: 0, authRequired: false, lostProjects: [], retryInMs: 0 };
   const items = await store.peekQueue(BATCH);
   if (!items.length) return out;                       // an empty queue touches nothing
 
-  const user = await getUser().catch(() => null);
-  if (!user || !user.email) {
-    out.authRequired = true;
-    out.remaining = await store.queueLength();
-    return out;
-  }
-  const me = String(user.email).toLowerCase();
-  const sheets = new Map();
   let keeps = 0;
   let hadFailure = false;
+  let retryAfter = 0;
+  const lost = new Set();
 
   for (const item of items) {
-    // A submission stamped with another person's email must not go up under this login.
-    if (typeof item.user_id === 'string' && item.user_id.includes('@') && item.user_id.toLowerCase() !== me) { out.skipped++; continue; }
-
     let media = [];
     try {
       const spec = await store.getForm(item.form_id, String(item.version));
       if (!spec || !spec._project || !spec._project.id) throw new Skip();   // cannot route it yet: keep it
+      if (lost.has(spec._project.id)) throw new Skip();
+      const held = await store.getSessionRecord('project:' + spec._project.id);
+      if (!held) throw new Skip();                     // signed out of that project: keep it
+      // Rows are stamped with the NAME of whoever's code sends them. A record filled in under one
+      // person's code must not go up under another's: it waits for its own person to enter their code.
+      if (item.person && held.person && item.person !== held.person) throw new Skip();
       media = await store.getMedia(item.uuid);
-      const verdict = await sendOne(item, spec, media, user, ctx, sheets);
-      await store.dequeue(item.uuid);                  // only after the row is confirmed
+      const verdict = await sendOne(item, spec, media, ctx);
+      await store.dequeue(item.uuid);                  // only after the backend confirmed it
       keeps = 0;
       if (verdict === 'created') out.uploaded++; else out.replayed++;
     } catch (e) {
       if (e instanceof Skip) { out.skipped++; continue; }
-      if (isAuth(e)) { out.authRequired = true; break; }        // only a new sign-in helps; queue untouched
+      if (isAccessLost(e)) {                           // only a new code helps; queue untouched
+        out.authRequired = true;
+        const spec = await store.getForm(item.form_id, String(item.version)).catch(() => null);
+        const id = spec && spec._project && spec._project.id;
+        if (id) { lost.add(id); if (!out.lostProjects.includes(id)) out.lostProjects.push(id); }
+        out.skipped++;
+        continue;                                      // other projects can still go
+      }
       if (isRefusal(e)) {
         try {
           // The record is committed BEFORE the queue entry goes. If it cannot be written, the
@@ -340,7 +344,8 @@ async function run(ctx) {
         continue;
       }
       out.failed++; hadFailure = true;
-      if (e && e.exhausted) break;                     // Google is throttling or down: stop for now
+      if (e && e.retryAfterMs) retryAfter = Math.max(retryAfter, e.retryAfterMs);
+      if (e && e.exhausted) break;                     // the backend is throttling or down: stop for now
       if (++keeps >= MAX_CONSECUTIVE_KEEPS) break;     // a local error or an odd one: keep, move on, cap
     }
   }
@@ -348,7 +353,7 @@ async function run(ctx) {
   out.remaining = await store.queueLength();
   if (hadFailure) {
     state.failures++;
-    out.retryInMs = backoffDelay(state.failures);
+    out.retryInMs = Math.max(backoffDelay(state.failures), retryAfter);
   } else if (!out.authRequired) {
     state.failures = 0;
   }
@@ -357,63 +362,62 @@ async function run(ctx) {
 
 // Uploads what is queued. Concurrent callers (an `online` event racing the timer)
 // share one run, so one submission is never in flight twice.
-export function syncOnce(a, b) {
+export function syncOnce(options) {
   if (state.running) return state.running;
-  const p = run(config(normalise(a, b))).finally(() => { if (state.running === p) state.running = null; });
+  const p = run(config(normalise(options))).finally(() => { if (state.running === p) state.running = null; });
   state.running = p;
   return p;
 }
 
 // ---- bootstrap -------------------------------------------------------------------
 
-// Reads every granted project's *.spec.json and stores each (form_id, version) it has not
-// seen. A stored version is NEVER replaced: a draft in progress finishes on the version it
-// started on, and a new version sits beside the old one. Each stored spec is tagged with
-// `_project: {id, name}`, which is how a queued submission finds its spreadsheet.
-// Returns { forms, datasets, config, errors } (datasets and config kept empty for callers
-// that still read them). Throws only if the project list itself cannot be read.
-export async function bootstrap(a, b) {
-  const o = normalise(a, b);
-  const { store, drive, retry } = config(o);
-  const rootFolderId = o.rootFolderId || await defaultRootFolder();
+// Asks the backend for the form specs of EVERY project held on this phone and stores each
+// (form_id, version) it has not seen. A stored version is NEVER replaced: a draft in progress
+// finishes on the version it started on, and a new version sits beside the old one. Each stored
+// spec is tagged `_project: {id, name}` and its form_id prefixed with the project key, so two
+// projects never share or overwrite a form.
+// Returns { forms, datasets, config, errors } (datasets and config kept empty for callers that
+// still read them). Throws only if projects are held and none of them could be asked.
+export async function bootstrap(options) {
+  const o = normalise(options);
+  const ctx = config(o);
+  const { store, retry } = ctx;
   const out = { forms: [], datasets: [], config: {}, errors: [] };
 
-  // Projects the person added through the folder chooser, plus (best effort) folders inside the
-  // configured main folder, which under drive.file only lists what this app can see.
-  const projects = await retry(() => drive.listProjects());
-  if (!Array.isArray(projects)) throw new Error('Project list was not a list');
-  if (rootFolderId && drive.listProjectsIn) {
-    try {
-      for (const p of await retry(() => drive.listProjectsIn(rootFolderId))) {
-        if (!projects.some(x => x.id === p.id)) projects.push(p);
-      }
-    } catch (e) { if (isAuth(e)) throw e; /* the chosen projects still work */ }
-  }
-
+  const projects = (await listProjects({ store })).filter(p => !p.revoked);
+  let asked = 0;
+  let unreachable = null;
   for (const project of projects) {
-    let files;
+    let reply;
     try {
-      files = await retry(() => drive.listForms(project.id));
+      reply = await retry(() => projectCall(ctx, project.key, { action: 'forms' }));
+      asked++;
     } catch (e) {
-      out.errors.push({ project: project.name, error: String((e && e.message) || e) });
+      const text = isAccessLost(e) ? 'access withdrawn' : String((e && e.message) || e);
+      out.errors.push({ project: project.name, error: text });
+      if (isTransient(e) || (e && e.exhausted)) unreachable = e;
       continue;
     }
-    for (const file of files) {
-      if (!/\.spec\.json$/i.test(file.name || '')) continue;
+    const specs = Array.isArray(reply.forms) ? reply.forms : [];
+    for (const name of Array.isArray(reply.skipped) ? reply.skipped : []) {
+      out.errors.push({ project: project.name, file: String(name), error: 'not a readable form' });
+    }
+    for (const spec of specs) {
       try {
-        const spec = await retry(() => drive.readSpec(file.id));
-        if (!spec || typeof spec.form_id !== 'string' || !spec.version || !Array.isArray(spec.nodes)) {
-          throw new Error('not a form spec');
-        }
+        if (!spec || typeof spec.form_id !== 'string' || !spec.version || !Array.isArray(spec.nodes)) throw new Error('not a form spec');
         const version = String(spec.version);
-        const have = await store.getForm(spec.form_id, version);
-        if (!have) await store.putForm({ ...spec, version, _project: { id: project.id, name: project.name } });
+        const id = namespacedFormId(project.key, spec.form_id);
+        const have = await store.getForm(id, version);
+        if (!have) {
+          await store.putForm({ ...spec, form_id: id, _form_id: spec.form_id, version, _project: { id: project.key, name: project.name } });
+        }
         out.forms.push({ form_id: spec.form_id, version, project: project.name, downloaded: !have });
       } catch (e) {
-        out.errors.push({ project: project.name, file: file.name, error: String((e && e.message) || e) });
+        out.errors.push({ project: project.name, form_id: spec && spec.form_id, error: String((e && e.message) || e) });
       }
     }
   }
+  if (projects.length && !asked && unreachable) throw unreachable;
   return out;
 }
 
@@ -437,7 +441,7 @@ export function startSync(options = {}) {
         // Upload first: getting the day's work off the phone matters more than new forms.
         const r = await syncOnce(o);
         if (r.retryInMs) delay = r.retryInMs;
-        if ((reconnected || !state.bootstrapped) && !r.authRequired) {
+        if (reconnected || !state.bootstrapped) {
           try { await bootstrap(o); state.bootstrapped = true; } catch { /* next time */ }
         }
       }

@@ -9,7 +9,7 @@
 //     which is what the sync queue is for.
 //   * Data lives in IndexedDB, not here.
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `evac-shell-${VERSION}`;
 
 // Relative to the worker's own location, so the app works under any base path.
@@ -22,6 +22,8 @@ const SHELL = [
   'css/app.css',
   'js/db.js',
   'js/auth.js',
+  'js/projects.js',
+  'config.js',
   'js/sync.js',
   'js/expr.js',
   'js/formengine.js',
@@ -77,6 +79,19 @@ self.addEventListener('fetch', event => {
   const inShell = SHELL.some(p => scoped(p) === key);
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
+    // config.js holds the Apps Script address, which the owner edits after install: network first, so
+    // a new address is picked up at once, and the cached copy only when offline.
+    if (url.pathname.endsWith('/config.js')) {
+      try {
+        const fresh = await network(req);
+        if (fresh.ok) await cache.put(key, fresh.clone());
+        return fresh;
+      } catch (err) {
+        const old = await cache.match(key);
+        if (old) return old;
+        throw err;
+      }
+    }
     if (inShell) {
       const hit = await cache.match(key);
       if (hit) return hit;

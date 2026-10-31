@@ -38,10 +38,13 @@ export class ApiError extends Error {
 export async function appsScriptUrl() {
   let url;
   try { url = (await import('../config.js')).config.appsScriptUrl; } catch { url = undefined; }
-  if (typeof url !== 'string' || !/^https:\/\//i.test(url) || /PASTE/i.test(url)) {
-    throw new ApiError('not_configured', 'The Apps Script URL is not set in config.js', { retry: false });
-  }
+  if (!isUsableUrl(url)) throw new ApiError('not_configured', 'The Apps Script URL is not set in config.js', { retry: false });
   return url;
+}
+
+// True for a real https address, false for the placeholder in config.example.js or nothing at all.
+export function isUsableUrl(url) {
+  return typeof url === 'string' && /^https:\/\//i.test(url) && !/PASTE/i.test(url);
 }
 
 // One POST. Always resolves to the parsed `{ok:true,...}` body or throws ApiError.
@@ -75,22 +78,10 @@ export async function callApi(body, { fetchImpl, url, timeoutMs = 60_000 } = {})
   return reply;
 }
 
-// ---- who is filling forms on this device -----------------------------------------
-
-export async function getWorker({ store = defaultStore } = {}) {
-  const rec = await store.getSessionRecord('worker');
-  return rec && typeof rec.name === 'string' ? rec.name : '';
-}
-export async function setWorker(name, { store = defaultStore } = {}) {
-  const clean = String(name || '').trim().slice(0, 100);
-  if (clean) await store.putSessionRecord({ id: 'worker', name: clean });
-  return clean;
-}
-
 // ---- projects held on this device -------------------------------------------------
 
 const recordId = key => PREFIX + key;
-const publicView = r => ({ key: r.key, name: r.name, revoked: !!r.revoked });
+const publicView = r => ({ key: r.key, name: r.name, person: r.person || '', revoked: !!r.revoked });
 
 // Every project this device holds, in the order they were added.
 export async function listProjects({ store = defaultStore } = {}) {
@@ -109,11 +100,12 @@ export async function setActiveProject(key, { store = defaultStore } = {}) {
   await store.putSessionRecord({ id: 'active', key });
 }
 
-// Types a code and, if the backend accepts it, adds that project. Resolves to
-// { key, name }. Throws ApiError: code 'refused' for a wrong, unknown or switched-off code
+// Types a code and, if the backend accepts it, adds that project. Each code belongs to one
+// person in one project; the backend names both and stamps every row with the person's name, so
+// the phone never claims a name. Resolves to { key, name, person }. Throws ApiError: code 'refused' for a wrong, unknown or switched-off code
 // (nothing stored), or a retryable one (network, busy, too_many_attempts) when it could not
-// be asked. A second code for a different project adds it; the same project again just
-// refreshes its code and token.
+// be asked. A second code for a different project adds it; a code for the same project again
+// refreshes that project's code and token (one person per project per phone).
 export async function openProject(code, { fetchImpl, store = defaultStore, url, now = Date.now } = {}) {
   const typed = String(code || '').trim();
   if (!typed) throw new ApiError('refused', 'Enter the project code', { retry: false });
@@ -125,12 +117,12 @@ export async function openProject(code, { fetchImpl, store = defaultStore, url, 
   const id = recordId(name);
   const prev = await store.getSessionRecord(id);
   await store.putSessionRecord({
-    id, key: name, name, code: typed, token: reply.token,
+    id, key: name, name, person: typeof reply.person === 'string' ? reply.person : '', code: typed, token: reply.token,
     expires_at: reply.expires_at || null, revoked: false,
     added_at: prev && prev.added_at ? prev.added_at : now(),
   });
   await store.putSessionRecord({ id: 'active', key: name });
-  return { key: name, name };
+  return { key: name, name, person: typeof reply.person === 'string' ? reply.person : '' };
 }
 
 // Forget ONE project on this device (or all of them with no key). The queue, drafts, forms
@@ -164,7 +156,7 @@ export async function tokenFor(key, { fetchImpl, store = defaultStore, url, forc
     // Re-read: the person may have signed out while we were waiting.
     const cur = await store.getSessionRecord(id);
     if (!cur) throw new ApiError('no_project', 'This project is not open on this phone', { retry: false });
-    await store.putSessionRecord({ ...cur, token: reply.token, expires_at: reply.expires_at || null, revoked: false });
+    await store.putSessionRecord({ ...cur, person: typeof reply.person === 'string' ? reply.person : cur.person, token: reply.token, expires_at: reply.expires_at || null, revoked: false });
     return reply.token;
   } catch (e) {
     if (e instanceof ApiError && e.code === 'refused') {
