@@ -1,0 +1,9 @@
+{
+  "name": "survey-platform",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test webapp/tests/",
+    "serve": "node tools/serve.js 8008"
+  }
+}
