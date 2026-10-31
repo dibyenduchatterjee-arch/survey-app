@@ -14,7 +14,7 @@
 //   window.__done    = true   (set last; poll this before reading results)
 // Probe mode (?probe=queue) is used by the page-reload test: a fresh document
 // that only reads the queue and posts it to its parent.
-const MODULES = ['./browser_db.js', './browser_sync.js'];
+const MODULES = ['./browser_db.js', './browser_sync.js', './browser_render.js', './browser_console.js'];
 const params = new URLSearchParams(location.search);
 
 if (params.get('probe') === 'queue') {
