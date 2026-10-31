@@ -35,7 +35,8 @@ function makeWorld(over) {
       ['Ravi Kumar', stored('RAVI55555', 'saltRRRR01'), 'bihar amb', 'yes'],
       ['Mohan Das', stored('ODI67890', 'saltBBBB01'), 'Odisha Schools', 'yes'],
       ['Old Pilot', stored('PILOT999', 'saltCCCC01'), 'Bihar AMB', 'no']],
-    sheets: {}, photos: [], fails: [], now: Date.UTC(2026, 9, 31, 10, 0, 0), busy: false, boom: false,
+    sheets: {}, photos: [], fails: [], slept: [], now: Date.UTC(2026, 9, 31, 10, 0, 0), busy: false, boom: false,
+    controlId: 'controlSheetId',
     specs: {
       folderA: [{ name: 'amb_visit.spec.json', text: JSON.stringify(SPEC_A) }, { name: 'notes.txt', text: 'x' }],
       folderB: [{ name: 'school_visit.spec.json', text: JSON.stringify(SPEC_B) }]
@@ -64,7 +65,9 @@ function makeWorld(over) {
     savePhoto: (p, name, mime) => { w.photos.push({ project: p.name, name, mime }); return 'https://drive.example/' + name; },
     withLock: fn => { if (w.busy) { const e = new Error('lock'); e.busy = true; throw e; } return fn(); },
     getFailures: () => w.fails.slice(),
-    addFailure: t => w.fails.push(t)
+    addFailure: t => w.fails.push(t),
+    sleep: ms => w.slept.push(ms),
+    controlSpreadsheetId: w.controlId
   };
   w.call = body => plain(L.dispatch(body, w.deps));
   w.open = code => w.call({ action: 'open', code });
@@ -182,16 +185,41 @@ test('expired, tampered, missing and foreign tokens are all "session"', () => {
   assert.equal(other.call({ action: 'forms', token: tok }).error, 'session');
 });
 
-test('too many wrong codes pause opening, even for the right code, and tell the phone to retry', () => {
+test('wrong codes never lock out a right one: the correct code still opens, and is not delayed', () => {
   const w = makeWorld();
-  for (let i = 0; i < 40; i++) w.open('WRONG' + i);
+  for (let i = 0; i < 200; i++) w.open('WRONG' + i);          // far past the old limit of 40
+  w.slept = [];
   const r = w.open('AMB12345');
-  assert.equal(r.ok, false); assert.equal(r.error, 'too_many_attempts'); assert.equal(r.retry, true);
-  w.now += 11 * 60 * 1000;
+  assert.equal(r.ok, true);
+  assert.ok(r.token);
+  assert.deepEqual(w.slept, []);                              // a code that verifies waits for nothing
+  assert.equal(w.open('').error, 'refused');                  // a blank code is still just refused
   assert.equal(w.open('AMB12345').ok, true);
 });
 
-test('an open session keeps working while opening is paused', () => {
+test('a wrong code is slowed in proportion to recent wrong codes, with a small cap', () => {
+  const w = makeWorld();
+  w.open('NOPE1');
+  assert.deepEqual(w.slept, [250]);
+  w.open('NOPE2');
+  assert.deepEqual(w.slept, [250, 500]);
+  for (let i = 0; i < 300; i++) w.open('NOPE' + i);
+  assert.equal(Math.max(...w.slept), 5000);                   // never long enough to time the execution out
+  assert.equal(L.openPenaltyMs_(0), 0);
+  assert.equal(L.openPenaltyMs_(4), 1000);
+  assert.equal(L.openPenaltyMs_(1e6), 5000);
+});
+
+test('wrong codes older than the window stop counting towards the delay', () => {
+  const w = makeWorld();
+  for (let i = 0; i < 8; i++) w.open('NOPE' + i);
+  w.now += 11 * 60 * 1000;
+  w.slept = [];
+  w.open('NOPE-LATER');
+  assert.deepEqual(w.slept, [250]);
+});
+
+test('an open session keeps working while wrong codes are arriving', () => {
   const w = makeWorld();
   const tok = w.open('AMB12345').token;
   for (let i = 0; i < 40; i++) w.open('WRONG' + i);
@@ -269,7 +297,7 @@ test('a missing Projects or People tab (no rows) refuses everyone', () => {
 });
 
 test('projectProblems flags plain-text codes, missing codes, unknown or duplicate projects', () => {
-  const projects = L.parseProjects([PROJ_HEADER, ['P1', 'f', 's'], ['P1', 'f', 's'], ['P2', '', 's'], ['P3', 'f', 's']]);
+  const projects = L.parseProjects([PROJ_HEADER, ['P1', 'f', 's1'], ['P1', 'f', 's2'], ['P2', '', 's3'], ['P3', 'f', 's4']]);
   const people = L.parsePeople([PEOPLE_HEADER,
     ['Plain', 'letmein', 'P3', 'yes'], ['NoCode', '', 'P3', 'yes'], ['Lost', stored('Z'), 'Nowhere', 'yes'], ['Fine', stored('Z'), 'P3', 'yes'], ['Off', 'letmein', 'P3', 'no']]);
   const msgs = L.projectProblems(projects, people).join('\n');
@@ -636,3 +664,79 @@ test('projectProblems flags a Drive folder shared by two rows', () => {
   const projects = L.parseProjects([PROJ_HEADER, ['One', 'sameFolder', 'ss1'], ['Two', 'sameFolder', 'ss2']]);
   assert.match(L.projectProblems(projects, []).join('\n'), /sameFolder.*2 rows/);
 });
+
+// ---- a project's data spreadsheet must be its own, and never the control Sheet ----------------
+
+test('a row whose data spreadsheet is the control Sheet itself is not usable and is reported', () => {
+  const projects = L.parseProjects([PROJ_HEADER, ['Bihar AMB', 'folderA', 'controlSheetId'], ['Odisha Schools', 'folderB', 'ssB']], 'controlSheetId');
+  assert.equal(projects[0].usable, false);
+  assert.equal(projects[0].isControlSheet, true);
+  assert.equal(projects[1].usable, true);
+  assert.match(L.projectProblems(projects, []).join('\n'), /Projects row 2 \(Bihar AMB\).*control Sheet itself/);
+});
+
+test('a data spreadsheet shared by two rows makes both rows unusable and is reported', () => {
+  const projects = L.parseProjects([PROJ_HEADER, ['One', 'folder1', 'sameBook'], ['Two', 'folder2', 'sameBook'], ['Three', 'folder3', 'ownBook']], 'controlSheetId');
+  assert.deepEqual(plain(projects).map(p => p.usable), [false, false, true]);
+  assert.match(L.projectProblems(projects, []).join('\n'), /data spreadsheet id "sameBook" is used by 2 rows/);
+});
+
+test("nobody can open a project pointed at the control Sheet, or at another project's spreadsheet", () => {
+  const w = makeWorld();
+  w.projects[1][2] = w.controlId;                       // Bihar AMB -> the control Sheet
+  assert.equal(w.open('AMB12345').error, 'refused');
+  assert.equal(w.open('ODI67890').ok, true);            // the other project is untouched
+  w.projects[1][2] = 'ssB';                             // Bihar AMB -> Odisha Schools' spreadsheet
+  assert.equal(w.open('AMB12345').error, 'refused');
+  assert.equal(w.open('ODI67890').error, 'refused');    // the row it collides with is refused too
+  w.projects[1][2] = 'ssA';
+  assert.equal(w.open('AMB12345').ok, true);
+});
+
+test('a token stops working once its project is pointed at the control Sheet', () => {
+  const w = makeWorld();
+  const tok = w.open('AMB12345').token;
+  w.projects[1][2] = w.controlId;
+  assert.equal(w.call({ action: 'forms', token: tok }).error, 'session');
+});
+
+// ---- codes are generated, ten characters, never typed -----------------------------------------
+
+test('generated codes are ten characters from the unambiguous alphabet', () => {
+  assert.equal(L.CODE_LENGTH, 10);
+  const bytes = []; for (let i = 0; i < 64; i++) bytes.push((i * 37 + 11) % 256);
+  const c = L.generateCode(bytes, L.CODE_LENGTH);
+  assert.equal(c.length, 10);
+  assert.match(c, /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$/);
+});
+
+test('onEdit clears a hand-typed code and leaves a note saying codes must be generated', () => {
+  const cells = {};
+  const cell = row => cells[row] || (cells[row] = {
+    value: '', note: '', format: '',
+    getValue() { return this.value; },
+    setValue(v) { this.value = v; return this; },
+    setNote(n) { this.note = n; return this; },
+    clearNote() { this.note = ''; return this; },
+    setNumberFormat(f) { this.format = f; return this; }
+  });
+  const sheet = {
+    getName: () => 'People',
+    getLastColumn: () => 4,
+    getRange(row, col) {
+      if (row === 1) return { getValues: () => [PEOPLE_HEADER] };   // codeColumn_ looks here
+      assert.equal(col, 2);
+      return cell(row);
+    }
+  };
+  cell(2).value = 'Bihar26';                                   // someone typed a memorable code
+  cell(3).value = stored('ABCDEFGHJK');                        // already hashed
+  const range = { getSheet: () => sheet, getRow: () => 2, getLastRow: () => 3, getColumn: () => 2, getLastColumn: () => 2 };
+  L.onEdit({ range });
+  assert.equal(cell(2).value, '');                             // cleared, not hashed
+  assert.match(cell(2).note, /cannot be typed in/);
+  assert.match(cell(2).note, /generate/i);
+  assert.equal(L.isStoredCode(cell(3).value), true);           // a stored hash is left alone
+  assert.equal(cell(3).note, '');
+});
+

@@ -26,8 +26,12 @@ var PEOPLE_HEADERS = ['Person name', 'Access code', 'Project', 'Active'];
 var SESSION_TTL_MS = 6 * 3600 * 1000;          // a working day; the phone simply opens again after that
 var HASH_ROUNDS = 300;
 var FAIL_WINDOW_MS = 10 * 60 * 1000;           // wrong-code attempts are counted over ten minutes
-var FAIL_LIMIT = 40;                           // across ALL phones: there is no per-phone identity in Apps Script
-var FAIL_PAUSE_S = 300;
+// Wrong codes only SLOW the next wrong code down; a code that verifies is never refused or delayed.
+// There is no per-phone identity in Apps Script, so a hard lock-out would lock out the whole field team.
+var FAIL_PENALTY_MS = 250;                     // added per recent wrong code
+var FAIL_PENALTY_MAX_MS = 5000;                // well under the Apps Script execution limit
+
+var CODE_LENGTH = 10;                          // generated codes only; 31^10 is about 8 x 10^14
 
 var MAX_BODY_CHARS = 10 * 1024 * 1024;
 var MAX_TABS = 20;
@@ -45,6 +49,8 @@ var STAMP_COLS = [STAMP_RECEIVED, STAMP_RECEIVED_IST, STAMP_SUBMITTED_BY];
 var RESERVED_TABS = ['projects', 'people'];
 
 var CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';   // no I, L, O, 0, 1: easy to read out and type
+var TYPED_CODE_NOTE = 'Access codes cannot be typed in. This cell was cleared. '
+  + 'Use the menu "Evidence Action survey > Set or change the code for the selected row" to generate one.';
 var PHOTO_TYPES = {
   'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
   'audio/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a'
@@ -158,13 +164,26 @@ function readTable_(values) {
   return out;
 }
 
-/** Projects tab -> [{ rowNumber, name, folderId, spreadsheetId, usable }]. No codes live here. */
-function parseProjects(values) {
-  return readTable_(values).map(function (t) {
-    var p = { rowNumber: t.rowNumber, name: t.get('projectname'), folderId: t.get('drivefolderid'), spreadsheetId: t.get('dataspreadsheetid') };
-    p.usable = !!(p.name && p.folderId && p.spreadsheetId);
-    return p;
+/**
+ * Projects tab -> [{ rowNumber, name, folderId, spreadsheetId, usable }]. No codes live here.
+ * controlSpreadsheetId (optional) is the id of the control Sheet this script is bound to: a row
+ * that points at it would mix beneficiary data in beside the People hashes, so it is not usable.
+ * A spreadsheet id shared by two rows is not usable either, in any of those rows: the two projects
+ * would write into one another's tabs, and uuid de-duplication would run across both.
+ */
+function parseProjects(values, controlSpreadsheetId) {
+  var control = String(controlSpreadsheetId || '').trim();
+  var rows = readTable_(values).map(function (t) {
+    return { rowNumber: t.rowNumber, name: t.get('projectname'), folderId: t.get('drivefolderid'), spreadsheetId: t.get('dataspreadsheetid') };
   });
+  var counts = {};
+  rows.forEach(function (p) { if (p.spreadsheetId) counts[p.spreadsheetId] = (counts[p.spreadsheetId] || 0) + 1; });
+  rows.forEach(function (p) {
+    p.isControlSheet = !!(control && p.spreadsheetId === control);
+    p.sharesSpreadsheet = counts[p.spreadsheetId] > 1;
+    p.usable = !!(p.name && p.folderId && p.spreadsheetId) && !p.isControlSheet && !p.sharesSpreadsheet;
+  });
+  return rows;
 }
 
 /** People tab -> [{ rowNumber, name, stored, projectName, active }]. */
@@ -197,7 +216,11 @@ function projectProblems(projects, people) {
   var msgs = [], names = {};
   projects.forEach(function (p) {
     var label = 'Projects row ' + p.rowNumber + (p.name ? ' (' + p.name + ')' : '');
-    if (!p.usable) msgs.push(label + ': the name, Drive folder id or data spreadsheet id is empty, so nobody can be given this project.');
+    if (!(p.name && p.folderId && p.spreadsheetId)) {
+      msgs.push(label + ': the name, Drive folder id or data spreadsheet id is empty, so nobody can be given this project.');
+    } else if (p.isControlSheet) {
+      msgs.push(label + ': the data spreadsheet id is this control Sheet itself. The control Sheet holds the People and Projects tabs, so beneficiary data must not be written into it. Give the project its own spreadsheet; until then nobody can open it.');
+    }
     var k = p.name.toLowerCase();
     if (k) names[k] = (names[k] || 0) + 1;
   });
@@ -205,6 +228,11 @@ function projectProblems(projects, people) {
   projects.forEach(function (p) { if (p.folderId) folders[p.folderId] = (folders[p.folderId] || 0) + 1; });
   Object.keys(folders).forEach(function (f) {
     if (folders[f] > 1) msgs.push('Projects: the Drive folder id "' + f + '" is used by ' + folders[f] + ' rows. Each project needs its own folder, because the folder is what tells projects apart on the phone.');
+  });
+  var books = {};
+  projects.forEach(function (p) { if (p.spreadsheetId) books[p.spreadsheetId] = (books[p.spreadsheetId] || 0) + 1; });
+  Object.keys(books).forEach(function (s) {
+    if (books[s] > 1) msgs.push('Projects: the data spreadsheet id "' + s + '" is used by ' + books[s] + ' rows. Each project needs its own spreadsheet, because two projects sharing one would write into the same tabs. Nobody on those rows can open anything until this is fixed.');
   });
   Object.keys(names).forEach(function (k) {
     if (names[k] > 1) msgs.push('Projects: the name "' + k + '" appears ' + names[k] + ' times. Names must be unique, so everyone on that project is locked out until fixed.');
@@ -498,20 +526,33 @@ function makeStamps_(now, person) {
 // 2. dispatch - the request flow with every outside effect injected
 // ======================================================================================
 
+/** The Projects tab, with the control Sheet's own id known, so an unusable row stays unusable. */
+function readProjects_(deps) {
+  return parseProjects(deps.readProjectsValues(), deps.controlSpreadsheetId);
+}
+
 function authorise_(body, deps) {
-  return verifyToken_(body.token, parsePeople(deps.readPeopleValues()), parseProjects(deps.readProjectsValues()),
+  return verifyToken_(body.token, parsePeople(deps.readPeopleValues()), readProjects_(deps),
     deps.now(), deps.sha256hex, deps.hmacHex, deps.secret);
+}
+
+/**
+ * How long a WRONG code waits before it is told so. Recent wrong codes make the next wrong code
+ * slower; the ceiling keeps an Apps Script execution well inside its time limit. A right code
+ * never waits, however high the count, so one person's typing cannot shut the team out.
+ */
+function openPenaltyMs_(recentFailures) {
+  var ms = Math.max(0, recentFailures) * FAIL_PENALTY_MS;
+  return ms > FAIL_PENALTY_MAX_MS ? FAIL_PENALTY_MAX_MS : ms;
 }
 
 function doOpen_(body, deps) {
   var now = deps.now();
-  var fails = pruneFailures_(deps.getFailures ? deps.getFailures() : [], now);
-  if (fails.length >= FAIL_LIMIT) {
-    return fail_('too_many_attempts', 'Too many wrong codes just now. Wait a few minutes and try again.', true, FAIL_PAUSE_S);
-  }
-  var hit = findPerson(parsePeople(deps.readPeopleValues()), parseProjects(deps.readProjectsValues()), body.code, deps.sha256hex, deps.tagOf);
+  var hit = findPerson(parsePeople(deps.readPeopleValues()), readProjects_(deps), body.code, deps.sha256hex, deps.tagOf);
   if (!hit) {
+    var fails = pruneFailures_(deps.getFailures ? deps.getFailures() : [], now);
     if (deps.addFailure) deps.addFailure(now);
+    if (deps.sleep) deps.sleep(openPenaltyMs_(fails.length + 1));
     return refused_();
   }
   return {
@@ -663,6 +704,7 @@ function realDeps_() {
   return {
     now: function () { return Date.now(); },
     readProjectsValues: function () { return tabValues_(PROJECTS_TAB); },
+    controlSpreadsheetId: SpreadsheetApp.getActive().getId(),
     readPeopleValues: function () { return tabValues_(PEOPLE_TAB); },
     tagOf: lookupTag_,
     sha256hex: sha256hex_,
@@ -729,6 +771,9 @@ function realDeps_() {
       var list = pruneFailures_(this.getFailures(), t);
       list.push(t);
       cache.put('open_fails', JSON.stringify(list.slice(-200)), 900);
+    },
+    sleep: function (ms) {
+      if (ms > 0) Utilities.sleep(ms > FAIL_PENALTY_MAX_MS ? FAIL_PENALTY_MAX_MS : ms);
     }
   };
 }
@@ -793,8 +838,10 @@ function codeColumn_(sh) {
 }
 
 /**
- * Safety net: a code typed straight into the People tab's Access code column is replaced by its
- * hash at once. Prefer the menu helper: Sheets version history keeps what was typed before this ran.
+ * Safety net: codes are GENERATED ONLY. Anything typed by hand into the People tab's Access code
+ * column is cleared at once, with a note saying why - a hand-picked code is short and memorable,
+ * which is exactly what makes it guessable. Sheets version history still keeps what was typed,
+ * so a code that reached this cell should be considered burnt.
  */
 function onEdit(e) {
   try {
@@ -805,13 +852,12 @@ function onEdit(e) {
     for (var row = Math.max(r.getRow(), 2); row <= r.getLastRow(); row++) {
       var cell = sh.getRange(row, col), v = cell.getValue();
       if (v === '' || v === null || isStoredCode(v)) continue;
-      if (codeProblem(v)) { cell.setNote(codeProblem(v) + ' Retype a longer code.'); continue; }
-      cell.setNumberFormat('@').setValue(storeCode_(String(v))).clearNote();
+      cell.setNumberFormat('@').setValue('').setNote(TYPED_CODE_NOTE);
     }
   } catch (err) { console.error(String(err)); }
 }
 
-/** Menu: set or change the code of the person on the selected People row. Empty box = a generated code, shown once. */
+/** Menu: give the person on the selected People row a freshly generated code, shown once. */
 function setCodeForSelectedRow() {
   var ui = SpreadsheetApp.getUi();
   var sh = SpreadsheetApp.getActiveSheet();
@@ -820,16 +866,14 @@ function setCodeForSelectedRow() {
   var col = codeColumn_(sh);
   if (!col) { ui.alert('The People tab has no "Access code" column.'); return; }
   var who = String(sh.getRange(row, 1).getValue() || 'row ' + row);
-  var ans = ui.prompt('New access code for ' + who, 'Leave empty to have a strong code made for you (recommended). Or type one of at least 6 letters or digits.', ui.ButtonSet.OK_CANCEL);
-  if (ans.getSelectedButton() !== ui.Button.OK) return;
-  var typed = ans.getResponseText().trim(), shown = '';
-  if (!typed) { typed = generateCode(randomBytes_(64), 8); shown = typed; }
-  var problem = codeProblem(typed);
-  if (problem) { ui.alert(problem); return; }
-  sh.getRange(row, col).setNumberFormat('@').setValue(storeCode_(typed));
-  ui.alert(shown
-    ? 'The new code for ' + who + ' is:\n\n' + shown + '\n\nWrite it down now and give it to them. It cannot be shown again. Their old code stops working.'
-    : 'The code for ' + who + ' has been changed. Their old code stops working.');
+  var ans = ui.alert('New access code for ' + who,
+    'A strong code of ' + CODE_LENGTH + ' characters will be made and shown to you once. Codes cannot be chosen by hand.\n\n'
+    + 'Any code ' + who + ' has now stops working. Continue?', ui.ButtonSet.OK_CANCEL);
+  if (ans !== ui.Button.OK) return;
+  var code = generateCode(randomBytes_(64), CODE_LENGTH);
+  sh.getRange(row, col).setNumberFormat('@').setValue(storeCode_(code)).clearNote();
+  ui.alert('The new code for ' + who + ' is:\n\n' + code
+    + '\n\nWrite it down now and give it to them. It cannot be shown again. Their old code stops working.');
 }
 
 /** Menu: tells the owner, in plain words, what is wrong with the two tabs. */
@@ -838,7 +882,7 @@ function checkProjects() {
   if (!SpreadsheetApp.getActive().getSheetByName(PROJECTS_TAB) || !SpreadsheetApp.getActive().getSheetByName(PEOPLE_TAB)) {
     ui.alert('The Projects or People tab is missing. Run "Set up the Projects and People tabs".'); return;
   }
-  var projects = parseProjects(tabValues_(PROJECTS_TAB));
+  var projects = parseProjects(tabValues_(PROJECTS_TAB), SpreadsheetApp.getActive().getId());
   var people = parsePeople(tabValues_(PEOPLE_TAB));
   var problems = projectProblems(projects, people);
   var live = people.filter(function (p) { return p.active && isStoredCode(p.stored) && resolveProject_(projects, p.projectName); }).length;

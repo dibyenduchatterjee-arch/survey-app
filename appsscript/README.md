@@ -131,7 +131,7 @@ New file: `Backend.gs`. Paste it beside `Code.gs` (new file named `Backend`). It
    |---|---|---|
    - *Drive folder id*: open the project's Drive folder; the id is the last part of the address (`.../folders/<this part>`). The `*.spec.json` form files and a `photos` folder live here.
    - *Each project needs its own Drive folder.* The phone tells projects apart by a code derived from the folder, not by the name, so two projects may share a name but never a folder (the Check menu reports it). Pointing a project at a different folder later makes phones treat it as a new project.
-   - *Data spreadsheet id*: open the project's data Google Sheet; the id is the long part between `/d/` and `/edit`. It can be this same Sheet.
+   - *Data spreadsheet id*: open the project's **own** data Google Sheet; the id is the long part between `/d/` and `/edit`. It must **not** be this control Sheet (the one holding Projects and People), and no two projects may share one spreadsheet. The script marks such a row unusable and the Check menu names it: a project pointed at the control Sheet would put beneficiary data beside the code hashes, and two projects on one spreadsheet would write into each other's tabs.
    - Project names must be **unique**.
 4. **People tab - one row per person:**
 
@@ -140,14 +140,14 @@ New file: `Backend.gs`. Paste it beside `Code.gs` (new file named `Backend`). It
    - *Person name*: how their rows will be labelled in the data (`_submitted_by`).
    - *Project*: the project name **exactly as on the Projects tab**.
    - *Active*: `yes` or `no`. `no` (or empty) stops that person **at once**, even on a phone already signed in.
-   - *Access code*: **do not type it here.** Click the person's row, then menu **Evidence Action survey -> Set or change the code for the selected row**, and **leave the box empty**. A strong code is made and shown **once**. Write it down and give it to that person. The cell then shows a long scrambled text starting `sha256$`; that is correct.
+   - *Access code*: **do not type it here.** Click the person's row, then menu **Evidence Action survey -> Set or change the code for the selected row**, and confirm. A strong 10-character code is made and shown **once**. Write it down and give it to that person. The cell then shows a long scrambled text starting `sha256$`; that is correct.
 5. **Check.** Menu **Evidence Action survey -> Check the Projects and People tabs**. **You should see:** "No problems found" and how many people can open a project.
 6. **Deploy.** **Deploy -> New deployment -> gear -> Web app.** Description `Survey API`. **Execute as: Me.** **Who has access: Anyone** (this lets workers without Google accounts in; they still need a valid code). **Deploy**. If asked: **Authorize access** -> your account -> *Google hasn't verified this app* -> **Advanced** -> **Go to ... (unsafe)** -> **Allow**. The script needs your Sheets and Drive because it works on your behalf.
    **If "Anyone" is not offered**, your organisation's administrator has blocked it and this design cannot work for people without Google accounts. Stop and tell the project team.
 7. **Copy the Web app URL** (ends in `/exec`) for whoever sets up the phone app. In a browser it should show "This page is not available"; that is correct.
 8. **Later code changes:** Deploy -> Manage deployments -> pencil -> Version **New version** -> Deploy. The URL stays the same.
 
-**Codes: generated, not chosen.** A short, memorable code (`BIHAR2026`) is what makes someone willing to try guessing, and the codes are stored with a fast hash (Apps Script offers nothing slower). Let the menu make them (8 characters, no look-alike letters). **Never type a real code into a cell:** Google Sheets **version history keeps what was typed**, readable by anyone with edit access, even after the cell is scrambled. If you did, change that person's code from the menu.
+**Codes: generated, not chosen.** A short, memorable code (`BIHAR2026`) is what makes someone willing to try guessing, and the codes are stored with a fast hash (Apps Script offers nothing slower). The menu is the only way to make one (10 characters, no look-alike letters); a code cannot be chosen by hand. **A code typed into a cell is cleared, with a note saying why** - and it should be treated as burnt, because Google Sheets **version history keeps what was typed**, readable by anyone with edit access. If that happened, generate a fresh code for that person from the menu.
 
 **Revoke or change access:** one person - set Active to `no`, or give a new code. Everyone on a project - switch off those rows. Takes effect on the phone's next request. To end every session at once, delete the `TOKEN_SECRET` script property (Project Settings).
 
@@ -157,10 +157,10 @@ New file: `Backend.gs`. Paste it beside `Code.gs` (new file named `Backend`). It
 |---|---|
 | Phone says the code is not accepted | The same message appears for a wrong code, a switched-off person and an unknown person, on purpose. Check Active is `yes`, the Project name matches exactly, both ids are filled, and the code is the one you issued. Run *Check the Projects and People tabs*. |
 | Code is refused though it is right | Two active people may share one code (refused deliberately), or a project name appears twice. Run the check. |
-| "Too many wrong codes" | Wait 5 minutes. After 40 wrong tries across all phones, signing in pauses; people already signed in carry on. |
+| Signing in feels slow after several wrong codes | Expected. Each wrong code makes the **next wrong code** wait a little longer (a few seconds at most). A right code is never delayed and never refused, however many wrong ones came before it, so one person mistyping cannot keep the team out. |
 | Phone says "busy" or "server problem" | Nothing is lost; the phone keeps the record and tries again. If it lasts hours you may have hit Google's daily limit; try next day. |
 | Authorization required again | Repeat the authorise step of 6. |
-| A code shows as plain text | Use the menu to set it again so it is scrambled. |
+| A code cell went empty with a note on it | Someone typed a code by hand; the script cleared it. Use the menu to generate a code for that row. |
 
 ## हिंदी - फ़ोन बैकएंड (Web App API) - एक बार का सेटअप (लगभग 20 मिनट)
 
@@ -172,19 +172,19 @@ New file: `Backend.gs`. Paste it beside `Code.gs` (new file named `Backend`). It
 
 1. **पेस्ट कीजिए।** Extensions -> Apps Script में **+** -> **Script**, नाम `Backend`, `appsscript/Backend.gs` का पूरा लिखा पेस्ट कीजिए, Ctrl+S। `Code.gs` नई वाली से और `appsscript.json` हमारी फ़ाइल से बदलिए (पहले Project Settings में *Show "appsscript.json" manifest file* टिक कीजिए)। **दिखना चाहिए:** तीन फ़ाइलें - Code, Backend, Page।
 2. **`setupProjects` चलाइए।** फ़ंक्शन की सूची में `setupProjects` चुनिए, **Run** दबाइए। Google अनुमति माँगेगा (चरण 6)। **दिखना चाहिए:** दो नए टैब, **Projects** और **People**, हर एक में शीर्षक और एक उदाहरण पंक्ति। Sheet दोबारा खोलने पर **Evidence Action survey** मेन्यू भी दिखेगा।
-3. **Projects टैब - हर प्रोजेक्ट की एक पंक्ति:** *Project name*; *Drive folder id* (प्रोजेक्ट के Drive फ़ोल्डर के पते का आख़िरी हिस्सा, `.../folders/<यह हिस्सा>`; फ़ॉर्म की `*.spec.json` फ़ाइलें और `photos` फ़ोल्डर यहीं रहते हैं); *Data spreadsheet id* (डेटा Sheet के पते में `/d/` और `/edit` के बीच का लंबा हिस्सा; यही Sheet भी हो सकती है)। प्रोजेक्ट के नाम **अलग-अलग** होने चाहिए।
+3. **Projects टैब - हर प्रोजेक्ट की एक पंक्ति:** *Project name*; *Drive folder id* (प्रोजेक्ट के Drive फ़ोल्डर के पते का आख़िरी हिस्सा, `.../folders/<यह हिस्सा>`; फ़ॉर्म की `*.spec.json` फ़ाइलें और `photos` फ़ोल्डर यहीं रहते हैं); *Data spreadsheet id* (उस प्रोजेक्ट की **अपनी अलग** डेटा Sheet के पते में `/d/` और `/edit` के बीच का लंबा हिस्सा; **यही कंट्रोल Sheet नहीं चलेगी**, और दो प्रोजेक्ट एक ही Sheet साझा नहीं कर सकते — ऐसी पंक्ति को स्क्रिप्ट मना कर देती है और जाँच मेन्यू उसका नाम बता देता है)। प्रोजेक्ट के नाम **अलग-अलग** होने चाहिए।
 4. **People टैब - हर व्यक्ति की एक पंक्ति:**
    - *Person name*: डेटा में उनकी पंक्तियों पर यही नाम लगेगा (`_submitted_by`)।
    - *Project*: प्रोजेक्ट का नाम, **ठीक वैसा जैसा Projects टैब में है**।
    - *Active*: `yes` या `no`। `no` (या खाली) करते ही वह व्यक्ति **तुरंत** रुक जाता है, पहले से साइन-इन फ़ोन पर भी।
-   - *Access code*: **यहाँ टाइप मत कीजिए।** व्यक्ति की पंक्ति पर क्लिक कीजिए, फिर मेन्यू **Evidence Action survey -> Set or change the code for the selected row** चुनिए और **बॉक्स खाली छोड़िए**। मज़बूत कोड बनेगा और **एक ही बार** दिखेगा। उसे लिखकर उस व्यक्ति को दीजिए। सेल में `sha256$` से शुरू होने वाला लंबा गड़बड़ पाठ दिखेगा; यही सही है।
+   - *Access code*: **यहाँ टाइप मत कीजिए।** व्यक्ति की पंक्ति पर क्लिक कीजिए, फिर मेन्यू **Evidence Action survey -> Set or change the code for the selected row** चुनिए और पुष्टि कीजिए। 10 अक्षरों का मज़बूत कोड बनेगा और **एक ही बार** दिखेगा। उसे लिखकर उस व्यक्ति को दीजिए। सेल में `sha256$` से शुरू होने वाला लंबा गड़बड़ पाठ दिखेगा; यही सही है।
 5. **जाँचिए।** मेन्यू **Evidence Action survey -> Check the Projects and People tabs**। **दिखना चाहिए:** "No problems found" और कितने लोग प्रोजेक्ट खोल सकते हैं।
 6. **Deploy कीजिए।** **Deploy -> New deployment -> गियर -> Web app।** Description `Survey API`। **Execute as: Me।** **Who has access: Anyone** (इससे बिना Google अकाउंट वाले वर्कर आ पाते हैं; फिर भी सही कोड चाहिए)। **Deploy**। माँगे तो: **Authorize access** -> अपना अकाउंट -> *Google hasn't verified this app* -> **Advanced** -> **Go to ... (unsafe)** -> **Allow**। स्क्रिप्ट आपकी Sheets और Drive इसलिए माँगती है कि वह आपके नाम से चलती है।
    **अगर "Anyone" का विकल्प नहीं दिखता**, तो आपके संगठन के एडमिन ने उसे रोका है और यह तरीका बिना Google अकाउंट वाले लोगों के लिए नहीं चलेगा। रुकिए और प्रोजेक्ट टीम को बताइए।
 7. **Web app URL** (अंत में `/exec`) फ़ोन ऐप सेट करने वाले को दीजिए। ब्राउज़र में "This page is not available" दिखे तो ठीक है।
 8. **बाद में कोड बदलें तो:** Deploy -> Manage deployments -> पेंसिल -> Version **New version** -> Deploy। URL वही रहता है।
 
-**कोड चुनिए नहीं, बनवाइए।** छोटा, याद रखने लायक कोड (`BIHAR2026`) ही अंदाज़ा लगाने की कोशिश को आसान बनाता है, और कोड एक तेज़ हैश में रखे जाते हैं। मेन्यू से कोड बनवाइए (8 अक्षर, मिलते-जुलते अक्षर नहीं)। **असली कोड कभी सेल में टाइप मत कीजिए:** Google Sheets की **version history** टाइप किया हुआ पाठ रख लेती है, और एडिट-अधिकार वाला हर व्यक्ति उसे पढ़ सकता है, सेल गड़बड़ पाठ बन जाने के बाद भी। ऐसा हो गया हो तो मेन्यू से उस व्यक्ति का कोड बदल दीजिए।
+**कोड चुनिए नहीं, बनवाइए।** छोटा, याद रखने लायक कोड (`BIHAR2026`) ही अंदाज़ा लगाने की कोशिश को आसान बनाता है, और कोड एक तेज़ हैश में रखे जाते हैं। कोड सिर्फ़ मेन्यू से ही बनता है (10 अक्षर, मिलते-जुलते अक्षर नहीं); अपने मन से कोड चुना नहीं जा सकता। **सेल में टाइप किया कोड स्क्रिप्ट मिटा देती है** और वहाँ कारण का नोट लगा देती है — उस कोड को जला हुआ ही मानिए, क्योंकि Google Sheets की **version history** टाइप किया हुआ पाठ रख लेती है और एडिट-अधिकार वाला हर व्यक्ति उसे पढ़ सकता है। ऐसा हो गया हो तो मेन्यू से उस व्यक्ति का नया कोड बनवाइए।
 
 **पहुँच बंद या बदलना:** एक व्यक्ति - Active `no` कीजिए या नया कोड दीजिए। पूरे प्रोजेक्ट को - उसकी सारी पंक्तियाँ बंद कीजिए। फ़ोन के अगले अनुरोध से असर होता है। सारे सेशन एक साथ ख़त्म करने हों तो Project Settings में `TOKEN_SECRET` प्रॉपर्टी मिटा दीजिए।
 
@@ -192,10 +192,10 @@ New file: `Backend.gs`. Paste it beside `Code.gs` (new file named `Backend`). It
 
 - *फ़ोन कहे कि कोड मंज़ूर नहीं:* ग़लत कोड, बंद किए गए व्यक्ति और अनजान व्यक्ति के लिए जानबूझकर एक ही संदेश आता है। Active `yes` है? Project का नाम ठीक मिलता है? दोनों id भरे हैं? कोड वही है जो दिया था? *Check the Projects and People tabs* चलाइए।
 - *सही कोड फिर भी रद्द:* दो सक्रिय लोगों का कोड एक ही हो सकता है (जानबूझकर रद्द होता है), या कोई प्रोजेक्ट नाम दो बार है। जाँच चलाइए।
-- *"Too many wrong codes":* 5 मिनट रुकिए। सब फ़ोन मिलाकर 40 ग़लत कोशिशों के बाद साइन-इन रुकता है; पहले से साइन-इन लोग चलते रहते हैं।
+- *कई ग़लत कोड के बाद साइन-इन धीमा लगे:* यह ठीक है। हर ग़लत कोड के बाद **अगला ग़लत कोड** थोड़ा और इंतज़ार करता है (ज़्यादा से ज़्यादा कुछ सेकंड)। सही कोड न कभी रुकता है, न रद्द होता है — चाहे पहले कितने भी ग़लत कोड आए हों।
 - *"busy" या "server problem":* कुछ खोया नहीं; फ़ोन रिकॉर्ड रखकर दोबारा कोशिश करता है। घंटों चले तो Google की रोज़ की सीमा आ गई होगी; अगले दिन देखिए।
 - *फिर "Authorization required":* चरण 6 की अनुमति दोहराइए।
-- *कोड सादे पाठ में दिखे:* मेन्यू से कोड दोबारा सेट कीजिए।
+- *कोड वाला ख़ाना ख़ाली हो गया और उस पर नोट लगा है:* किसी ने हाथ से कोड टाइप किया था, स्क्रिप्ट ने उसे मिटा दिया। मेन्यू से नया कोड बनाइए।
 
 ## Backend tests
 

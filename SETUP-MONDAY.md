@@ -11,10 +11,12 @@ your own Google account. Allow about 20 minutes.
 
 1. In your Drive folder **Survey CTO Type APK**, create a new **Google Sheet**.
    Name it something like `Survey Platform — Control`.
-2. Open it. This one sheet holds your project list, your team's access codes, and
-   (later) the collected data.
+2. Open it. This is the **control Sheet**: it holds your project list and your team's
+   access codes. The collected data does **not** go here — each project gets its own,
+   separate data spreadsheet in Step 4.
 
-**हिंदी:** अपने ड्राइव फ़ोल्डर में एक नई Google Sheet बनाइए और उसे खोलिए।
+**हिंदी:** अपने ड्राइव फ़ोल्डर में एक नई Google Sheet बनाइए और उसे खोलिए। यही **कंट्रोल शीट**
+है — इसमें प्रोजेक्ट की सूची और टीम के कोड रहेंगे, डेटा नहीं। हर प्रोजेक्ट का डेटा अलग शीट में जाएगा।
 
 ---
 
@@ -60,11 +62,24 @@ In the **Projects** tab, one row per project:
 
 - **Drive folder id** — create a folder for that project inside your main folder, open it,
   and copy the long code from the address bar after `/folders/`.
-- **Data spreadsheet id** — you can use this same Sheet. Its id is the long code in its own
-  address, between `/d/` and `/edit`.
+- **Data spreadsheet id** — create a **new, separate Google Sheet** for that project's data,
+  open it, and copy the long code in its address, between `/d/` and `/edit`.
+
+Each project needs **its own** folder and **its own** data spreadsheet:
+
+- Do **not** put the control Sheet's own id here. The script refuses that row — the control
+  Sheet holds the access codes, and collected data must not sit beside them.
+- Do **not** give two projects the same data spreadsheet. The script refuses **both** rows,
+  because the two projects would write into each other's tabs.
+
+If you get it wrong, nothing breaks silently: the menu item **Check the Projects and People
+tabs** says exactly which row is at fault, and nobody on that row can open anything until it
+is fixed.
 
 **हिंदी:** हर प्रोजेक्ट के लिए एक पंक्ति। फ़ोल्डर का id पते में `/folders/` के बाद वाला
-लंबा कोड है।
+लंबा कोड है। हर प्रोजेक्ट का **अपना अलग** फ़ोल्डर और **अपनी अलग** डेटा शीट होनी चाहिए।
+कंट्रोल शीट का id यहाँ मत डालिए, और दो प्रोजेक्ट को एक ही शीट मत दीजिए — स्क्रिप्ट ऐसी पंक्ति
+को मना कर देती है। **Check the Projects and People tabs** चलाकर देख लीजिए कि कोई गड़बड़ तो नहीं।
 
 ---
 
@@ -76,15 +91,21 @@ In the **People** tab, one row per person:
 |---|---|---|---|
 | Sunita Devi | *(generated)* | Anemia Mukt Bihar | yes |
 
-Use the Sheet's **Survey Platform** menu → **Set a person's code** to generate one. Do not
-invent short codes yourself — a generated code is much harder to guess.
+Click the person's row, then use the Sheet's menu **Evidence Action survey** → **Set or
+change the code for the selected row**. A strong 10-character code is generated and shown to
+you once — write it down then and there and give it to that person; it cannot be shown again.
+
+You cannot choose a code yourself, and there is nothing to type in: a code you could remember
+is a code someone else could guess. If anything is typed straight into the **Code** column, the
+script clears that cell and leaves a note saying to use the menu.
 
 Each person gets **their own code**. That is how you know who collected which row, and how
 you remove one person without disturbing anyone else: set their **Active** to `no`, and they
 lose access immediately.
 
-**हिंदी:** हर व्यक्ति का अपना कोड। किसी को हटाना हो तो उसका **Active** `no` कर दीजिए —
-बाक़ी सब पर कोई असर नहीं पड़ेगा।
+**हिंदी:** हर व्यक्ति का अपना कोड। कोड मेन्यू से ही बनता है — 10 अक्षरों का कोड एक बार दिखेगा,
+उसी समय लिख लीजिए। अपने मन से कोड टाइप नहीं कर सकते; टाइप किया हुआ कोड स्क्रिप्ट मिटा देती है।
+किसी को हटाना हो तो उसका **Active** `no` कर दीजिए — बाक़ी सब पर कोई असर नहीं पड़ेगा।
 
 ---
 
