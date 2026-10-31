@@ -23,6 +23,51 @@ export class DriveError extends Error {
   }
 }
 
+// Plain wording for the first-run screen and the Picker title.
+export const FIRST_RUN_TEXT =
+  'Tap "Add a project", then choose the folder your supervisor shared with you. ' +
+  'The app can open only that folder and nothing else in your Google Drive.';
+export const PICKER_TITLE = 'Choose the folder your supervisor shared with you';
+
+function loadScript(src, ready) {
+  return new Promise((resolve, reject) => {
+    if (ready()) { resolve(); return; }
+    if (typeof document === 'undefined') { reject(new DriveError('The folder chooser needs a browser.')); return; }
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new DriveError('Could not reach Google. Check the connection and try again.', { retryable: true }));
+    document.head.appendChild(s);
+  });
+}
+
+// Google Picker, folder view. Needs config.js: googleApiKey (a browser key restricted to this
+// site and the Picker API; it cannot read or write anyone's data) and googleAppId (the Cloud
+// project number). Granting a folder through the Picker is what gives drive.file access to it.
+async function defaultPickFolder(token) {
+  let cfg;
+  try { cfg = (await import('../config.js')).config; }
+  catch (e) { throw new DriveError('webapp/config.js is missing.', { cause: e }); }
+  await loadScript('https://apis.google.com/js/api.js', () => !!(globalThis.gapi && globalThis.gapi.load));
+  await new Promise(r => globalThis.gapi.load('picker', r));
+  const g = globalThis.google.picker;
+  return new Promise(resolve => {
+    const view = new g.DocsView(g.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes(FOLDER);
+    new g.PickerBuilder()
+      .addView(view)
+      .setTitle(PICKER_TITLE)
+      .setOAuthToken(token)
+      .setDeveloperKey(cfg.googleApiKey)
+      .setAppId(cfg.googleAppId)
+      .setCallback(d => {
+        if (d.action === g.Action.PICKED && d.docs && d.docs[0]) resolve({ id: d.docs[0].id, name: d.docs[0].name });
+        else if (d.action === g.Action.CANCEL) resolve(null);
+      })
+      .build()
+      .setVisible(true);
+  });
+}
+
 // Escape for a Drive `q` string literal.
 const qs = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const enc = encodeURIComponent;
@@ -34,6 +79,8 @@ export function createDrive({
   maxRetries = 5,
   baseDelayMs = 500,
   maxDelayMs = 30000,
+  store,
+  pickFolder,
   jitter = () => 0.5 + Math.random() * 0.5, // 0.5x..1x, so 76 clients do not retry in lockstep
 } = {}) {
   const doFetch = (...a) => (fetchImpl || globalThis.fetch).apply(globalThis, a);
@@ -69,11 +116,11 @@ export function createDrive({
 
   const json = (url, method, obj) => request(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) });
 
-  async function listAll(q, fields) {
+  async function listAll(q, fields, orderBy = 'name') {
     const out = [];
     let pageToken;
     do {
-      const p = new URLSearchParams({ q, fields: `nextPageToken, files(${fields})`, pageSize: '1000', orderBy: 'name' });
+      const p = new URLSearchParams({ q, fields: `nextPageToken, files(${fields})`, pageSize: '1000', orderBy });
       if (pageToken) p.set('pageToken', pageToken);
       const r = await request(`${DRIVE}/files?${p}`);
       out.push(...(r.files || []));
@@ -82,8 +129,41 @@ export function createDrive({
     return out;
   }
 
-  const listProjects = rootFolderId =>
+  // Folders inside a main folder. Under drive.file this only works for folders the app itself
+  // can see (e.g. the owner's own); teammates use addProject() (Picker) instead.
+  const listProjectsIn = rootFolderId =>
     listAll(`'${qs(rootFolderId)}' in parents and mimeType = '${FOLDER}' and trashed = false`, 'id,name');
+
+  // ---- projects the person has pointed the app at (Picker), kept in the session record ----
+  const getStore = async () => store || (await import('./db.js'));
+  async function readProjects() {
+    const s = await getStore();
+    let rec; try { rec = await s.getSession(); } catch { rec = undefined; }
+    return (rec && Array.isArray(rec.projects)) ? rec.projects : [];
+  }
+  async function writeProjects(projects) {
+    const s = await getStore();
+    let rec; try { rec = (await s.getSession()) || {}; } catch { rec = {}; }
+    await s.putSession({ ...rec, projects });
+  }
+
+  // The projects this person has added. Shown automatically from then on.
+  const listProjects = () => readProjects();
+
+  // "Add a project": opens the Picker on folders, remembers the choice. Returns {id,name},
+  // or null if the person closed the Picker. Throws on failure (never silent).
+  async function addProject() {
+    const token = await getToken();
+    const picked = await (pickFolder || defaultPickFolder)(token);
+    if (!picked) return null;
+    const list = await readProjects();
+    if (!list.some(p => p.id === picked.id)) await writeProjects([...list, { id: picked.id, name: picked.name }]);
+    return { id: picked.id, name: picked.name };
+  }
+
+  async function removeProject(id) {
+    await writeProjects((await readProjects()).filter(p => p.id !== id));
+  }
 
   async function listForms(projectFolderId) {
     const files = await listAll(`'${qs(projectFolderId)}' in parents and trashed = false`, 'id,name,modifiedTime');
@@ -108,10 +188,14 @@ export function createDrive({
   }
 
   async function findOrCreateSpreadsheet(projectFolderId, name) {
-    const found = await listAll(`'${qs(projectFolderId)}' in parents and name = '${qs(name)}' and mimeType = '${SHEET_MIME}' and trashed = false`, 'id,name');
+    // Oldest first, so every phone that finds more than one agrees on the same sheet.
+    const find = () => listAll(`'${qs(projectFolderId)}' in parents and name = '${qs(name)}' and mimeType = '${SHEET_MIME}' and trashed = false`, 'id,name,createdTime', 'createdTime');
+    const found = await find();
     if (found.length) return found[0].id;
     const r = await json(`${DRIVE}/files?fields=id&supportsAllDrives=true`, 'POST', { name, mimeType: SHEET_MIME, parents: [projectFolderId] });
-    return r.id;
+    // Race check: if another phone created one at the same moment, prefer the oldest.
+    const after = await find();
+    return after.length ? after[0].id : r.id;
   }
 
   async function ensureTab(spreadsheetId, tabName, headerRow) {
@@ -139,13 +223,16 @@ export function createDrive({
     return json(`${SHEETS}/${enc(spreadsheetId)}/values/${enc(tabName)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, 'POST', { values: [row] });
   }
 
-  return { listProjects, listForms, readSpec, uploadMedia, findOrCreateSpreadsheet, ensureTab, appendRow };
+  return { listProjects, listProjectsIn, addProject, removeProject, listForms, readSpec, uploadMedia, findOrCreateSpreadsheet, ensureTab, appendRow };
 }
 
 // Default instance: real fetch, token from googleauth.js. Built lazily.
 let shared;
 const inst = () => (shared ||= createDrive({ getToken: async () => (await import('./googleauth.js')).getAccessToken() }));
-export const listProjects = a => inst().listProjects(a);
+export const listProjects = () => inst().listProjects();
+export const listProjectsIn = a => inst().listProjectsIn(a);
+export const addProject = () => inst().addProject();
+export const removeProject = a => inst().removeProject(a);
 export const listForms = a => inst().listForms(a);
 export const readSpec = a => inst().readSpec(a);
 export const uploadMedia = (...a) => inst().uploadMedia(...a);

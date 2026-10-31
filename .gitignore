@@ -34,3 +34,6 @@ Thumbs.db
 
 # SDD scratch workspace (ledger, briefs, review packages)
 .superpowers/
+
+# local config (client id, picker key) - never commit
+webapp/config.js
