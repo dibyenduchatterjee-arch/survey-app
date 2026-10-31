@@ -9,6 +9,9 @@
 // retried with the new access token. The old token is never deleted or
 // overwritten until the replacement is safely on disk. See `renewAccess`.
 //
+// Refreshing is also serialised ACROSS tabs (navigator.locks) and always decided on a
+// freshly re-read session, so two tabs cannot present one refresh token twice.
+//
 // A second rule: nothing in this file ever touches the upload queue. Logging out
 // or being forced to log in again must never cost an enumerator her unsent work.
 //
@@ -72,17 +75,36 @@ export async function logout({ fetchImpl = defaultFetch(), store = defaultStore 
   await store.clearSession();
 }
 
+// Cross-tab exclusion. Every tab has its own flights map and sync loop, but the
+// server revokes the whole chain if a refresh token is presented twice, so only one
+// tab at a time may refresh. navigator.locks is shared by all tabs of the origin;
+// where it is missing (Node, very old browsers) a module-level queue stands in.
+let fallbackChain = Promise.resolve();
+function withRefreshLock(fn) {
+  const locks = globalThis.navigator && globalThis.navigator.locks;
+  if (locks && locks.request) return locks.request('evac-refresh', fn);
+  const p = fallbackChain.then(fn, fn);
+  fallbackChain = p.catch(() => {});
+  return p;
+}
+
+const usable = s => (s && !s.needs_login && s.access_token ? s.access_token : null);
+
 // Resolves to a usable access token, or null when none can be had (and the caller
 // should hand back the original 401). Throws only if the new tokens could not be
 // persisted: the caller must then stop, not carry on with tokens it cannot keep.
+//
+// Inside the lock the session is RE-READ every time it matters. Whatever another
+// tab has stored in the meantime wins over what this call remembers: a stale copy
+// must never be used to refresh, and never be written back.
 function renewAccess(fetchImpl, store, usedToken) {
   const running = flights.get(store);
   if (running) return running;
-  const p = (async () => {
+  const p = withRefreshLock(async () => {
     const session = await store.getSession();
     if (!session || session.needs_login || !session.refresh_token) return null;
-    // Another call refreshed while this request was in flight: just use that token.
-    if (session.access_token !== usedToken) return session.access_token;
+    // Another tab (or call) already rotated while we waited: use what it stored.
+    if (session.access_token !== usedToken) return usable(session);
 
     let res;
     try {
@@ -94,31 +116,38 @@ function renewAccess(fetchImpl, store, usedToken) {
     } catch {
       return null; // offline: nothing was spent as far as we know; try again later
     }
-    if (res.status === 401 || res.status === 403) {
-      // The server says this refresh token is dead: only a fresh login helps.
-      await store.putSession({ ...session, needs_login: true });
-      return null;
-    }
+
+    // The stored session as it is NOW, not as it was before the request.
+    const flagIfStillCurrent = async () => {
+      const now = await store.getSession();
+      if (now && now.refresh_token === session.refresh_token) {
+        await store.putSession({ ...now, needs_login: true });
+        return null;
+      }
+      return usable(now); // someone stored newer tokens: they win
+    };
+
+    if (res.status === 401 || res.status === 403) return flagIfStillCurrent();
     if (!res.ok) return null; // 5xx, 429...: transient, session untouched
 
     const pair = await readJson(res);
     if (!pair || !pair.access_token || !pair.refresh_token) {
       // The server accepted and rotated, but we cannot read what it gave us. The old
       // token is now spent; replaying it would revoke the chain. Ask for a login.
-      await store.putSession({ ...session, needs_login: true });
-      return null;
+      return flagIfStillCurrent();
     }
 
-    // The user may have logged out while the request was in flight; do not resurrect them.
+    // The user may have logged out, or another tab stored newer tokens, while the
+    // request was in flight; do not resurrect or overwrite.
     const now = await store.getSession();
-    if (!now || now.refresh_token !== session.refresh_token) return null;
+    if (!now || now.refresh_token !== session.refresh_token) return usable(now);
 
     // PERSIST FIRST. Only when this write has committed is the old token treated as
     // spent, and only then is the new access token used. If it throws, the old
     // session is still exactly as it was and the error reaches the caller.
-    await store.putSession({ ...session, access_token: pair.access_token, refresh_token: pair.refresh_token, needs_login: false });
+    await store.putSession({ ...now, access_token: pair.access_token, refresh_token: pair.refresh_token, needs_login: false });
     return pair.access_token;
-  })().finally(() => { flights.delete(store); });
+  }).finally(() => { flights.delete(store); });
   flights.set(store, p);
   return p;
 }
