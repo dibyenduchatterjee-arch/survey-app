@@ -25,8 +25,10 @@ def as_(user_factory):
 
 
 @pytest.fixture
-def sup(as_):
-    return as_("supervisor")
+def sup(as_, db, join_project):
+    u, h = as_("supervisor")
+    join_project(db, u)  # a supervisor's new form goes to their one project
+    return u, h
 
 
 def _upload(client, headers, name="amb_asha_visit.xlsx"):

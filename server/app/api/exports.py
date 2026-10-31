@@ -16,10 +16,12 @@ account and streams the bytes to the authenticated caller, so a login plus our r
 only way in. The Drive id and url stay in the job status as information, never as the access path:
 a Drive link would depend on Drive sharing, which this app does not control.
 
-DOWNLOAD IS GATED BY US, NOT BY DRIVE. The route fetches the file from Drive with the service
-account and streams the bytes to the authenticated caller, so a login plus our role check is the
-only way in. The Drive id and url stay in the job status as information, never as the access path:
-a Drive link would depend on Drive sharing, which this app does not control.
+BEFORE GOOGLE IS CONFIGURED the export still works. With neither GOOGLE_SERVICE_ACCOUNT_FILE nor
+DRIVE_FOLDER_ID set, a job only validates and counts (status done, no Drive id) and the download
+route builds the main CSV from the current data and serves it directly, under the same login and
+role checks, with the same UTF-8 BOM. Setting just one of the two is a half-finished setup and is
+still a loud 503 naming the missing setting. Nothing is written to disk: the CSV is built on
+request, so a download holds the data as it is when you click, not when the job ran.
 
 The CSV files are uploaded exactly as `build_csvs` produced them (UTF-8 with BOM); only the Sheet
 rows are decoded from them.
@@ -35,7 +37,7 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -66,9 +68,13 @@ def _unavailable(e: ExportConfigError) -> HTTPException:
     return HTTPException(status_code=503, detail=str(e))
 
 
-def get_drive_uploader() -> DriveUploader:
+def get_drive_uploader() -> DriveUploader | None:
+    """None when Drive is not configured at all: exports are then served by this server."""
+    settings = get_settings()
+    if not settings.google_service_account_file and not settings.drive_folder_id:
+        return None
     try:
-        return DriveUploader(build_google_client(get_settings(), "drive"))
+        return DriveUploader(build_google_client(settings, "drive"))
     except ExportConfigError as e:
         raise _unavailable(e) from None
 
@@ -148,12 +154,32 @@ def _error_text(e: BaseException) -> str:
     return redact(text)[:2000]
 
 
+def _load_export_data(db: Session, form_pk: int) -> tuple[Form, FormVersion, list[Submission]]:
+    form = db.get(Form, form_pk)
+    version = db.scalars(
+        select(FormVersion)
+        .where(FormVersion.form_id == form.id)
+        .order_by(FormVersion.is_current.desc(), FormVersion.id.desc())
+    ).first()
+    if version is None:
+        raise GoogleError("This form has no uploaded version, so there is nothing to export")
+    subs = list(
+        db.scalars(
+            select(Submission)
+            .join(FormVersion, Submission.form_version_id == FormVersion.id)
+            .where(FormVersion.form_id == form.id)
+            .order_by(Submission.id)
+        )
+    )
+    return form, version, subs
+
+
 def run_export(
     job_id: int,
     session_factory: SessionFactory,
-    uploader: DriveUploader,
+    uploader: DriveUploader | None,
     sheets: SheetWriter | None,
-    folder_id: str,
+    folder_id: str | None,
     sheet_id: str | None,
 ) -> None:
     """Background task. Never raises: every outcome is written onto the job row."""
@@ -164,39 +190,27 @@ def run_export(
         job.status = "running"
         db.commit()
         try:
-            form = db.get(Form, job.form_id)
-            version = db.scalars(
-                select(FormVersion)
-                .where(FormVersion.form_id == form.id)
-                .order_by(FormVersion.is_current.desc(), FormVersion.id.desc())
-            ).first()
-            if version is None:
-                raise GoogleError("This form has no uploaded version, so there is nothing to export")
-            subs = list(
-                db.scalars(
-                    select(Submission)
-                    .join(FormVersion, Submission.form_version_id == FormVersion.id)
-                    .where(FormVersion.form_id == form.id)
-                    .order_by(Submission.id)
-                )
-            )
-            files = build_csvs(version.json_spec, subs)
-            media_zip = build_media_zip(subs)
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            form, version, subs = _load_export_data(db, job.form_id)
+            if uploader is not None:
+                files = build_csvs(version.json_spec, subs)
+                media_zip = build_media_zip(subs)
+                stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
-            main_name = next(iter(files))  # build_csvs puts the main file first
-            for name, data in files.items():
-                mime = "text/plain" if name.endswith(".txt") else "text/csv"
-                file_id = uploader.upload(folder_id, _stamped(name, form.form_id, stamp), data, mime)
-                if name == main_name:
-                    job.drive_file_id = file_id
-                    db.commit()  # keep the id even if a later step fails
-            if zipfile.ZipFile(io.BytesIO(media_zip)).namelist():
-                uploader.upload(folder_id, f"{form.form_id}_media_{stamp}.zip", media_zip, "application/zip")
+                main_name = next(iter(files))  # build_csvs puts the main file first
+                for name, data in files.items():
+                    mime = "text/plain" if name.endswith(".txt") else "text/csv"
+                    file_id = uploader.upload(folder_id, _stamped(name, form.form_id, stamp), data, mime)
+                    if name == main_name:
+                        job.drive_file_id = file_id
+                        db.commit()  # keep the id even if a later step fails
+                if zipfile.ZipFile(io.BytesIO(media_zip)).namelist():
+                    uploader.upload(folder_id, f"{form.form_id}_media_{stamp}.zip", media_zip, "application/zip")
 
-            if sheets is not None and sheet_id:
-                sheets.replace(sheet_id, form.form_id, _sheet_rows(files[main_name]))
-                job.sheet_id = sheet_id
+                if sheets is not None and sheet_id:
+                    sheets.replace(sheet_id, form.form_id, _sheet_rows(files[main_name]))
+                    job.sheet_id = sheet_id
+            else:
+                build_csvs(version.json_spec, subs)  # fail now, not at download, if it cannot be built
             job.row_count = len(subs)
             job.status = "done"
             job.error = None
@@ -219,13 +233,13 @@ def start_export(
     request: Request,
     background: BackgroundTasks,
     user: User = Depends(_staff),
-    uploader: DriveUploader = Depends(get_drive_uploader),
+    uploader: DriveUploader | None = Depends(get_drive_uploader),
     sheets: SheetWriter | None = Depends(get_sheet_writer),
     session_factory: SessionFactory = Depends(get_job_session),
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> JobStarted:
-    if not settings.drive_folder_id:
+    if uploader is not None and not settings.drive_folder_id:
         raise HTTPException(status_code=503, detail="DRIVE_FOLDER_ID is not set: exports need a Drive folder")
     form = db.scalars(select(Form).where(Form.form_id == body.form_id)).first()
     if form is None or not staff_can_see_form(db, user, form.id):  # same 404 either way
@@ -260,19 +274,32 @@ def get_export(job_id: int, user: User = Depends(_staff), db: Session = Depends(
 def download_export(
     job_id: int,
     user: User = Depends(_staff),
-    uploader: DriveUploader = Depends(get_drive_uploader),
+    uploader: DriveUploader | None = Depends(get_drive_uploader),
     db: Session = Depends(get_session),
 ) -> Response:
-    """Stream the main CSV, byte for byte (the BOM is what makes Devanagari open in Excel)."""
+    """The main CSV, byte for byte (the BOM is what makes Devanagari open in Excel).
+
+    From Drive when the job put it there, otherwise built here from the current data.
+    """
     job, form_key = _load(db, user, job_id)
-    if job.status != "done" or not job.drive_file_id:
+    if job.status != "done":
         detail = job.error if job.status == "failed" and job.error else f"Export is {job.status}, not done"
         raise HTTPException(status_code=409, detail=detail)
-    try:
-        data = uploader.download(job.drive_file_id)
-    except GoogleError as e:
-        raise HTTPException(status_code=502, detail=_error_text(e)) from None
-    stamp = job.requested_at.strftime("%Y%m%dT%H%M%SZ")
+    if job.drive_file_id:
+        if uploader is None:
+            raise HTTPException(status_code=503, detail="This export is in Drive, and Drive is no longer configured")
+        try:
+            data = uploader.download(job.drive_file_id)
+        except GoogleError as e:
+            raise HTTPException(status_code=502, detail=_error_text(e)) from None
+    else:
+        try:
+            _, version, subs = _load_export_data(db, job.form_id)
+            data = next(iter(build_csvs(version.json_spec, subs).values()))
+        except Exception as e:  # noqa: BLE001 - say why, never a bare 500
+            raise HTTPException(status_code=500, detail=_error_text(e)) from None
+    requested = job.requested_at if job.requested_at.tzinfo else job.requested_at.replace(tzinfo=UTC)
+    stamp = requested.strftime("%Y%m%dT%H%M%SZ")
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", form_key)  # a header value, never raw text
     return Response(
         content=data,

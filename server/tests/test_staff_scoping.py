@@ -187,7 +187,10 @@ def test_a_supervisor_cannot_overwrite_another_projects_form_by_uploading_the_sa
     r = c.post("/api/forms", files={"file": ("f.xlsx", data, XLSX)}, headers=_h(world["a"]["sup"]))
     assert r.status_code == 404
     assert db.query(FormVersion).join(Form).filter(Form.form_id == "amb_asha_visit").count() == 0
-    assert c.post("/api/forms", files={"file": ("f.xlsx", data, XLSX)}, headers=_h(admin)).status_code == 201
+    assert c.post(
+        "/api/forms", files={"file": ("f.xlsx", data, XLSX)}, data={"project_id": world["b"]["project"].id},
+        headers=_h(admin),
+    ).status_code == 201
 
 
 def test_assignments_list_hides_other_projects_forms_from_supervisors(world, db):
@@ -265,14 +268,3 @@ def test_a_supervisors_new_form_lands_where_they_can_see_it(world, db):
     assert c.post("/api/forms", files={"file": ("f.xlsx", data, XLSX)}, headers=_h(sup)).status_code == 201
     assert db.query(Form).filter_by(form_id="amb_asha_visit").one().project_id == world["a"]["project"].id
     assert "amb_asha_visit" not in [f["form_id"] for f in c.get("/api/forms", headers=_h(world["b"]["sup"])).json()]
-
-
-def test_a_supervisor_with_no_project_gets_a_private_one_not_the_default(world, db, user_factory):
-    data = (Path(__file__).parent / "fixtures" / "amb_asha_visit.xlsx").read_bytes()
-    c = world["client"]
-    loner = user_factory(username="loner", role="supervisor")
-    assert c.post("/api/forms", files={"file": ("f.xlsx", data, XLSX)}, headers=_h(loner)).status_code == 201
-    form = db.query(Form).filter_by(form_id="amb_asha_visit").one()
-    assert db.get(Project, form.project_id).name != "Default project"
-    assert [f["form_id"] for f in c.get("/api/forms", headers=_h(loner)).json()] == []  # unpublished
-    assert c.get(f"/api/forms/amb_asha_visit/versions/{form.versions[0].version}/spec", headers=_h(loner)).status_code in (200, 404)

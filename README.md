@@ -87,48 +87,21 @@ the last line of the message; it names the setting.
 
 ## 2. Create the first admin
 
-There is no sign-up page: the first admin has to be made once from the computer. Save
-the following as `make_admin.py` in the project folder (next to `README.md`):
-
-```python
-# Creates the first administrator. Run once, after `alembic upgrade head`.
-import getpass
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent / "server"))
-
-from sqlalchemy import select  # noqa: E402
-
-from app.api.admin import check_password_policy  # noqa: E402
-from app.core.security import hash_password  # noqa: E402
-from app.db.models import User  # noqa: E402
-from app.db.session import SessionLocal  # noqa: E402
-
-username = input("Username for the first admin: ").strip()
-full_name = input("Full name: ").strip()
-password = getpass.getpass("Password (at least 10 characters; typing is hidden): ")
-if password != getpass.getpass("Type the password again: "):
-    sys.exit("The two passwords differ. Nothing was created.")
-check_password_policy(password)  # refuses weak passwords, says why
-
-with SessionLocal() as db:
-    if db.scalar(select(User.id).where(User.username == username)) is not None:
-        sys.exit("That username already exists. Nothing was created.")
-    db.add(User(username=username, password_hash=hash_password(password),
-                role="admin", full_name=full_name, phone=None, is_active=True))
-    db.commit()
-print("Admin created. You can now sign in to the console.")
-```
-
-Run it:
+There is no sign-up page: the first admin is made once, from the computer, with a command.
+Run it after `alembic upgrade head`, from the project folder (or from any folder; it finds
+the database and `.env` by itself):
 
 ```powershell
-.\.venv\Scripts\python.exe make_admin.py
+.\.venv\Scripts\python.exe tools\create_admin.py create-admin --username YOURNAME --full-name "Your Name"
 ```
 
-(This script was run against a scratch database while writing this guide and created a
-working admin who could log in. After that, other users are made in the console.)
+The same command from the `server` folder: `..\.venv\Scripts\python.exe -m app.cli create-admin --username YOURNAME`.
+
+It asks for the password twice, with typing hidden. The password is never given on the command
+line (it would stay in your shell history), and it must pass the same rules as the console:
+at least 10 characters, nothing obvious. If the username already exists it says so and
+changes nothing. `--full-name` is optional and defaults to the username. After that, sign in
+to the console and make the other users there.
 
 ## 3. Start the server
 
@@ -139,17 +112,16 @@ cd server
 
 Check `http://localhost:8000/health`: it should say `{"status":"ok"}`.
 
-The server serves only the API. To see the app and the console you also need something to
-serve the files in `webapp/` **from the same address** (the app calls `/api/...` with no
-domain). For a quick look on your own computer:
+The server serves the API **and the browser app itself**: the enumerator app at
+`http://localhost:8000/` and the console at `http://localhost:8000/console/`. The app calls
+`/api/...` with no domain, so the app and the API must share one address, and this is how
+they do. There is one thing to deploy and one address to put behind TLS (section 6). The
+app is **not** to be hosted separately (for example on Cloudflare Pages): its `/api/` calls
+would go to the wrong place.
 
-```powershell
-node tools\serve.js 8008
-```
-
-then open `http://localhost:8008/webapp/`. This is the **test** file server only. It
-does not forward `/api/`, so the app will load but cannot log in this way. For a working
-local copy, or for the real service, use the Caddy setup in section 6.
+Only the `webapp/` folder is served. Nothing else in the repository (`.env`, `server/`, the
+database, `.git`) is reachable, and `/api/` and `/openrosa/` always take precedence over any
+file. `tools/serve.js` remains as a test file server for the browser tests only.
 
 ## 4. Run the tests
 
@@ -446,13 +418,13 @@ cd ..
 
 ### 2. पहला एडमिन बनाना
 
-ऊपर अंग्रेज़ी हिस्से में दिया गया `make_admin.py` प्रोजेक्ट फ़ोल्डर में सेव कीजिए, फिर:
+प्रोजेक्ट फ़ोल्डर में यह कमांड चलाइए:
 
 ```powershell
-.\.venv\Scripts\python.exe make_admin.py
+.\.venv\Scripts\python.exe tools\create_admin.py create-admin --username आपका_यूज़रनेम --full-name "आपका नाम"
 ```
 
-यूज़रनेम, नाम और पासवर्ड पूछेगा (पासवर्ड कम से कम 10 अक्षर का; टाइप करते समय दिखेगा नहीं)।
+पासवर्ड दो बार पूछेगा (पासवर्ड कम से कम 10 अक्षर का; टाइप करते समय दिखेगा नहीं)।
 
 ### 3. सर्वर चलाना
 

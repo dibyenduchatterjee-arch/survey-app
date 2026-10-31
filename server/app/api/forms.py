@@ -15,13 +15,16 @@ import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
+from fastapi import Form as FormField
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.core import audit
-from app.core.access import granted_to, has_form_grant, staff_can_see_form, staff_form_filter
+from app.core.access import (
+    granted_to, has_form_grant, staff_can_see_form, staff_can_see_project, staff_form_filter,
+)
 from app.core.config import Settings, get_settings
 from app.core.rbac import current_user, require_role
 from app.db.models import Dataset, Form, FormVersion, Project, ProjectMember, User
@@ -100,25 +103,38 @@ def _title_of(spec: dict, fallback: str) -> str:
     return (titles[0] if titles else fallback)[:255]
 
 
-def _project_for_new_form(db: Session, user: User) -> int:
-    """Where a supervisor's brand-new form goes: the earliest project they belong to, else a
-    project of their own. Never the default project, which they could not see into."""
-    mine = db.scalar(
-        select(ProjectMember.project_id).where(ProjectMember.user_id == user.id).order_by(ProjectMember.id)
+def _project_for_new_form(db: Session, user: User, project_id: int | None) -> int:
+    """The project a brand-new form goes into. Never guessed.
+
+    Named explicitly, it must be one the caller may see (else the same 404 as a missing project).
+    Left out, a supervisor in exactly one project gets that one; a supervisor in none or several, and
+    an admin always, are refused with the projects to choose from. Project membership grants access
+    to the form's data, so a wrong guess would show the data to the wrong people.
+    """
+    if project_id is not None:
+        if db.get(Project, project_id) is None or not staff_can_see_project(db, user, project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        return project_id
+    query = select(Project.id, Project.name).order_by(Project.id)
+    if user.role != "admin":
+        query = query.where(Project.id.in_(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)))
+    choices = [{"id": i, "name": n} for i, n in db.execute(query).all()]
+    if user.role == "supervisor" and len(choices) == 1:
+        return choices[0]["id"]
+    if not choices:
+        message = "You are not a member of any project; ask an admin to add you to one before uploading a form."
+    else:
+        message = "Say which project this form belongs to (project_id)."
+    raise HTTPException(
+        status_code=422, detail={"error": "project_required", "message": message, "projects": choices}
     )
-    if mine is not None:
-        return mine
-    own = Project(name=f"Unfiled forms - {user.username}")
-    db.add(own)
-    db.flush()
-    db.add(ProjectMember(project_id=own.id, user_id=user.id))
-    return own.id
 
 
 @router.post("/forms", response_model=UploadResult, status_code=201)
 def upload_form(
     request: Request,
     file: UploadFile = File(...),
+    project_id: int | None = FormField(default=None),
     user: User = Depends(_manager),
     db: Session = Depends(get_session),
 ) -> UploadResult:
@@ -164,11 +180,20 @@ def upload_form(
         version = _next_version(db, form, today)
         spec["version"] = version
         if form is None:
-            form = Form(form_id=form_key, title=_title_of(spec, form_key), created_by=user.id)
-            if user.role == "supervisor":  # they must be able to see what they just created
-                form.project_id = _project_for_new_form(db, user)
+            form = Form(
+                form_id=form_key, title=_title_of(spec, form_key), created_by=user.id,
+                project_id=_project_for_new_form(db, user, project_id),
+            )
             db.add(form)
         else:
+            if project_id is not None and project_id != form.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "project_mismatch",
+                        "message": "This form already belongs to a project; move it from the project screen instead.",
+                    },
+                )
             form.title = _title_of(spec, form.title)
         db.add(
             FormVersion(

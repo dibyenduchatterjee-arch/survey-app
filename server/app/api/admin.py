@@ -186,11 +186,25 @@ def _revoke_all_refresh_tokens(db: Session, user_id: int) -> int:
     return result.rowcount or 0
 
 
-@router.get("/users", response_model=list[UserOut])
+class UserBrief(BaseModel):
+    """What a supervisor needs to pick someone to add to a project, and nothing more."""
+
+    id: int
+    username: str
+    full_name: str
+    role: str
+
+
+@router.get("/users", response_model=list[UserOut] | list[UserBrief])
 def list_users(
-    _: User = Depends(_admin), db: Session = Depends(get_session)
-) -> list[UserOut]:
-    return [_user_out(u) for u in db.scalars(select(User).order_by(User.id))]
+    user: User = Depends(_admin_or_supervisor), db: Session = Depends(get_session)
+) -> list[UserOut] | list[UserBrief]:
+    """Admin: the full records. Supervisor: id, username, full name and role only, so they can
+    choose members for their projects. Creating, changing and deactivating stay admin-only."""
+    users = db.scalars(select(User).order_by(User.id))
+    if user.role == "admin":
+        return [_user_out(u) for u in users]
+    return [UserBrief(id=u.id, username=u.username, full_name=u.full_name, role=u.role) for u in users]
 
 
 @router.post("/users", response_model=UserOut, status_code=201)

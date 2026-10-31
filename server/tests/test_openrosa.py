@@ -33,8 +33,9 @@ def media_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def form(client, db, user_factory, media_root):
+def form(client, db, user_factory, media_root, join_project):
     sup = user_factory(username="sup", role="supervisor", password=PW)
+    join_project(db, sup)
     hdr = {"Authorization": f"Bearer {create_access_token(sup.id, sup.role)}"}
     data = (FIX / "amb_asha_visit.xlsx").read_bytes()
     r = client.post("/api/forms", files={"file": ("f.xlsx", data, XLSX)}, headers=hdr)

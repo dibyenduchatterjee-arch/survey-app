@@ -85,6 +85,9 @@ def test_the_whole_path_from_admin_to_drive(client, db, tmp_path, monkeypatch):
     enumerator_id = next(u["id"] for u in client.get("/api/users", headers=admin).json()
                          if u["username"] == "enum1")
     sup, enum = login(client, "sup1"), login(client, "enum1")
+    project_id = client.post("/api/projects", headers=admin, json={"name": "AMB"}).json()["id"]
+    sup_id = next(u["id"] for u in client.get("/api/users", headers=admin).json() if u["username"] == "sup1")
+    assert client.post(f"/api/projects/{project_id}/members", headers=admin, json={"user_id": sup_id}).status_code == 201
 
     # -- 3. the supervisor uploads and publishes the real XLSForm ----------------------------
     r = client.post("/api/forms", headers=sup,

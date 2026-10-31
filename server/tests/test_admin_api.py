@@ -109,7 +109,8 @@ def test_unknown_fields_are_rejected(client, adm):
 def test_a_non_admin_cannot_manage_users(client, as_, role):
     u, h = as_(role)
     assert _new_user(client, h).status_code == 403
-    assert client.get("/api/users", headers=h).status_code == 403
+    # A supervisor may READ a slim user list (to pick project members); see test_supervisor_user_list_and_moves.
+    assert client.get("/api/users", headers=h).status_code == (200 if role == "supervisor" else 403)
     assert client.patch(f"/api/users/{u.id}", json={"full_name": "x"}, headers=h).status_code == 403
     assert client.get("/api/audit", headers=h).status_code == 403
     body = {"user_id": 1, "form_id": "f"}

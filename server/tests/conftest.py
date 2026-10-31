@@ -69,3 +69,23 @@ def user_factory(db):
         return user
 
     return make
+
+
+@pytest.fixture
+def join_project():
+    """Put a user in a project (made on first use), as the admin API would. Returns the project."""
+    from sqlalchemy import select
+
+    from app.db.models import Project, ProjectMember
+
+    def join(db, user, name="Programme"):
+        p = db.scalar(select(Project).where(Project.name == name))
+        if p is None:
+            p = Project(name=name)
+            db.add(p)
+            db.flush()
+        db.add(ProjectMember(project_id=p.id, user_id=user.id))
+        db.commit()
+        return p
+
+    return join

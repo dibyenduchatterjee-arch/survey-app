@@ -22,13 +22,14 @@ def _hdr(u):
 
 
 @pytest.fixture
-def stored(client, db, user_factory, tmp_path, monkeypatch):
+def stored(client, db, user_factory, tmp_path, monkeypatch, join_project):
     from app.core.config import get_settings
 
     root = tmp_path / "m"
     root.mkdir()
     monkeypatch.setattr(get_settings(), "media_root", root)
     sup = user_factory(username="sup", role="supervisor")
+    join_project(db, sup)
     data = (FIX / "amb_asha_visit.xlsx").read_bytes()
     body = client.post("/api/forms", files={"file": ("f.xlsx", data, XLSX)}, headers=_hdr(sup)).json()
     client.post(f"/api/forms/{body['form_id']}/publish", json={"version": body["version"]}, headers=_hdr(sup))
