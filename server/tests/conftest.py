@@ -19,3 +19,16 @@ from app.main import app  # noqa: E402
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture
+def db():
+    """An empty in-memory SQLite database with every table created."""
+    from app.db.models import Base
+    from app.db.session import SessionLocal, make_engine
+
+    engine = make_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with SessionLocal(bind=engine) as session:
+        yield session
+    engine.dispose()
