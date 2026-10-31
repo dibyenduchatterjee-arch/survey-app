@@ -15,6 +15,7 @@
 // Probe mode (?probe=queue) is used by the page-reload test: a fresh document
 // that only reads the queue and posts it to its parent.
 const MODULES = ['./browser_db.js', './browser_sync.js', './browser_render.js', './browser_console.js'];
+const TEST_TIMEOUT_MS = 30000;   // slowest honest test is about 11 s
 const params = new URLSearchParams(location.search);
 
 if (params.get('probe') === 'queue') {
@@ -41,23 +42,25 @@ if (params.get('probe') === 'queue') {
       try {
         // A test that hangs is a failure, not a stall: the run must always reach __done.
         let timer;
-        await Promise.race([
-          mod[name](),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out after 90s')), 90000); }),
-        ]);
-        clearTimeout(timer);
+        try {
+          await Promise.race([
+            Promise.resolve().then(() => mod[name]()),   // a synchronous throw is caught too
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out after ' + TEST_TIMEOUT_MS / 1000 + 's')), TEST_TIMEOUT_MS); }),
+          ]);
+        } finally { clearTimeout(timer); }
         window.__results.push({ module, name, ok: true, error: null, ms: Math.round(performance.now() - t0) });
       } catch (e) {
         window.__results.push({ module, name, ok: false, error: String((e && e.message) || e), ms: Math.round(performance.now() - t0) });
       }
     }
   }
+  try {
   const passed = window.__results.filter(r => r.ok).length;
   window.__summary = { total: window.__results.length, passed, failed: window.__results.length - passed };
   document.getElementById('out').textContent =
     window.__results.map(r => (r.ok ? 'PASS ' : 'FAIL ') + r.name + (r.ok ? '' : '  -> ' + r.error)).join('\n') +
     '\n\n' + JSON.stringify(window.__summary);
-  window.__done = true;
+  } finally { window.__done = true; }
 }
 </script>
 </body>
