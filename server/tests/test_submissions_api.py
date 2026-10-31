@@ -620,7 +620,7 @@ def test_an_all_blank_configured_key_matches_nothing(db, form, enum, monkeypatch
 
 def test_duplicates_are_only_looked_for_within_the_same_form(db, form, enum):
     a = _store(db, form, enum)
-    other = Form(form_id="other", title="o", created_by=enum.id)
+    other = Form(form_id="other", title="o", created_by=enum.id, project_id=db.get(Form, form["fv"].form_id).project_id)
     other_fv = FormVersion(
         form=other, version="2026103101", xlsform_blob=b"", xform_xml="",
         json_spec=form["fv"].json_spec, published_by=enum.id, published_at=datetime.now(UTC),
@@ -923,3 +923,36 @@ def test_an_implausible_device_clock_is_flagged_for_the_supervisor(client, db, f
     r = post(client, enum, payload(form, finished_at="2001-01-01T00:05:00Z")[1])
     assert r.status_code == 201 and r.json()["status"] == "flagged"
     assert any(f["rule"] == "error" and "device clock" in (f["message"] or "") for f in _failures_of(db))
+
+
+# ---- repeat-row cap (review finding I-1) -------------------------------------------------
+
+
+def test_a_huge_repeat_is_refused_quickly_and_nothing_is_stored(client, db, form, enum, media_root):
+    import time
+
+    rows = [CHILD] * 9_000  # 8,000 rows took 5.5 s of validation before the cap existed
+    _, files = payload(form, repeats={"children": rows})
+    started = time.monotonic()
+    r = post(client, enum, files)
+    assert time.monotonic() - started < 3
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "too_many_repeat_rows"
+    assert r.json()["detail"]["retain_on_device"] is True
+    assert "2000" in r.json()["detail"]["message"]
+    assert _count(db, Submission) == 0 and _count(db, RepeatRow) == 0
+
+
+def test_the_repeat_row_cap_is_a_setting_and_counts_every_repeat_together(db, form, enum, monkeypatch):
+    monkeypatch.setattr(get_settings(), "max_repeat_rows", 3)
+    assert _store(db, form, enum, repeats={"children": [CHILD] * 3}).status in ("received", "flagged")
+    with pytest.raises(IntakeRefused) as exc:
+        _store(db, form, enum, repeats={"children": [CHILD] * 2, "other": [{}] * 2})
+    assert exc.value.status_code == 422 and exc.value.code == "too_many_repeat_rows"
+
+
+def test_nested_repeat_rows_count_towards_the_cap(db, form, enum, monkeypatch):
+    monkeypatch.setattr(get_settings(), "max_repeat_rows", 4)
+    nested = {**CHILD, "ifa_doses": [{"dose_date": "2026-10-01"}] * 3}
+    with pytest.raises(IntakeRefused) as exc:
+        _store(db, form, enum, repeats={"children": [nested, nested]})  # 2 + 6 rows
+    assert exc.value.code == "too_many_repeat_rows"

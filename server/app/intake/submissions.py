@@ -43,7 +43,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import audit
-from app.core.access import has_form_grant
+from app.core.access import has_form_grant, staff_can_see_form
 from app.core.config import get_settings
 from app.core.crypto import encrypt_bytes
 from app.db.models import Form, FormVersion, MediaFile, RepeatRow, Submission, User
@@ -79,7 +79,7 @@ class IntakeRefused(Exception):
     # (`retain_on_device` is always True) and surface it; `code` says why. A client must
     # never delete a submission because of a refusal. Codes: bad_uuid, account_inactive,
     # not_assigned, form_version_unknown, uuid_in_use, file_too_large, media_slot_unknown,
-    # file_type_mismatch.
+    # file_type_mismatch, too_many_repeat_rows.
     retain_on_device = True
 
     def __init__(self, status_code: int, code: str, detail: str):
@@ -214,6 +214,19 @@ def _repeat_names(spec: dict) -> set[str]:
     return {n["name"] for n in walk_nodes(spec["nodes"]) if n["type"] == "repeat"}
 
 
+def _count_repeat_rows(repeats: dict) -> int:
+    """Every row in every repeat, nested repeats included (iterative: depth is client-chosen)."""
+    total, stack = 0, [repeats]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            total += sum(1 for r in item if isinstance(r, dict))
+            stack.extend(r for r in item if isinstance(r, (dict, list)))
+    return total
+
+
 def _normalise(value: Any) -> Any:
     """A select_multiple list becomes the canonical space-separated string, at any depth."""
     if isinstance(value, dict):
@@ -311,7 +324,7 @@ def resolve_form_version(
 
     An enumerator is told 403 not_assigned for a form that does not exist and for one they
     are not assigned, so form ids cannot be probed; staff get 404 form_version_unknown for
-    a form or version that does not exist. A version that exists but is not (or no longer)
+    a form or version that does not exist OR that is outside their projects (`staff_can_see_form`). A version that exists but is not (or no longer)
     published IS returned: the visit happened, store_submission flags it. If `uuid` is
     one this user already submitted, its own form version is returned so a replay still
     reaches store_submission and gets its original receipt even after an assignment change.
@@ -324,11 +337,11 @@ def resolve_form_version(
         if prior is not None and prior.submitted_by == user.id:
             return db.get(FormVersion, prior.form_version_id)
     form = db.scalar(select(Form).where(Form.form_id == form_id))
-    if user.role == "enumerator" and (
-        form is None
-        or not has_form_grant(db, user.id, form.id)
-    ):
-        raise IntakeRefused(403, "not_assigned", "Forbidden")  # unknown and unassigned look the same
+    if user.role == "enumerator":
+        if form is None or not has_form_grant(db, user.id, form.id):
+            raise IntakeRefused(403, "not_assigned", "Forbidden")  # unknown and unassigned look the same
+    elif form is not None and not staff_can_see_form(db, user, form.id):
+        form = None  # staff outside the form's project: indistinguishable from a missing form
     fv = (
         db.scalar(select(FormVersion).where(FormVersion.form_id == form.id, FormVersion.version == version))
         if form is not None
@@ -469,8 +482,18 @@ def store_submission(
         return _attach_new_media(db, existing, user, media, request), False
     if user.role == "enumerator" and not has_form_grant(db, user.id, form_version.form_id):
         raise IntakeRefused(403, "not_assigned", "Forbidden")
+    if user.role != "enumerator" and not staff_can_see_form(db, user, form_version.form_id):
+        # Defence in depth: the same 404 `resolve_form_version` gives, whoever the caller was.
+        raise IntakeRefused(404, "form_version_unknown", "Form or version not found")
     if existing is not None:
         return _replay(existing, user)  # someone else's id: 409, nothing revealed
+
+    cap = settings.max_repeat_rows
+    if _count_repeat_rows(repeats) > cap:
+        raise IntakeRefused(
+            422, "too_many_repeat_rows",
+            f"A submission may hold at most {cap} repeat rows; this one has more. Nothing was stored.",
+        )
 
     # A zero-byte part is how a browser says "no file chosen": absent, not an error.
     media = {name: part for name, part in media.items() if part.data}

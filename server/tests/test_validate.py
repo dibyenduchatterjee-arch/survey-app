@@ -312,3 +312,26 @@ def test_a_calculate_in_a_hidden_repeats_rows_is_cleared_once_the_repeat_hides()
     run.settle()
     assert run.top.own["gate"] == "open"
     assert run.top_rows["R"] == [{"v": 3}]
+
+
+def test_validation_work_grows_with_rows_not_with_rows_squared(spec, monkeypatch):
+    """Review finding I-1: every row used to rebuild the flat list of all its siblings."""
+    from app.forms import validate
+
+    seen = []
+    real = validate._gather
+    monkeypatch.setattr(validate, "_gather", lambda nodes, rows: (seen.append(len(rows)), real(nodes, rows))[1])
+    n = 400
+    validate_submission(spec, GOOD, {"children": [row() for _ in range(n)]}, NOW)
+    assert sum(seen) < 30 * n, sum(seen)  # was about n * n = 160,000
+
+
+def test_cached_sibling_values_follow_a_calculate_that_changes_a_row(spec):
+    """The cache must not hand a row stale answers once a calculate has rewritten one."""
+    nodes = [{"type": "repeat", "name": "r", "children": [
+        {"type": "integer", "name": "x"},
+        {"type": "calculate", "name": "dbl", "calculate": "${x} * 2"},
+        {"type": "integer", "name": "chk", "constraint": "sum(${dbl}) = 6"},
+    ]}]
+    out = validate_submission({"nodes": nodes}, {}, {"r": [{"x": 1, "chk": 1}, {"x": 2, "chk": 1}]}, NOW)
+    assert out == []

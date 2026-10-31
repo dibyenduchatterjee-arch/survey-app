@@ -137,6 +137,10 @@ def _gather(nodes: list[dict], rows: list[dict]) -> dict[str, list]:
     return out
 
 
+def _has_repeat(nodes: list[dict]) -> bool:
+    return any(n["type"] == "repeat" or _has_repeat(n.get("children", [])) for n in nodes)
+
+
 def _scalars(own: dict) -> dict:
     return {k: v for k, v in own.items()
             if not (isinstance(v, list) and v and all(isinstance(i, dict) for i in v))}
@@ -166,6 +170,31 @@ class _Run:
         self.top_rows = {k: _rows(v) for k, v in repeats.items()}
         self.top_repeats = self._top_repeats(self.nodes)
         self.top = _Level(dict(data), {}, 0, "")
+        # `_gather` over a repeat's rows is the same answer for every row until some answer
+        # changes, so it is built once per (rows, nodes) and kept, instead of once per row
+        # evaluated. When a calculate rewrites one row's answer the kept lists are patched in
+        # place (`_changed`); that is what keeps validation linear in the number of rows.
+        self._gathered: dict[tuple[int, int], tuple[list, bool, dict]] = {}
+
+    def _gather_cached(self, nodes: list[dict], rows: list[dict]) -> dict[str, list]:
+        key = (id(nodes), id(rows))
+        hit = self._gathered.get(key)
+        if hit is not None and hit[0] is rows:  # `is`: an id can be reused after a free
+            return hit[2]
+        out = _gather(nodes, rows)
+        self._gathered[key] = (rows, _has_repeat(nodes), out)
+        return out
+
+    def _changed(self, level: _Level, name: str) -> None:
+        """An answer in `level.own` was set or removed: bring the kept gathers up to date."""
+        if level.siblings is None:
+            return  # top-level answers are read fresh each time; no gather holds them
+        for key, (rows, nested, out) in list(self._gathered.items()):
+            if rows is level.siblings:
+                if name in out:
+                    out[name][level.index] = level.own.get(name)
+            elif nested:
+                del self._gathered[key]  # may flatten this row's rows in; rebuild on demand
 
     def _top_repeats(self, nodes: list[dict]) -> list[dict]:
         found = []
@@ -193,6 +222,7 @@ class _Run:
                     rows = []
                 for row in rows:
                     self.prepare(n.get("children", []), row, False)
+                self._gathered.clear()
             elif n["type"] == "select_multiple" and isinstance(own.get(name), list):
                 own[name] = " ".join(str(i) for i in own[name])
 
@@ -201,9 +231,9 @@ class _Run:
         if level.siblings is None:
             vals = dict(level.own)
             for rep in self.top_repeats:
-                vals.update(_gather(rep.get("children", []), self.top_rows.get(rep["name"], [])))
+                vals.update(self._gather_cached(rep.get("children", []), self.top_rows.get(rep["name"], [])))
             return vals
-        return {**level.outer, **_gather(level.nodes or [], level.siblings)}
+        return {**level.outer, **self._gather_cached(level.nodes or [], level.siblings)}
 
     def children(self, node: dict, level: _Level) -> list[_Level]:
         name = node["name"]
@@ -254,7 +284,10 @@ class _Run:
         changed = False
         for node in nodes:
             if "calculate" in node:
-                changed = level.own.pop(node["name"], None) is not None or changed
+                removed = level.own.pop(node["name"], None) is not None
+                if removed:
+                    self._changed(level, node["name"])
+                changed = removed or changed
             elif node["type"] == "group":
                 changed = self.clear_calculates(node.get("children", []), level) or changed
             elif node["type"] == "repeat":
@@ -288,7 +321,9 @@ class _Run:
                 old = level.own.pop(name, None)
                 if new is not None:
                     level.own[name] = new
-                changed = changed or repr(old) != repr(new)
+                if repr(old) != repr(new):
+                    self._changed(level, name)
+                    changed = True
             elif node["type"] == "group":
                 changed = self.calc_pass(node.get("children", []), level, record) or changed
             elif node["type"] == "repeat":

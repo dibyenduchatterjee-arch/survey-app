@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # The single media size cap for the whole system: uploads above it are
     # rejected (Task 11) and photos are downscaled to fit below it (Task 19).
     max_media_bytes: int = 5 * 1024 * 1024
+    # Most repeat rows one submission may carry, nested rows included. A real household roster
+    # is a few dozen; the cap exists so one request cannot occupy the server for minutes.
+    max_repeat_rows: int = Field(default=2000, ge=1)
     # Per-form duplicate key for submission duplicate detection: form_id -> the top-level
     # question names that identify "the same visit". Set as JSON in the environment, e.g.
     # DUPLICATE_KEYS='{"amb_asha_visit": ["asha_name", "household_id"]}'. A form not listed

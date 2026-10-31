@@ -268,3 +268,104 @@ def test_a_supervisors_new_form_lands_where_they_can_see_it(world, db):
     assert c.post("/api/forms", files={"file": ("f.xlsx", data, XLSX)}, headers=_h(sup)).status_code == 201
     assert db.query(Form).filter_by(form_id="amb_asha_visit").one().project_id == world["a"]["project"].id
     assert "amb_asha_visit" not in [f["form_id"] for f in c.get("/api/forms", headers=_h(world["b"]["sup"])).json()]
+
+
+# ---- every route that resolves a form, OpenRosa and intake included (review finding C-1) ----
+
+PW = "correct-horse-battery"
+VERSION = "2026103101"
+
+
+def _basic(u):
+    return (u.username, PW)
+
+
+def _json_submit(client, form_id, **auth):
+    import json
+
+    sub = {"uuid": str(uuidlib.uuid4()), "form_id": form_id, "version": VERSION, "data": {}, "repeats": {}}
+    return client.post("/api/submissions", files={"submission": (None, json.dumps(sub), "application/json")}, **auth)
+
+
+def _openrosa_submit(client, form_id, **auth):
+    xml = (
+        f'<?xml version="1.0"?><data id="{form_id}" version="{VERSION}">'
+        f"<meta><instanceID>uuid:{uuidlib.uuid4()}</instanceID></meta></data>"
+    ).encode()
+    return client.post("/openrosa/submission", files={"xml_submission_file": ("s.xml", xml, "text/xml")}, **auth)
+
+
+def _stored(db):
+    return db.query(Submission).count()
+
+
+@pytest.mark.parametrize("me,other", [("a", "b"), ("b", "a")])
+def test_openrosa_download_is_refused_for_the_other_project_exactly_like_a_missing_form(world, me, other):
+    c, sup = world["client"], world[me]["sup"]
+    refused = c.get(f"/openrosa/forms/form_{other}/{VERSION}.xml", auth=_basic(sup))
+    missing = c.get(f"/openrosa/forms/form_nope/{VERSION}.xml", auth=_basic(sup))
+    assert refused.status_code == missing.status_code == 404
+    assert refused.text == missing.text
+    assert "<x/>" not in refused.text
+    assert c.get(f"/openrosa/forms/form_{me}/{VERSION}.xml", auth=_basic(sup)).status_code == 200
+
+
+def test_openrosa_download_admin_reaches_every_project(world):
+    c, adm = world["client"], world["admin"]
+    for t in ("a", "b"):
+        assert c.get(f"/openrosa/forms/form_{t}/{VERSION}.xml", auth=_basic(adm)).status_code == 200
+
+
+@pytest.mark.parametrize("me,other", [("a", "b"), ("b", "a")])
+def test_json_submission_into_another_projects_form_is_refused_like_a_missing_form(world, me, other):
+    c, sup, db = world["client"], world[me]["sup"], world["db"]
+    before = _stored(db)
+    refused = _json_submit(c, f"form_{other}", headers=_h(sup))
+    missing = _json_submit(c, "form_nope", headers=_h(sup))
+    assert refused.status_code == missing.status_code == 404
+    assert refused.json() == missing.json()
+    assert _stored(db) == before
+    assert _json_submit(c, f"form_{me}", headers=_h(sup)).status_code in (201, 202)
+
+
+@pytest.mark.parametrize("me,other", [("a", "b"), ("b", "a")])
+def test_openrosa_submission_into_another_projects_form_is_refused_like_a_missing_form(world, me, other):
+    c, sup, db = world["client"], world[me]["sup"], world["db"]
+    before = _stored(db)
+    refused = _openrosa_submit(c, f"form_{other}", auth=_basic(sup))
+    missing = _openrosa_submit(c, "form_nope", auth=_basic(sup))
+    assert refused.status_code == missing.status_code == 404
+    assert refused.text.replace(f"form_{other}", "X") == missing.text.replace("form_nope", "X")
+    assert _stored(db) == before
+    assert _openrosa_submit(c, f"form_{me}", auth=_basic(sup)).status_code in (201, 202)
+
+
+def test_a_supervisor_who_lost_membership_can_no_longer_submit_or_download(world):
+    c, db, sup = world["client"], world["db"], world["a"]["sup"]
+    assert c.get(f"/openrosa/forms/form_a/{VERSION}.xml", auth=_basic(sup)).status_code == 200
+    db.query(ProjectMember).filter_by(user_id=sup.id).delete()
+    db.commit()
+    assert c.get(f"/openrosa/forms/form_a/{VERSION}.xml", auth=_basic(sup)).status_code == 404
+    assert _json_submit(c, "form_a", headers=_h(sup)).status_code == 404
+
+
+def test_openrosa_form_list_is_scoped_for_supervisors(world):
+    c = world["client"]
+    for t in ("a", "b"):
+        text = c.get("/openrosa/formList", auth=_basic(world[t]["sup"])).text
+        assert f"<formID>form_{t}</formID>" in text
+        assert f"<formID>form_{'b' if t == 'a' else 'a'}</formID>" not in text
+
+
+def test_intake_itself_refuses_staff_without_access_even_when_called_directly(world):
+    """Defence in depth: store_submission does not rely on its caller having resolved access."""
+    from starlette.requests import Request
+
+    from app.intake.submissions import IntakeRefused, store_submission
+
+    db = world["db"]
+    fv_b = db.query(FormVersion).filter_by(form_id=world["b"]["form"].id).one()
+    req = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
+    with pytest.raises(IntakeRefused) as exc:
+        store_submission(db, fv_b, world["a"]["sup"], {}, {}, {}, str(uuidlib.uuid4()), req)
+    assert exc.value.status_code == 404
