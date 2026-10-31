@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     # wherever the server happens to be started from. Other databases are used as given.
     database_url: str = "sqlite:///./server/survey.db"
     jwt_secret: SecretStr
-    media_key: SecretStr
+    # Defaults to empty and is validated anyway, so a missing or blank MEDIA_KEY (blank values in
+    # the environment are ignored) is refused with the same actionable message as a short one.
+    media_key: SecretStr = Field(default=SecretStr(""), validate_default=True)
     media_root: Path = Path("server/media")
     # Accepts empty (no extra origins), "a,b,c", or a JSON list.
     cors_origins: Annotated[list[str], NoDecode] = []
@@ -78,7 +80,10 @@ class Settings(BaseSettings):
             return v
         if Path(db).is_absolute():
             return v
-        return url.set(database=(PROJECT_ROOT / db).resolve().as_posix()).render_as_string(hide_password=False)
+        # Build the string by hand: SQLAlchemy would percent-encode the drive colon (C%3A/...).
+        head, sep, query = v.partition("?")
+        prefix = head[: len(head) - len(db)]
+        return prefix + (PROJECT_ROOT / db).resolve().as_posix() + sep + query
 
     @field_validator("media_root", "google_service_account_file")
     @classmethod
