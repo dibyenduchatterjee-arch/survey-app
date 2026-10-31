@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><pre id="out">running</pre>
+<script type="module">
+window.__results=[];
+const mod=await import('./browser_console.js');
+for(const n of Object.keys(mod).filter(k=>k.startsWith('test_'))){try{await mod[n]();window.__results.push({name:n,ok:true})}catch(e){window.__results.push({name:n,ok:false,error:String(e.message||e)})}}
+window.__summary={total:__results.length,passed:__results.filter(r=>r.ok).length};window.__done=true;
+document.getElementById('out').textContent=__results.map(r=>(r.ok?'PASS ':'FAIL ')+r.name+(r.ok?'':' -> '+r.error)).join('\n')+'\n'+JSON.stringify(__summary);
+</script>

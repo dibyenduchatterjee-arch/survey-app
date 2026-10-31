@@ -1,0 +1,37 @@
+/* Admin console: a laptop screen, a supervisor at a desk. Ink and Magenta, as in the app. */
+:root { --ink:#14161f; --soft:#3d4252; --paper:#fff; --wash:#f3f4f7; --line:#c9cdd8; --magenta:#b0125f; --ok:#0b6b3a; --warn:#8a5a00; --bad:#b00020; }
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--wash); color: var(--ink); font: 15px/1.55 "Noto Sans Devanagari", "Nirmala UI", "Mukta", system-ui, "Segoe UI", Roboto, sans-serif; }
+main, #app > .card, #app > .msg { max-width: 1100px; margin: 0 auto; padding: 1rem; }
+h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin: .2rem 0; } h3 { font-size: 1rem; }
+code { background: #eceef4; padding: 0 .3em; border-radius: 4px; }
+.hint { color: var(--soft); font-size: .9rem; margin: .2rem 0; }
+.nav { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: .6rem 1rem; background: var(--ink); color: #fff; }
+.nav a { color: #fff; text-decoration: none; padding: .2rem .5rem; border-radius: 6px; }
+.nav a[aria-current="page"] { background: var(--magenta); }
+.nav .who { margin-left: auto; font-size: .85rem; }
+.card { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; margin: .75rem 0; }
+.card label { display: block; margin-top: .6rem; font-weight: 600; }
+input, select { font: inherit; padding: .4rem .5rem; border: 1px solid #8a90a2; border-radius: 6px; max-width: 100%; }
+button, a.button { font: inherit; padding: .45rem .9rem; border-radius: 6px; border: 1px solid var(--ink); background: var(--paper); color: var(--ink); cursor: pointer; text-decoration: none; display: inline-block; }
+button.primary { background: var(--magenta); border-color: var(--magenta); color: #fff; font-weight: 600; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.toolbar { display: flex; gap: .6rem; flex-wrap: wrap; margin: .6rem 0; }
+.project-actions { display: flex; gap: .8rem; flex-wrap: wrap; align-items: flex-start; margin-top: .5rem; }
+.msg { padding: .5rem .8rem; border-radius: 8px; background: #fff; border: 1px solid var(--line); }
+.msg.ok { border-color: var(--ok); color: var(--ok); } .msg.warn { border-color: var(--warn); color: var(--warn); } .msg.bad { border-color: var(--bad); color: var(--bad); background: #fff5f6; }
+.bad-question { font-size: 1.2rem; font-weight: 700; margin: 0 0 .3rem; }
+.question-name { font-size: 1.2rem; background: #ffe3e7; }
+table { border-collapse: collapse; width: 100%; background: var(--paper); }
+th, td { border-bottom: 1px solid var(--line); padding: .35rem .5rem; text-align: left; vertical-align: top; }
+.answers th { width: 14rem; font-weight: 500; }
+.badge { display: inline-block; padding: 0 .5rem; border-radius: 999px; font-size: .78rem; font-weight: 700; border: 1px solid currentColor; }
+.badge.bad, .status-rejected { color: var(--bad); } .badge.warn, .status-flagged { color: var(--warn); } .status-approved { color: var(--ok); }
+.failures { list-style: none; padding: 0; }
+.failure { border-left: 6px solid; padding: .4rem .8rem; margin: .5rem 0; background: #fff; }
+.failure-form-broken { border-color: var(--bad); background: #fff5f6; } .failure-data { border-color: var(--warn); background: #fffaf0; }
+.pager { margin: .8rem 0; } .media { display: flex; gap: 1rem; flex-wrap: wrap; } .media-img { max-width: 320px; max-height: 320px; border-radius: 8px; }
+.media-placeholder { width: 260px; padding: 1.2rem; background: #eceef4; border: 2px dashed #8a90a2; border-radius: 8px; color: var(--soft); }
+.export-control progress { width: 100%; max-width: 320px; display: block; margin: .4rem 0; }
+.login { max-width: 360px; margin: 3rem auto; }

@@ -16,7 +16,7 @@ import { login, logout } from './auth.js';
 import { bootstrap, startSync, syncOnce, listRejected, retryRejected } from './sync.js';
 import { FormEngine } from './formengine.js';
 import { availableLanguages, translate } from './i18n.js';
-import { renderForm, draftSaver } from './render.js';
+import { renderForm, draftSaver, loadDraft, deleteDraftFully } from './render.js';
 
 // ---------------------------------------------------------------- small helpers
 
@@ -266,7 +266,7 @@ async function showHome(boot) {
   const uid = session.user && session.user.id;
 
   const forms = await latestForms();
-  const drafts = (await db.listDrafts()).filter((d) => d.user_id === undefined || d.user_id === uid)
+  const drafts = (await db.listDrafts()).filter((d) => d.kind !== 'media').filter((d) => d.user_id === undefined || d.user_id === uid)
     .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
   const pending = await db.queueLength();
   const rejected = await listRejected().catch(() => []);
@@ -314,7 +314,7 @@ async function showHome(boot) {
       const del = h('button', 'btn btn-quiet', { type: 'button', text: t('discard') });
       del.addEventListener('click', async () => {
         if (!armed) { armed = true; del.textContent = t('sure_discard'); return; }
-        await db.deleteDraft(d.id);
+        await deleteDraftFully(db, d.id);
         showHome(boot);
       });
       list.append(h('li', 'btn-row', {},
@@ -323,7 +323,7 @@ async function showHome(boot) {
           text: `${t('resume')}: ${label}`,
           onclick: async () => {
             const spec = await db.getForm(d.form_id, d.version);
-            if (spec) openForm(spec, d);
+            if (spec) openForm(spec, await loadDraft(db, d.id));
           },
         }), del));
     }
@@ -392,7 +392,7 @@ function openForm(spec, draft) {
   const engine = new FormEngine(spec, draft ? { data: draft.data, repeats: draft.repeats } : {});
   const media = new Map(draft && draft.media ? Object.entries(draft.media) : []);
   const saveState = h('span', 'save-state');
-  const saver = draftSaver({ id, spec, userId: uid, store: db, extra: () => ({ started_at: startedAt }) });
+  const saver = draftSaver({ id, spec, userId: uid, store: db, media, extra: () => ({ started_at: startedAt }) });
   const langs = availableLanguages(spec);
   const langFor = () => (langs.includes(state.lang) ? state.lang : langs[0]);
 
@@ -445,7 +445,7 @@ function openForm(spec, draft) {
         ...firstFix(spec, sub.data),
       };
       await db.enqueue(submission, blobs);   // submission and photos commit together
-      await db.deleteDraft(id);
+      await deleteDraftFully(db, id);
       syncOnce().catch(() => {});
       showDone();
     } catch (e) {

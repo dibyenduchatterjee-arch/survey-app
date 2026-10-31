@@ -7,6 +7,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -54,6 +55,18 @@ for (const c of cases) {
     }
   });
 }
+
+// The corpus is read by this suite and by pytest. Both pin the same count and the same
+// SHA-256 of the sorted case names (server/tests/test_parity_golden.py), so a case cannot be
+// deleted with both suites staying green. Changing the corpus on purpose means updating both pins.
+const CORPUS_COUNT = 388;
+const CORPUS_NAMES_SHA256 = "592486aa42c1d06e9454180ac6b29ff04bdbd291553cc1fd6ed8ec6c8551929e";
+
+test("the shared corpus is pinned: no case can be removed quietly", () => {
+  assert.equal(cases.length, CORPUS_COUNT);
+  const names = cases.map((c) => c.name).sort().join("\n");
+  assert.equal(createHash("sha256").update(names).digest("hex"), CORPUS_NAMES_SHA256);
+});
 
 test("the corpus is broad enough and its names are unique", () => {
   const names = cases.map((c) => c.name);
