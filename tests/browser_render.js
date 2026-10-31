@@ -337,13 +337,20 @@ export async function test_downscale_reduces_a_large_photo_below_max_media_bytes
   const tight = 150 * 1024;
   const small = await downscaleImage(photo, tight);
   assert(small.size <= tight, 'the retry loop gave up above the cap: ' + small.size);
-  // A cap nothing can meet is an error, not a silent oversize file.
-  let threw = false;
-  try { await downscaleImage(photo, 200); } catch { threw = true; }
-  assert(threw, 'an impossible cap must throw');
   // A small photo already under the cap is not degraded.
   const tiny = await downscaleImage(await bigPhoto(300, 200), cap);
   eq(await dims(tiny), [300, 200]);
+}
+
+// Split out of the test above: exhausting the retry loop re-encodes the photo at every
+// step, so bundling it with the other cases pushed one test past the harness timeout as
+// the suite grew. The behaviour it pins is that an unreachable cap fails loudly rather
+// than quietly returning a file the server will reject.
+export async function test_a_cap_nothing_can_meet_throws_rather_than_returning_an_oversize_file() {
+  const photo = await bigPhoto();
+  let threw = false;
+  try { await downscaleImage(photo, 200); } catch { threw = true; }
+  assert(threw, 'an impossible cap must throw');
 }
 
 export async function test_a_photo_taken_in_the_form_is_downscaled_and_kept_for_upload() {
