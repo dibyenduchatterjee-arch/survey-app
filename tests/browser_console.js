@@ -5,6 +5,7 @@ import { mountForms } from '../console/js/forms.js';
 import { mountSubmissions } from '../console/js/submissions.js';
 import { mountHome } from '../console/js/home.js';
 import { exportControl, safeDriveUrl } from '../console/js/exports.js';
+import { mountAudit } from '../console/js/audit.js';
 
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
 function eq(a, b, msg) {
@@ -358,4 +359,15 @@ export async function test_an_enumerator_opening_the_console_is_sent_away() {
   assert(root3.querySelector('input[type=password]'), 'login form shown');
   eq(went, null);
   root3.remove();
+}
+
+export async function test_the_audit_page_lists_entries_read_only() {
+  const { api, calls } = stub([
+    ['GET', /\/api\/audit/, { items: [{ id: 2, at: '2026-10-31T05:00:00Z', actor_user_id: 1, action: 'user.update', object_type: 'user', object_id: 7, detail: { is_active: false } }], total: 1, limit: 50, offset: 0 }],
+  ]);
+  const root = mount();
+  await mountAudit(root, { api });
+  assert(text(root).includes('user.update') && text(root).includes('is_active'), 'entry shown: ' + text(root));
+  assert(calls.every(c => c.method === 'GET'), 'audit page only reads');
+  root.remove();
 }

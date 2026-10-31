@@ -10,6 +10,7 @@ import { mountForms } from './forms.js';
 import { mountSubmissions } from './submissions.js';
 import { mountExports } from './exports.js';
 import { mountUsers } from './users.js';
+import { mountAudit } from './audit.js';
 
 export const PAGES = {
   home: { title: 'Projects', href: 'index.html', mount: mountHome },
@@ -17,6 +18,7 @@ export const PAGES = {
   submissions: { title: 'Submissions', href: 'submissions.html', mount: mountSubmissions },
   exports: { title: 'Exports', href: 'exports.html', mount: mountExports },
   users: { title: 'Users', href: 'users.html', mount: mountUsers },
+  audit: { title: 'Audit', href: 'audit.html', mount: mountAudit },
 };
 
 export async function boot(page, opts = {}) {
