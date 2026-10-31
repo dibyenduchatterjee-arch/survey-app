@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     # The single media size cap for the whole system: uploads above it are
     # rejected (Task 11) and photos are downscaled to fit below it (Task 19).
     max_media_bytes: int = 5 * 1024 * 1024
+    # Reverse proxy (Caddy / nginx). Off by default: X-Forwarded-For is client-controlled
+    # and is honoured only when the deployer says a trusted proxy sits in front.
+    trust_proxy_headers: bool = False
+    # How many trusted proxies append to X-Forwarded-For; the client IP is the
+    # entry that many places from the right-hand end.
+    trusted_proxy_hops: int = Field(default=1, ge=1)
+    refresh_token_days: int = Field(default=30, ge=1)
+    login_rate_limit_per_username: int = Field(default=5, ge=1)
+    login_rate_limit_per_ip: int = Field(default=20, ge=1)
+    login_rate_limit_window_seconds: int = Field(default=900, ge=1)
 
     @field_validator("jwt_secret")
     @classmethod

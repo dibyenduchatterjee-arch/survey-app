@@ -180,3 +180,157 @@ def test_successful_login_clears_the_username_counter(client, user_factory):
     assert login(client).status_code == 200
     for _ in range(5):
         assert login(client, password="bad").status_code == 401
+
+
+# --- only failures count; success clears both counters -----------------------------
+
+
+def test_successful_logins_do_not_count_toward_either_limit(client, user_factory):
+    from app.api import auth
+
+    user_factory()
+    for _ in range(auth.ip_limiter.limit + 5):  # more than either limit
+        assert login(client).status_code == 200
+    # a full allowance of failures is still available afterwards
+    for _ in range(auth.username_limiter.limit):
+        assert login(client, password="bad").status_code == 401
+
+
+def test_successful_login_clears_the_ip_counter_too(client, user_factory):
+    from app.api import auth
+
+    user_factory()
+    limit = auth.ip_limiter.limit
+    for i in range(limit - 1):
+        assert login(client, f"user{i}", "x").status_code == 401
+    assert login(client).status_code == 200
+    for i in range(limit - 1):  # would be refused if the IP counter had not been cleared
+        assert login(client, f"other{i}", "x").status_code == 401
+
+
+# --- client IP behind a proxy ------------------------------------------------------
+
+
+class _Req:
+    def __init__(self, xff=None, host="10.0.0.1"):
+        self.headers = {"x-forwarded-for": xff} if xff is not None else {}
+        self.client = type("C", (), {"host": host})()
+
+
+def _settings(**kw):
+    from app.core.config import Settings
+
+    return Settings(jwt_secret="x" * 40, media_key="m", **kw)
+
+
+def test_proxy_settings_default_to_off():
+    s = _settings()
+    assert s.trust_proxy_headers is False and s.trusted_proxy_hops == 1
+    assert (s.refresh_token_days, s.login_rate_limit_per_username) == (30, 5)
+    assert (s.login_rate_limit_per_ip, s.login_rate_limit_window_seconds) == (20, 900)
+
+
+def test_forwarded_header_is_ignored_when_trust_is_off():
+    from app.api.auth import client_ip
+
+    assert client_ip(_Req("203.0.113.9"), _settings()) == "10.0.0.1"
+
+
+def test_client_ip_takes_the_right_hand_entry_for_one_hop():
+    from app.api.auth import client_ip
+
+    s = _settings(trust_proxy_headers=True)
+    assert client_ip(_Req("203.0.113.9"), s) == "203.0.113.9"
+    assert client_ip(_Req("1.1.1.1, 203.0.113.9"), s) == "203.0.113.9"
+
+
+def test_client_ip_skips_the_configured_number_of_proxy_hops():
+    from app.api.auth import client_ip
+
+    s = _settings(trust_proxy_headers=True, trusted_proxy_hops=2)
+    assert client_ip(_Req("6.6.6.6, 203.0.113.7, 192.0.2.1"), s) == "203.0.113.7"
+
+
+def test_client_ip_falls_back_to_the_peer_when_the_header_is_unusable():
+    from app.api.auth import client_ip
+
+    s = _settings(trust_proxy_headers=True, trusted_proxy_hops=3)
+    assert client_ip(_Req(None), s) == "10.0.0.1"
+    assert client_ip(_Req("203.0.113.9"), s) == "10.0.0.1"  # fewer entries than hops
+    assert client_ip(_Req("garbage"), _settings(trust_proxy_headers=True)) == "10.0.0.1"
+
+
+def _trust_proxy(_client, **kw):
+    from app.core.config import get_settings
+    from app.main import app
+
+    app.dependency_overrides[get_settings] = lambda: _settings(trust_proxy_headers=True, **kw)
+
+
+def test_forged_left_most_forwarded_value_does_not_escape_the_ip_limit(client, user_factory):
+    from app.api import auth
+
+    user_factory()
+    _trust_proxy(client)
+    # the real client (as the proxy saw it) is always 203.0.113.9; the attacker varies the left
+    for i in range(auth.ip_limiter.limit):
+        r = client.post(
+            "/api/auth/login",
+            json={"username": f"u{i}", "password": "x"},
+            headers={"X-Forwarded-For": f"10.9.9.{i}, 203.0.113.9"},
+        )
+        assert r.status_code == 401
+    r = client.post(
+        "/api/auth/login",
+        json={"username": "sita", "password": PASSWORD},
+        headers={"X-Forwarded-For": "10.9.9.200, 203.0.113.9"},
+    )
+    assert r.status_code == 429
+
+
+def test_different_real_clients_behind_the_proxy_get_separate_ip_buckets(client, user_factory):
+    from app.api import auth
+
+    user_factory()
+    _trust_proxy(client)
+    for i in range(auth.ip_limiter.limit):
+        client.post(
+            "/api/auth/login",
+            json={"username": f"u{i}", "password": "x"},
+            headers={"X-Forwarded-For": "203.0.113.9"},
+        )
+    other = client.post(
+        "/api/auth/login",
+        json={"username": "sita", "password": PASSWORD},
+        headers={"X-Forwarded-For": "203.0.113.10"},
+    )
+    assert other.status_code == 200
+
+
+def test_ip_limit_is_shared_when_trust_is_off_despite_varying_headers(client, user_factory):
+    from app.api import auth
+
+    user_factory()
+    for i in range(auth.ip_limiter.limit):
+        client.post(
+            "/api/auth/login",
+            json={"username": f"u{i}", "password": "x"},
+            headers={"X-Forwarded-For": f"198.51.100.{i}"},
+        )
+    r = client.post(
+        "/api/auth/login",
+        json={"username": "sita", "password": PASSWORD},
+        headers={"X-Forwarded-For": "198.51.100.250"},
+    )
+    assert r.status_code == 429
+
+
+def test_refresh_token_lifetime_follows_the_setting(client, user_factory, db):
+    from app.core.config import get_settings
+    from app.main import app
+
+    user_factory()
+    app.dependency_overrides[get_settings] = lambda: _settings(refresh_token_days=7)
+    assert login(client).status_code == 200
+    row = db.scalars(select(RefreshToken)).one()
+    assert row.expires_at - row.issued_at == timedelta(days=7)

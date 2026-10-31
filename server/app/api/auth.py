@@ -5,6 +5,7 @@ them to HTTP and the database.
 """
 
 import hashlib
+import ipaddress
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings, get_settings
 from app.core.ratelimit import RateLimited, RateLimiter
 from app.core.security import (
     create_access_token,
@@ -24,12 +26,16 @@ from app.db.session import get_session
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-REFRESH_TOKEN_LIFETIME = timedelta(days=30)
-
 # In-process counters (see app.core.ratelimit: not shared between worker processes).
-# Failed and successful attempts both count; a success clears the username's counter.
-username_limiter = RateLimiter(limit=5, window_seconds=15 * 60)
-ip_limiter = RateLimiter(limit=20, window_seconds=15 * 60)
+# Every attempt is counted on entry (so parallel guesses cannot slip past a check-then-
+# count gap); a successful login clears both counters, so only failures accumulate.
+_settings = get_settings()
+username_limiter = RateLimiter(
+    _settings.login_rate_limit_per_username, _settings.login_rate_limit_window_seconds
+)
+ip_limiter = RateLimiter(
+    _settings.login_rate_limit_per_ip, _settings.login_rate_limit_window_seconds
+)
 
 _INVALID_CREDENTIALS = "Invalid username or password"
 _INVALID_REFRESH = "Invalid refresh token"
@@ -69,13 +75,39 @@ def _unauthorized(detail: str) -> HTTPException:
     return HTTPException(status_code=401, detail=detail)
 
 
-def _issue_refresh_token(db: Session, user_id: int, now: datetime) -> tuple[str, RefreshToken]:
+def client_ip(request: Request, settings: Settings) -> str:
+    """The caller's address, for rate limiting.
+
+    Behind a trusted proxy the peer address is the proxy, so with
+    trust_proxy_headers on we read X-Forwarded-For from the right-hand end:
+    `trusted_proxy_hops` entries in. The left-most entries are whatever the client
+    chose to send and are never used. Anything unusable falls back to the peer.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if not settings.trust_proxy_headers:
+        return peer
+    header = request.headers.get("x-forwarded-for")
+    if not header:
+        return peer
+    parts = [p.strip() for p in header.split(",")]
+    if len(parts) < settings.trusted_proxy_hops:
+        return peer
+    candidate = parts[-settings.trusted_proxy_hops]
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return peer
+
+
+def _issue_refresh_token(
+    db: Session, user_id: int, now: datetime, lifetime: timedelta
+) -> tuple[str, RefreshToken]:
     plain, digest = new_refresh_token()
     row = RefreshToken(
         user_id=user_id,
         token_hash=digest,
         issued_at=now,
-        expires_at=now + REFRESH_TOKEN_LIFETIME,
+        expires_at=now + lifetime,
     )
     db.add(row)
     db.flush()
@@ -111,8 +143,9 @@ def login(
     body: LoginRequest,
     request: Request,
     db: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> LoginResponse:
-    ip = request.client.host if request.client else "unknown"
+    ip = client_ip(request, settings)
     try:
         ip_limiter.check(f"login:ip:{ip}")
         username_limiter.check(f"login:{body.username}")
@@ -134,9 +167,12 @@ def login(
 
     now = datetime.now(UTC)
     user.last_login_at = now
-    refresh_plain, _ = _issue_refresh_token(db, user.id, now)
+    refresh_plain, _ = _issue_refresh_token(
+        db, user.id, now, timedelta(days=settings.refresh_token_days)
+    )
     db.commit()
     username_limiter.reset(f"login:{body.username}")
+    ip_limiter.reset(f"login:ip:{ip}")
     return LoginResponse(
         access_token=create_access_token(user.id, user.role, now=now),
         refresh_token=refresh_plain,
@@ -145,7 +181,11 @@ def login(
 
 
 @router.post("/refresh", response_model=TokenPair)
-def refresh(body: RefreshRequest, db: Session = Depends(get_session)) -> TokenPair:
+def refresh(
+    body: RefreshRequest,
+    db: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> TokenPair:
     now = datetime.now(UTC)
     row = db.scalar(
         select(RefreshToken).where(RefreshToken.token_hash == _hash_token(body.refresh_token))
@@ -162,7 +202,9 @@ def refresh(body: RefreshRequest, db: Session = Depends(get_session)) -> TokenPa
     if user is None or not user.is_active:
         raise _unauthorized(_INVALID_REFRESH)
 
-    new_plain, new_row = _issue_refresh_token(db, user.id, now)
+    new_plain, new_row = _issue_refresh_token(
+        db, user.id, now, timedelta(days=settings.refresh_token_days)
+    )
     # Atomic claim: only one request can rotate a given token, so two concurrent
     # presentations cannot both succeed.
     claimed = db.execute(
