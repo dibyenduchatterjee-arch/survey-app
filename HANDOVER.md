@@ -41,22 +41,28 @@ spreadsheet, one tab per form.
 | Expression evaluator, phone/server parity (409-case corpus) | Built, verified on both sides |
 | XLSForm to spec compilation | Built and tested |
 | Apps Script download page (dates, district/block, CSV) | Built, 20 logic tests |
-| Apps Script API backend (codes, forms, submit) | In flight when saved |
-| Phone app wired to the Apps Script API | Not started |
-| GitHub Pages hosting and APK | Not started |
-| Server version (complete, proven end to end) | Built; kept as fallback if IT ever approves it |
+| Apps Script API backend (codes, forms, submit) | Built, 82 logic tests |
+| Phone app wired to the Apps Script API | Built; waiting only on the owner's `/exec` URL |
+| GitHub Pages hosting | Live at https://dibyenduchatterjee-arch.github.io/survey-app/ |
+| Android APK | Built and signed: `dist/EvAc-Survey-v1.0.apk`, v2+v3, verified |
+| Security review of this architecture | `docs/SECURITY-REVIEW-APPSSCRIPT.md`; I1, I3, I4 fixed |
+| Server version (complete, proven end to end) | Built; kept as the production path if IT ever approves one |
 
-**Test counts at save:** Python 1211 passed, 1 skipped. JavaScript 631 passed. Apps Script
-logic 20 passed. Browser in real Chrome 77 passed.
+**Test counts:** Python 1211 passed, 1 skipped. JavaScript 659 passed. Apps Script
+logic 82 passed. Browser in real Chrome 77 passed.
 
 ## Next steps, in order
 
-1. Finish the Apps Script API (`task-40-report.md` will hold its request and response shapes).
-2. Rewire `webapp/js/` to call that API instead of Google APIs directly: replace Google
-   sign-in with **project-code entry**, and point sync at the deployed Web App URL.
-3. Publish `webapp/` to GitHub Pages under `dibyenduchatterjee-arch`.
-4. Build the APK from that URL with pwabuilder.com — no Android tooling needed here.
-5. Live-test the whole chain against his real deployment.
+1. **The owner runs `SETUP-MONDAY.md`** — control Sheet, Apps Script, projects, people,
+   deploy — and sends back the Web App `/exec` URL.
+2. Put that URL in `webapp/config.js` and republish. Phones already carrying the app pick
+   it up on their own: `config.js` is fetched network-first.
+3. **Live-test the whole chain against the real deployment.** Nothing in this architecture
+   has been run against real Google services yet; that is the one remaining unknown.
+4. Publish `dist/assetlinks.json` at the root of the Pages domain so the app loses its
+   address bar — see `dist/APK-NOTES.md`.
+5. Work through the remaining findings in `docs/SECURITY-REVIEW-APPSSCRIPT.md`: I2, I5, I6,
+   I7 and the eight Minor ones.
 6. Update `README.md` and `ARCHITECTURE.md`; they still describe the server version.
 
 ## Rules that must survive any further rework
