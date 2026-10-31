@@ -4,18 +4,15 @@ Last saved 31 October 2026. Branch `phase-1`, everything committed.
 `RESUME.md`, `RESUME-DRIVE.md` and `RESUME.server-architecture.md` describe earlier plans
 that are now superseded. **Read this file first.**
 
-## How we got here — two foundations are not available to his account
+## How we got here — the two constraints this design is built around
 
-1. **No self-hosted server.** He has no standing authority to put programme data on a
-   server he runs himself until IT approves one.
-2. **No Google Cloud Platform.** It is switched off by default policy on his Workspace
-   account, so there is no OAuth client id, no API key, no service account and no Picker.
-   Neither of these is a decision about this project — the organisation does not know about
-   it yet. He is building it to show them something working, and it feeds his end-of-year
-   review.
+1. **No self-hosted server.** Programme data stays inside the organisation's own Google
+   Drive; nothing is stored on a server we run.
+2. **No Google Cloud Platform project.** So there is no OAuth client id, no API key, no
+   service account and no Picker to depend on.
 
-**What is allowed, and confirmed working:** Google **Apps Script** (he already builds web
-apps with it) and a free **GitHub** account — `dibyenduchatterjee-arch`.
+**What the design uses instead:** Google **Apps Script**, deployed and owned by the
+programme team, and free static hosting on **GitHub Pages**.
 
 ## The architecture
 
@@ -109,10 +106,9 @@ Decision log, every ruling and why:
 `.superpowers/sdd/2026-10-31-survey-platform-phase-1/progress.md` — git-ignored, with a copy
 in the side-session notes folder.
 
-## User details
+## Deployment details
 
-- Drive folder: `1hsOjv7yephXShho0zukL2vmvG8Og2Q_M` ("Survey CTO Type APK"), currently in My Drive
-- GitHub repo: https://github.com/dibyenduchatterjee-arch/survey-app
-- If the organisation later adopts this, the **server version is the production path** —
+- The Apps Script Web App and the Drive folder it writes to are configured by the owner;
+  their ids live in the Sheet, never in this repository. See `SETUP-MONDAY.md`.
+- The **server version is the production path** if the organisation later wants one —
   already built, proven end to end and security-reviewed. It is not wasted work.
-- Presents this on Monday

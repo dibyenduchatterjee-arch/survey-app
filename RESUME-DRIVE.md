@@ -60,7 +60,7 @@ JavaScript 631 passed. Browser in real Chrome 77 passed.
   number → paste into `webapp/config.js`
 - Picker API enabled
 - Service-account JSON path for `tools/publish_form.py`
-- Project folders inside his Drive folder `1hsOjv7yephXShho0zukL2vmvG8Og2Q_M` — currently in
+- Project folders inside his Drive folder the programme Drive folder — currently in
   **My Drive**, and a service account has **no storage quota**, so publishing there fails with
   `storageQuotaExceeded`. It needs to be in a **Shared Drive**.
 

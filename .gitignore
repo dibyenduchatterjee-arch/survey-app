@@ -37,3 +37,6 @@ Thumbs.db
 
 # webapp/config.js is COMMITTED on purpose: it holds only the Apps Script address, which is not a
 # secret (without a valid access code it returns nothing), and GitHub Pages must ship it.
+
+# Build output: the signed APK and, critically, the private signing key
+dist/
