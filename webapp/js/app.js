@@ -16,7 +16,7 @@ import { login, logout } from './auth.js';
 import { bootstrap, startSync, syncOnce, listRejected, retryRejected } from './sync.js';
 import { FormEngine } from './formengine.js';
 import { availableLanguages, translate } from './i18n.js';
-import { renderForm, draftSaver, loadDraft, deleteDraftFully } from './render.js';
+import { renderForm, draftSaver, loadDraft, deleteDraftFully, rememberMediaCap, mediaCap } from './render.js';
 
 // ---------------------------------------------------------------- small helpers
 
@@ -157,17 +157,11 @@ function useChromeToggle(rerender) {
 
 // ---------------------------------------------------------------- the media cap
 
-// The server's max_media_bytes arrives in the bootstrap reply and is remembered here, so photos
-// taken offline are sized to the same cap the server will enforce. There is no default in this
-// file: until the cap is known, photos are shrunk to a sensible size with no size check.
-const CAP_KEY = 'evac.max_media_bytes';
-const maxMediaBytes = () => {
-  const n = Number(store.get(CAP_KEY));
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-};
-const rememberCap = (boot) => {
-  if (boot && Number.isFinite(boot.max_media_bytes) && boot.max_media_bytes > 0) store.set(CAP_KEY, String(boot.max_media_bytes));
-};
+// The server's max_media_bytes arrives in bootstrap()'s `config` and is remembered on the phone
+// (render.js rememberMediaCap / mediaCap, which also holds the fallback for a phone that has
+// never heard it). The same number is what downscaleImage sizes photos to.
+const maxMediaBytes = () => mediaCap(localStorage);
+const rememberCap = (boot) => rememberMediaCap(boot, localStorage);
 
 function deviceId() {
   let id = store.get('evac.device');

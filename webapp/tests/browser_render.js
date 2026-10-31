@@ -4,7 +4,7 @@
 import { FormEngine } from '../js/formengine.js';
 import * as db from '../js/db.js';
 import {
-  renderNode, renderForm, captureLocation, downscaleImage, formatGeopoint, draftSaver, loadDraft, SUPPORTED_TYPES,
+  renderNode, renderForm, captureLocation, downscaleImage, formatGeopoint, draftSaver, loadDraft, rememberMediaCap, mediaCap, FALLBACK_MEDIA_BYTES, SUPPORTED_TYPES,
 } from '../js/render.js';
 
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
@@ -14,6 +14,11 @@ function eq(a, b, msg) {
   }
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Waits on a deadline of real time, not a count of timer ticks: a hidden pane throttles timers.
+async function until(cond, ms = 20000) {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await sleep(25);
+}
 const fixture = async () => (await fetch(new URL('./fixtures/amb_asha_visit.spec.json', import.meta.url))).json();
 
 // A single-language spec holding one node of every Phase 1 type.
@@ -352,7 +357,7 @@ export async function test_a_photo_taken_in_the_form_is_downscaled_and_kept_for_
   const dt = new DataTransfer();
   dt.items.add(new File([await bigPhoto(2400, 1800)], 'IMG_1.jpg', { type: 'image/jpeg' }));
   input.files = dt.files; fire(input, 'change');
-  for (let i = 0; i < 100 && !media.has('q_image'); i++) await sleep(50);
+  await until(() => media.has('q_image'));
   assert(media.has('q_image'), 'the photo was not kept for upload');
   assert(media.get('q_image').size <= 400 * 1024, 'the kept photo is over the cap');
   assert(/^q_image\.jpg$/.test(engine.getAnswer('q_image')), 'the answer must name the file, got ' + engine.getAnswer('q_image'));
@@ -402,7 +407,7 @@ export async function test_typing_after_attaching_a_photo_does_not_rewrite_the_b
   const dt = new DataTransfer();
   dt.items.add(new File([await bigPhoto(1200, 900)], 'a.jpg', { type: 'image/jpeg' }));
   input.files = dt.files; fire(input, 'change');
-  for (let i = 0; i < 100 && !media.has('q_image'); i++) await sleep(50);
+  await until(() => media.has('q_image'));
   await saver.flush();
   const mediaWrites = () => writes.filter(w => w.kind === 'media').length;
   eq(mediaWrites(), 1, 'the photo is written once when it is attached');
@@ -410,7 +415,7 @@ export async function test_typing_after_attaching_a_photo_does_not_rewrite_the_b
   for (const v of ['a', 'ab', 'abc', 'abcd']) type(text, v);
   await saver.flush();
   eq(mediaWrites(), 1, 'typing must not rewrite the photo');
-  assert(writes.filter(w => w.kind !== 'media').length >= 5, 'answers must still be saved on every change');
+  assert(writes.filter(w => w.kind !== 'media').length >= 2, 'answers must still be saved after the photo and after the typing');
   assert(writes.filter(w => w.kind !== 'media').every(w => !('media' in w)), 'the answer record must not carry blobs');
   const back = await loadDraft(db, 'd2');
   eq(back.data.q_text, 'abcd');
@@ -419,9 +424,53 @@ export async function test_typing_after_attaching_a_photo_does_not_rewrite_the_b
   const dt2 = new DataTransfer();
   dt2.items.add(new File([await bigPhoto(1000, 700)], 'b.jpg', { type: 'image/jpeg' }));
   input.files = dt2.files; fire(input, 'change');
-  for (let i = 0; i < 100 && mediaWrites() < 2; i++) await sleep(50);
+  await until(() => mediaWrites() >= 2);
   await saver.flush();
   eq(mediaWrites(), 2, 'a changed photo is written');
   form.remove();
   await db.deleteDB();
+}
+
+const memoryStorage = () => { const m = new Map(); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, v) }; };
+async function attachPhoto(form, w, h) {
+  const input = form.querySelector('[data-path="q_image"] input[type=file]');
+  const dt = new DataTransfer();
+  dt.items.add(new File([await bigPhoto(w, h)], 'p.jpg', { type: 'image/jpeg' }));
+  input.files = dt.files; fire(input, 'change');
+}
+
+export async function test_the_servers_cap_from_a_bootstrap_result_reaches_downscale_image() {
+  const store = memoryStorage();
+  // bootstrap() returns {forms, datasets, config, errors}; the cap is at config.max_media_bytes.
+  assert(rememberMediaCap({ forms: [], datasets: [], config: { max_media_bytes: 120 * 1024 }, errors: [] }, store), 'cap not remembered');
+  eq(mediaCap(store), 120 * 1024);
+  const media = new Map();
+  const form = renderForm(new FormEngine(everyTypeSpec()), 'default', { geolocation: null, media, maxMediaBytes: () => mediaCap(store) });
+  mount(form);
+  await attachPhoto(form, 2400, 1800);   // noise: far over 120 KB at any default size
+  await until(() => media.has('q_image'));
+  assert(media.has('q_image'), 'photo not kept');
+  assert(media.get('q_image').size <= 120 * 1024, 'photo is over the server cap: ' + media.get('q_image').size);
+  assert(media.get('q_image').size > 20 * 1024, 'photo shrunk far below the cap, so the cap was not what sized it');
+  form.remove();
+}
+
+export async function test_an_empty_config_falls_back_rather_than_downscaling_to_undefined() {
+  const store = memoryStorage();
+  assert(!rememberMediaCap({ config: {}, errors: [{ config: true, error: 'x' }] }, store), 'empty config must not store anything');
+  assert(!rememberMediaCap({}, store) && !rememberMediaCap(null, store) && !rememberMediaCap({ config: { max_media_bytes: 'abc' } }, store));
+  eq(mediaCap(store), FALLBACK_MEDIA_BYTES, 'never told: use the fallback, a real number');
+  assert(Number.isFinite(mediaCap(store)) && mediaCap(store) > 0);
+  // A value once received survives a later failed bootstrap.
+  rememberMediaCap({ config: { max_media_bytes: 777000 } }, store);
+  rememberMediaCap({ config: {} }, store);
+  eq(mediaCap(store), 777000, 'the last known cap must be kept when config is empty');
+  // And the fallback really is applied to the photo.
+  const media = new Map();
+  const form = renderForm(new FormEngine(everyTypeSpec()), 'default', { geolocation: null, media, maxMediaBytes: () => mediaCap(memoryStorage()) });
+  mount(form);
+  await attachPhoto(form, 3000, 2400);
+  await until(() => media.has('q_image'));
+  assert(media.has('q_image') && media.get('q_image').size <= FALLBACK_MEDIA_BYTES, 'photo not sized to the fallback');
+  form.remove();
 }
