@@ -9,7 +9,7 @@ export async function mountHome(root, ctx) {
   clear(root);
   const list = h('div', { class: 'projects' });
   const search = h('input', { type: 'search', id: 'project-filter', placeholder: 'Filter projects by name or id', 'aria-label': 'Filter projects' });
-  root.append(h('h1', { text: 'Projects' }), h('div', { class: 'toolbar' }, search), list);
+  root.append(h('h1', { text: 'Downloads' }), h('div', { class: 'toolbar' }, search), list);
   let forms;
   try { forms = await api.get('/api/forms'); } catch (e) {
     list.append(h('p', { class: 'msg bad', role: 'alert', text: e.message }));

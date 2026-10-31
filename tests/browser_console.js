@@ -6,6 +6,7 @@ import { mountSubmissions } from '../console/js/submissions.js';
 import { mountHome } from '../console/js/home.js';
 import { exportControl, safeDriveUrl, saveBlob } from '../console/js/exports.js';
 import { mountAudit } from '../console/js/audit.js';
+import { mountProjects } from '../console/js/projects.js';
 
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
 function eq(a, b, msg) {
@@ -414,5 +415,165 @@ export async function test_the_audit_page_filters_by_actor_and_action() {
   await until(() => calls.length >= 2, 'filtered request');
   const u = calls[calls.length - 1].url;
   assert(u.includes('actor_id=7') && u.includes('action=user.update'), u);
+  root.remove();
+}
+
+// ------------------------------------------------------------------ projects
+
+function projectWorld(role = 'admin') {
+  const w = {
+    projects: [
+      { id: 1, name: 'Default project', forms: [{ form_id: 'old_form', title: 'पुराना फ़ॉर्म' }], members: [] },
+      { id: 2, name: 'IFA syrup', forms: [{ form_id: 'syrup_a', title: 'सिरप भेंट' }, { form_id: 'syrup_b', title: 'Syrup stock' }], members: [{ user_id: 7, username: 'sita', full_name: 'Sita Devi', role: 'enumerator' }] },
+    ],
+    users: [
+      { id: 7, username: 'sita', full_name: 'Sita Devi', role: 'enumerator', is_active: true },
+      { id: 8, username: 'rani', full_name: 'Rani Kumari', role: 'enumerator', is_active: true },
+    ],
+    nextId: 3,
+  };
+  const out = p => ({ id: p.id, name: p.name, form_count: p.forms.length, member_count: p.members.length });
+  const find = id => w.projects.find(p => p.id === Number(id));
+  const routes = [
+    ['GET', /\/api\/projects$/, () => w.projects.map(out)],
+    ['POST', /\/api\/projects$/, (m, init) => { const p = { id: w.nextId++, name: JSON.parse(init.body).name, forms: [], members: [] }; w.projects.push(p); return { status: 201, body: out(p) }; }],
+    ['GET', /\/api\/projects\/(\d+)$/, m => { const p = find(m[1]); return { ...out(p), forms: p.forms, members: p.members }; }],
+    ['PATCH', /\/api\/projects\/(\d+)$/, (m, init) => { const p = find(m[1]); p.name = JSON.parse(init.body).name; return out(p); }],
+    ['PUT', /\/api\/projects\/(\d+)\/forms\/([^/]+)$/, m => {
+      let moved;
+      for (const q of w.projects) { const i = q.forms.findIndex(f => f.form_id === m[2]); if (i >= 0) moved = q.forms.splice(i, 1)[0]; }
+      const p = find(m[1]); p.forms.push(moved); return out(p);
+    }],
+    ['POST', /\/api\/projects\/(\d+)\/members$/, (m, init) => {
+      const u = w.users.find(x => x.id === JSON.parse(init.body).user_id);
+      const mem = { user_id: u.id, username: u.username, full_name: u.full_name, role: u.role };
+      find(m[1]).members.push(mem); return { status: 201, body: mem };
+    }],
+    ['GET', /\/api\/projects\/(\d+)\/members$/, m => find(m[1]).members],
+    ['DELETE', /\/api\/projects\/(\d+)\/members\/(\d+)$/, m => { const p = find(m[1]); p.members = p.members.filter(x => x.user_id !== Number(m[2])); return { status: 204 }; }],
+    ['GET', /\/api\/forms$/, () => w.projects.flatMap(p => p.forms.map(f => ({ form_id: f.form_id, title: f.title, current_version: '1' })))],
+    ['GET', /\/api\/users$/, () => w.users],
+  ];
+  return { w, ...stub(routes), ctx: api => ({ api, user: { id: 1, username: 'm', role } }) };
+}
+
+const pcard = (root, id) => root.querySelector(`.project-card[data-project="${id}"]`);
+
+export async function test_projects_list_shows_each_project_with_its_forms_and_member_count() {
+  const { api, ctx } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  eq(root.querySelectorAll('.project-card').length, 2);
+  const c = pcard(root, 2);
+  eq(c.querySelector('.project-name').textContent, 'IFA syrup');
+  const counts = c.querySelector('.counts').textContent;
+  assert(counts.includes('2 forms') && counts.includes('1 member'), counts);
+  assert(c.querySelector('.chips').textContent.includes('सिरप भेंट') && c.querySelector('.chips').textContent.includes('Syrup stock'), 'form titles in the list row');
+  assert(!pcard(root, 1).querySelector('.chips').textContent.includes('Syrup'), 'forms stay with their own project');
+  root.remove();
+}
+
+export async function test_creating_a_project_posts_the_name_and_lists_it() {
+  const { api, ctx, calls } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  root.querySelector('#np-name').value = '  Anaemia screening ';
+  root.querySelector('form.create-project').dispatchEvent(new Event('submit', { cancelable: true }));
+  await until(() => root.querySelectorAll('.project-card').length === 3, 'new card');
+  const post = calls.find(c => c.method === 'POST' && /\/api\/projects$/.test(c.url));
+  eq(JSON.parse(post.init.body), { name: 'Anaemia screening' });
+  assert(text(root).includes('Anaemia screening'));
+  root.remove();
+}
+
+export async function test_renaming_a_project_patches_and_shows_the_new_name() {
+  const { api, ctx } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  const c = pcard(root, 2);
+  c.querySelector('.rename-input').value = 'IFA syrup 2026';
+  c.querySelector('button.rename').click();
+  await until(() => pcard(root, 2).querySelector('.project-name').textContent === 'IFA syrup 2026', 'renamed');
+  root.remove();
+}
+
+export async function test_moving_a_form_between_projects_updates_both() {
+  const { api, ctx, calls } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  const c = pcard(root, 2);
+  const sel = c.querySelector('select.move-form-id');
+  assert([...sel.options].some(o => o.value === 'old_form' && o.text.includes('Default project')), 'option says where the form is now');
+  sel.value = 'old_form';
+  c.querySelector('button.move-form').click();
+  await until(() => pcard(root, 2).querySelector('.counts').textContent.includes('3 forms'), 'destination has 3 forms');
+  await until(() => pcard(root, 1).querySelector('.counts').textContent.includes('0 forms'), 'source emptied');
+  assert(calls.some(x => x.method === 'PUT' && /\/api\/projects\/2\/forms\/old_form$/.test(x.url)), 'PUT to the destination');
+  root.remove();
+}
+
+export async function test_adding_a_member_grants_the_project_and_says_so() {
+  const { api, ctx, calls } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  const c = pcard(root, 2);
+  const sel = c.querySelector('select.add-member-user');
+  assert(![...sel.options].some(o => o.value === '7'), 'already-assigned user not offered');
+  sel.value = '8';
+  c.querySelector('button.add-member').click();
+  await until(() => pcard(root, 2).querySelector('.member[data-user="8"]'), 'Rani listed');
+  const post = calls.find(x => x.method === 'POST' && /projects\/2\/members$/.test(x.url));
+  eq(JSON.parse(post.init.body), { user_id: 8 });
+  const t = text(root);
+  assert(t.includes('Rani Kumari can now fill all 2 forms') && t.includes('any form added later'), 'consequence stated: ' + t);
+  assert(pcard(root, 2).querySelector('.access-note').textContent.includes('later'), 'standing note about later forms');
+  assert(pcard(root, 2).querySelector('.member[data-user="8"]').textContent.includes('all 2 forms'), 'each member row says which forms');
+  root.remove();
+}
+
+export async function test_removing_a_member_deletes_and_drops_them_from_the_list() {
+  const { api, ctx, calls } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  pcard(root, 2).querySelector('.member[data-user="7"] button.remove-member').click();
+  await until(() => !pcard(root, 2).querySelector('.member[data-user="7"]'), 'Sita gone');
+  assert(calls.some(c => c.method === 'DELETE' && /projects\/2\/members\/7$/.test(c.url)));
+  assert(pcard(root, 2).querySelector('.counts').textContent.includes('0 members'));
+  root.remove();
+}
+
+export async function test_the_members_list_reflects_an_addition_after_a_fresh_mount() {
+  const { api, ctx } = projectWorld();
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  pcard(root, 1).querySelector('select.add-member-user').value = '8';
+  pcard(root, 1).querySelector('button.add-member').click();
+  await until(() => pcard(root, 1).querySelector('.member[data-user="8"]'), 'added');
+  root.remove();
+  const root2 = mount();
+  await mountProjects(root2, ctx(api));
+  assert(pcard(root2, 1).querySelector('.member[data-user="8"]'), 'still listed on a fresh load');
+  assert(pcard(root2, 1).querySelector('.counts').textContent.includes('1 member'));
+  root2.remove();
+}
+
+export async function test_a_supervisor_sees_only_what_the_api_returns() {
+  const { api, ctx, w } = projectWorld('supervisor');
+  w.projects.shift(); // the server hides the default project from this supervisor
+  const root = mount();
+  await mountProjects(root, ctx(api));
+  eq(root.querySelectorAll('.project-card').length, 1);
+  assert(!text(root).includes('Default project'));
+  assert(!root.querySelector('button.add-member'), 'no add control for a supervisor');
+  root.remove();
+}
+
+export async function test_the_projects_page_is_not_shown_to_an_enumerator() {
+  const root = mount();
+  let went = null;
+  const u = await enter(root, { store: fakeStore({ access_token: 't', refresh_token: 'r', user: { id: 5, username: 'sita', role: 'enumerator' } }), navigate: x => { went = x; } });
+  eq(u, null);
+  eq(went, '../');
+  assert(!root.querySelector('.project-card, .create-project'), 'no project controls rendered');
   root.remove();
 }
