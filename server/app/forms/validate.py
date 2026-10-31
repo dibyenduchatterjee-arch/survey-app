@@ -38,10 +38,17 @@ HIDDEN NODES AND CALCULATES (Task 18's engine must match this exactly)
       is re-applied on every fixed-point pass, so a value computed while the node
       looked visible is cleared once it is hidden. A supervisor never sees a computed
       number derived from a section the enumerator could not see.
-    * Raw answers of hidden QUESTIONS are not blanked here: they stay visible to other
-      expressions and to count()/sum() over a repeated field, which see every row of
-      the repeat whether or not it is relevant. (The offline app clears a hidden answer
-      before submit, so in practice this only matters for a modified client.)
+    * Raw answers of hidden QUESTIONS are PRESERVED AS SUBMITTED. The server does not
+      blank them, deliberately, and they stay visible to other expressions and to
+      count()/sum() over a repeated field, which see every row of the repeat whether or
+      not it is relevant. Reasons: (1) the server never silently corrects field data;
+      an answer for a hidden question is an anomaly to keep and make visible, and
+      erasing is the one action a supervisor cannot undo or notice. (2) That answer is
+      evidence of a modified client, a stale form version or a form-logic mistake.
+      (3) Blanking would give different aggregate totals from the phone.
+    * The asymmetry is deliberate: a calculate is something we derive, and deriving a
+      number from a section the enumerator never saw would be inventing data; a raw
+      answer is something we received, and we keep what we receive.
     Deferred: whether aggregates should exclude hidden rows. Not changed, only recorded.
 
 EVALUATION-TIME ERRORS never escape as exceptions (a crash here would be a 500 and a
