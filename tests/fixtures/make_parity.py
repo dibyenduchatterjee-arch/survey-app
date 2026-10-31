@@ -68,13 +68,10 @@ SYNTH = {
     ],
 }
 
-# KNOWN SERVER QUIRK, pinned so the two sides cannot drift apart silently. A repeat that
-# turns hidden only AFTER a late-declared calculate settles keeps the calculates inside its
-# rows: validate.py's calc_pass calls clear_calculates(node.children, level) with the
-# PARENT's level, so a hidden group is cleared but a hidden repeat's rows are not. The
-# docstring promises they are cleared. The JavaScript engine ports the code, not the
-# docstring. When the server is fixed, regenerate this file and the case below changes to
-# {"v": 3} without "rc"; the JS engine then needs the same one-line fix.
+# Regression case for a server bug fixed in Task 18: a repeat that turns hidden only AFTER
+# a late-declared calculate settles must have the calculates in its rows unset. calc_pass
+# used to hand clear_calculates the repeat's children with the PARENT's level, so only
+# hidden groups were cleared. Expected now: the row is {"v": 3} with no "rc".
 QUIRK = {
     "form_id": "quirk", "version": "1", "title": {"default": "quirk"},
     "languages": ["default"], "default_language": "default", "choices": {},
@@ -127,7 +124,7 @@ CASES = [
     ("synth hidden hides calculates", "synth", {"x": 2, "show_r": "no", "gq": 7, "hq": 8, "sm": "yes"},
      {"r": [{"rv": 3, "rc": 99, "rr": [{"rrv": 1}]}, {"rv": 4}]}),
     ("synth empty", "synth", {}, {}),
-    ("quirk: hidden repeat keeps a calculate computed before it hid", "quirk", {"x": 8}, {"R": [{"v": 3}]}),
+    ("hidden repeat clears a calculate computed before it hid", "quirk", {"x": 8}, {"R": [{"v": 3}]}),
     ("synth stale client calculates", "synth", {"x": 3, "a": 1000, "gc": 5, "gate": "open"}, {}),
 ]
 
