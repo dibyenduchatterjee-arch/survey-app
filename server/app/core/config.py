@@ -5,6 +5,16 @@ from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy.engine import make_url
+
+# The repository root: this file is <root>/server/app/core/config.py. Every relative path in the
+# settings and the .env file are read from here, never from the process's working directory, so
+# starting the server from `server/` (or from anywhere else) finds the same database and .env.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _absolute(path: Path) -> Path:
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 class Settings(BaseSettings):
@@ -14,8 +24,15 @@ class Settings(BaseSettings):
     fail loudly at startup rather than fall back to something guessable.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        extra="ignore", hide_input_in_errors=True,
+        # A blank `NAME=` line in .env (as in .env.example) means "use the default", not "empty".
+        env_ignore_empty=True,
+    )
 
+    # A relative SQLite path (sqlite:///./x.db) is taken relative to the project root, not to
+    # wherever the server happens to be started from. Other databases are used as given.
     database_url: str = "sqlite:///./server/survey.db"
     jwt_secret: SecretStr
     media_key: SecretStr
@@ -51,6 +68,22 @@ class Settings(BaseSettings):
     drive_folder_id: str | None = None
     # Optional: a Google Sheet whose tab (named for the form) is refreshed with the main CSV.
     google_sheet_id: str | None = None
+
+    @field_validator("database_url")
+    @classmethod
+    def _anchor_sqlite_path(cls, v: str) -> str:
+        url = make_url(v)
+        db = url.database
+        if url.get_backend_name() != "sqlite" or not db or db == ":memory:" or db.startswith("file:"):
+            return v
+        if Path(db).is_absolute():
+            return v
+        return url.set(database=(PROJECT_ROOT / db).resolve().as_posix()).render_as_string(hide_password=False)
+
+    @field_validator("media_root", "google_service_account_file")
+    @classmethod
+    def _anchor_relative_path(cls, v: Path | None) -> Path | None:
+        return None if v is None else _absolute(v)
 
     @field_validator("jwt_secret")
     @classmethod

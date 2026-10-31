@@ -839,3 +839,86 @@ def test_a_concurrent_replay_that_wins_the_slot_leaves_one_row_and_no_stray_file
     assert created is False and sub.id == first.id
     assert db.scalars(select(MediaFile)).one().sha256 == "1" * 64  # the winner's row stands
     assert disk(media_root) == []  # ours was never written
+
+
+# ---- the clock a submission is validated against: finished_at when sane, else received_at
+
+def _clock(finished_at, received_at=datetime(2026, 10, 31, 9, 0, tzinfo=UTC)):
+    return submissions.validation_clock(finished_at, received_at)
+
+
+def test_a_sane_finished_at_is_the_validation_clock():
+    finished = datetime(2026, 10, 29, 9, 0, tzinfo=UTC)  # entered Wednesday, synced Friday
+    now, failure = _clock(finished)
+    assert now == finished and failure is None
+
+
+def test_the_edges_of_the_sane_window_are_inclusive():
+    received = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+    ahead = received + submissions.CLOCK_SKEW
+    behind = received - submissions.CLOCK_MAX_AGE
+    assert _clock(ahead) == (ahead, None)
+    assert _clock(behind) == (behind, None)
+
+
+def test_a_future_finished_at_falls_back_to_received_at_and_is_reported():
+    received = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+    now, failure = _clock(datetime(2026, 10, 31, 9, 6, tzinfo=UTC), received)  # 6 min ahead
+    assert now == received
+    assert (failure.question, failure.rule) == ("", "error")
+    assert "device clock" in failure.message and "future" in failure.message
+
+
+def test_an_ancient_finished_at_falls_back_to_received_at_and_is_reported():
+    received = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+    now, failure = _clock(datetime(2001, 1, 1, tzinfo=UTC), received)
+    assert now == received
+    assert failure.rule == "error" and "device clock" in failure.message and "30 days" in failure.message
+    assert _clock(received - submissions.CLOCK_MAX_AGE - submissions.timedelta(seconds=1))[1] is not None
+
+
+def test_a_missing_finished_at_falls_back_to_received_at_silently():
+    received = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+    assert _clock(None, received) == (received, None)
+
+
+def test_a_naive_finished_at_is_read_as_utc():
+    now, failure = _clock(datetime(2026, 10, 30, 9, 0))
+    assert now == datetime(2026, 10, 30, 9, 0, tzinfo=UTC) and failure is None
+
+
+def _dose_on(day):
+    return {"children": [{"child_name": "R", "child_age_months": 20, "ifa_form": "syrup",
+                          "syrup_given": "yes", "ifa_doses": [{"dose_date": day}]}]}
+
+
+def _failures_of(db):
+    return db.scalars(select(Submission)).one().failures_json or []
+
+
+def test_validation_uses_the_time_the_data_was_collected(client, db, form, enum):
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    finished = (now - timedelta(days=3)).isoformat()
+    yesterday = (now - timedelta(days=1)).date().isoformat()
+    r = post(client, enum, payload(form, repeats=_dose_on(yesterday), finished_at=finished)[1])
+    assert r.status_code == 201
+    # a dose dated after the visit was entered: not allowed by `. <= today()` at that time
+    assert any(f["question"] == "children[1]/ifa_doses[1]/dose_date" and f["rule"] == "constraint"
+               for f in _failures_of(db))
+
+
+def test_without_finished_at_validation_uses_receipt_time(client, db, form, enum):
+    from datetime import timedelta
+
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).date().isoformat()
+    r = post(client, enum, payload(form, repeats=_dose_on(yesterday))[1])
+    assert r.status_code == 201
+    assert not any(f["rule"] == "constraint" for f in _failures_of(db))
+
+
+def test_an_implausible_device_clock_is_flagged_for_the_supervisor(client, db, form, enum):
+    r = post(client, enum, payload(form, finished_at="2001-01-01T00:05:00Z")[1])
+    assert r.status_code == 201 and r.json()["status"] == "flagged"
+    assert any(f["rule"] == "error" and "device clock" in (f["message"] or "") for f in _failures_of(db))

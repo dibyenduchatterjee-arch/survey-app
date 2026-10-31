@@ -4,7 +4,7 @@
 import { FormEngine } from '../js/formengine.js';
 import * as db from '../js/db.js';
 import {
-  renderNode, renderForm, captureLocation, downscaleImage, formatGeopoint, draftSaver, SUPPORTED_TYPES,
+  renderNode, renderForm, captureLocation, downscaleImage, formatGeopoint, draftSaver, loadDraft, SUPPORTED_TYPES,
 } from '../js/render.js';
 
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
@@ -384,6 +384,44 @@ export async function test_a_draft_is_saved_on_every_answer() {
   // A draft restores into a working engine.
   const back = new FormEngine(spec, { data: d.data, repeats: d.repeats });
   eq(back.getAnswer('q_text'), 'पहला');
+  form.remove();
+  await db.deleteDB();
+}
+
+export async function test_typing_after_attaching_a_photo_does_not_rewrite_the_blob() {
+  await db.deleteDB(); await db.openDB();
+  const spec = everyTypeSpec();
+  const engine = new FormEngine(spec);
+  const media = new Map();
+  const writes = [];
+  const store = { ...db, saveDraft: (d) => { writes.push(d); return db.saveDraft(d); }, getDraft: db.getDraft };
+  const saver = draftSaver({ id: 'd2', spec, userId: 1, store, media });
+  const form = renderForm(engine, 'default', { geolocation: null, media, maxMediaBytes: 400 * 1024, onAnswer: saver });
+  mount(form);
+  const input = form.querySelector('[data-path="q_image"] input[type=file]');
+  const dt = new DataTransfer();
+  dt.items.add(new File([await bigPhoto(1200, 900)], 'a.jpg', { type: 'image/jpeg' }));
+  input.files = dt.files; fire(input, 'change');
+  for (let i = 0; i < 100 && !media.has('q_image'); i++) await sleep(50);
+  await saver.flush();
+  const mediaWrites = () => writes.filter(w => w.kind === 'media').length;
+  eq(mediaWrites(), 1, 'the photo is written once when it is attached');
+  const text = form.querySelector('[data-path="q_text"] input, [data-path="q_text"] textarea');
+  for (const v of ['a', 'ab', 'abc', 'abcd']) type(text, v);
+  await saver.flush();
+  eq(mediaWrites(), 1, 'typing must not rewrite the photo');
+  assert(writes.filter(w => w.kind !== 'media').length >= 5, 'answers must still be saved on every change');
+  assert(writes.filter(w => w.kind !== 'media').every(w => !('media' in w)), 'the answer record must not carry blobs');
+  const back = await loadDraft(db, 'd2');
+  eq(back.data.q_text, 'abcd');
+  assert(back.media.q_image instanceof Blob && back.media.q_image.size > 0, 'the photo comes back with the draft');
+  // Retaking replaces it, and that is a write.
+  const dt2 = new DataTransfer();
+  dt2.items.add(new File([await bigPhoto(1000, 700)], 'b.jpg', { type: 'image/jpeg' }));
+  input.files = dt2.files; fire(input, 'change');
+  for (let i = 0; i < 100 && mediaWrites() < 2; i++) await sleep(50);
+  await saver.flush();
+  eq(mediaWrites(), 2, 'a changed photo is written');
   form.remove();
   await db.deleteDB();
 }

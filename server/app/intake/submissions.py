@@ -33,7 +33,7 @@ import hashlib
 import shutil
 import uuid as uuidlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -224,9 +224,43 @@ def _normalise(value: Any) -> Any:
     return value
 
 
-def _validate(spec: dict, data: dict, repeats: dict) -> list[Failure]:
+CLOCK_SKEW = timedelta(minutes=5)  # a device clock may run this far ahead of the server
+CLOCK_MAX_AGE = timedelta(days=30)  # and a visit may wait this long to be synced
+
+
+def validation_clock(finished_at: datetime | None, received_at: datetime) -> tuple[datetime, Failure | None]:
+    """The `now` a submission is validated against, and a failure if the device clock is off.
+
+    Validation reflects when the data was COLLECTED: a visit entered on Monday and synced on
+    Wednesday must not be flagged for a date that was valid when it was typed (`. <= today()`).
+    So the device-reported `finished_at` is used when it is sane: not more than CLOCK_SKEW
+    after `received_at`, and not more than CLOCK_MAX_AGE before it. A missing one falls back
+    to `received_at` silently. An implausible one falls back to `received_at` AND is reported
+    as a rule "error" failure, so a supervisor can see why.
+    This does not make the device clock trusted for ordering or expiry: `received_at`, the
+    server's own clock, still governs both. A naive `finished_at` is read as UTC, as it is
+    stored.
+    """
+    if finished_at is None:
+        return received_at, None
+    if finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=UTC)
+    if finished_at > received_at + CLOCK_SKEW:
+        reason = "is in the future"
+    elif finished_at < received_at - CLOCK_MAX_AGE:
+        reason = f"is more than {CLOCK_MAX_AGE.days} days old"
+    else:
+        return finished_at, None
+    return received_at, Failure(
+        "", "error",
+        f"The device clock was implausible (finished_at {finished_at.isoformat()} {reason}); "
+        "the submission was validated against the server's receipt time",
+    )
+
+
+def _validate(spec: dict, data: dict, repeats: dict, now: datetime | None = None) -> list[Failure]:
     try:
-        failures = validate_submission(spec, data, repeats, datetime.now(UTC))
+        failures = validate_submission(spec, data, repeats, now or datetime.now(UTC))
     except Exception:  # noqa: BLE001 - a crash here must not lose the visit
         failures = [Failure("", "error", "Server-side validation could not run for this submission")]
     known = _repeat_names(spec)
@@ -418,7 +452,11 @@ def store_submission(
     spec = form_version.json_spec
     data = _normalise(data)
     repeats = {name: [_normalise(r) for r in rows] for name, rows in repeats.items()}
-    failures = _validate(spec, data, repeats)
+    received_at = datetime.now(UTC)  # the server's clock, never the device's
+    now, clock_failure = validation_clock(meta.finished_at, received_at)
+    failures = _validate(spec, data, repeats, now)
+    if clock_failure:
+        failures.append(clock_failure)
     if form_version.published_at is None:
         # The visit happened; refusing it would lose it. Store it, flagged, for a supervisor.
         failures.append(
@@ -432,7 +470,7 @@ def store_submission(
             uuid=uid,
             form_version_id=form_version.id,
             submitted_by=user.id,
-            received_at=datetime.now(UTC),  # the server's clock, never the device's
+            received_at=received_at,  # the server's clock, never the device's
             device_id=meta.device_id,
             started_at=meta.started_at,
             finished_at=meta.finished_at,

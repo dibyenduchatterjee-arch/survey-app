@@ -252,18 +252,47 @@ export async function downscaleImage(file, maxBytes, startEdge = START_EDGE) {
 // Saves the whole answer set on every answer. Writes are serialised and coalesced: if one is
 // in flight, the next snapshot waits and replaces any older waiting one, so the LAST answer
 // always lands. saver(engine, media) is what renderForm calls; saver.flush() waits for disk.
-export function draftSaver({ id, spec, userId, store, extra = () => ({}) }) {
+//
+// PHOTOS ARE NOT REWRITTEN ON EVERY KEYSTROKE. IndexedDB replaces a whole record on put, so a
+// draft that carried its photos would copy several megabytes per character typed on a cheap
+// phone. The answers go in the draft record (every answer); the blobs go in a companion record
+// `<id>:media`, written only when the set of photos actually changed (compared by identity).
+// loadDraft() puts them back together; deleteDraftFully() removes both.
+export const mediaDraftId = (id) => `${id}:media`;
+
+export async function loadDraft(store, id) {
+  const draft = await store.getDraft(id);
+  if (!draft) return draft;
+  const rec = await store.getDraft(mediaDraftId(id));
+  return { ...draft, media: rec && rec.media ? rec.media : (draft.media || {}) };
+}
+
+export async function deleteDraftFully(store, id) {
+  await store.deleteDraft(mediaDraftId(id));
+  await store.deleteDraft(id);
+}
+
+export function draftSaver({ id, spec, userId, store, extra = () => ({}), media: initialMedia }) {
   let waiting = null;
+  let waitingMedia = null;
   let running = null;
+  // What is already on disk, by identity. A restored draft starts from what it restored.
+  let onDisk = new Map(initialMedia || []);
+  const same = (a, b) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v);
   const drain = async () => {
     try {
-      while (waiting) {
+      while (waiting || waitingMedia) {
+        const mediaRec = waitingMedia;
         const snapshot = waiting;
+        waitingMedia = null;
         waiting = null;
         try {
-          await store.saveDraft(snapshot);
+          if (mediaRec) await store.saveDraft(mediaRec.record);
+          if (mediaRec) onDisk = mediaRec.map;
+          if (snapshot) await store.saveDraft(snapshot);
         } catch (e) {
-          waiting = waiting || snapshot;   // try again with the next answer
+          waitingMedia = waitingMedia || mediaRec;   // try again with the next answer
+          waiting = waiting || snapshot;
           throw e;
         }
       }
@@ -273,6 +302,10 @@ export function draftSaver({ id, spec, userId, store, extra = () => ({}) }) {
   };
   const saver = (engine, media) => {
     const { data, repeats } = engine.toSubmission();
+    const current = new Map(media || []);
+    if (!same(current, onDisk)) {
+      waitingMedia = { map: current, record: { id: mediaDraftId(id), kind: 'media', draft_id: id, media: Object.fromEntries(current) } };
+    }
     waiting = {
       id,
       form_id: spec.form_id,
@@ -280,7 +313,6 @@ export function draftSaver({ id, spec, userId, store, extra = () => ({}) }) {
       user_id: userId,
       data,
       repeats,
-      media: media ? Object.fromEntries(media) : {},
       ...extra(),
     };
     if (!running) running = drain();

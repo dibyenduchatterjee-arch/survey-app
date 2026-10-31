@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.core import audit
+from app.core.config import Settings, get_settings
 from app.core.rbac import current_user, require_role
 from app.db.models import Assignment, Dataset, Form, FormVersion, User
 from app.db.session import get_session
@@ -310,6 +311,19 @@ def upload_dataset(
         db.rollback()
         raise
     return DatasetOut(name=name, version=ds.version, rows=rows)
+
+
+class ClientConfig(BaseModel):
+    max_media_bytes: int
+
+
+@router.get("/config", response_model=ClientConfig)
+def client_config(
+    user: User = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+) -> ClientConfig:
+    """Only settings a client genuinely needs; never secrets, paths or Drive config."""
+    return ClientConfig(max_media_bytes=settings.max_media_bytes)
 
 
 @router.get("/datasets", response_model=list[DatasetSummary])

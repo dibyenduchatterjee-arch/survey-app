@@ -306,6 +306,17 @@ def test_dataset_listing_is_names_and_versions_for_any_signed_in_user(client, as
     assert client.get("/api/datasets").status_code == 401
 
 
+def test_client_config_exposes_only_the_media_cap_to_signed_in_users(client, as_):
+    from app.core.config import get_settings
+
+    _, eh = as_("enumerator")
+    r = client.get("/api/config", headers=eh)
+    assert r.status_code == 200
+    assert r.json() == {"max_media_bytes": get_settings().max_media_bytes}
+    assert set(r.json()) == {"max_media_bytes"}
+    assert client.get("/api/config").status_code == 401
+
+
 def test_dataset_missing_is_404_and_needs_auth(client, sup):
     _, h = sup
     assert client.get("/api/datasets/nope", headers=h).status_code == 404

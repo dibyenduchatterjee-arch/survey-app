@@ -85,6 +85,42 @@ QUIRK = {
     ],
 }
 
+# Three levels of repeat, each hidden by a different mechanism, plus today(): exercises
+# hidden-repeat clearing at depth and the clock.
+DEEP = {
+    "form_id": "deep", "version": "1", "title": {"default": "deep"},
+    "languages": ["default"], "default_language": "default", "choices": {},
+    "nodes": [
+        q("integer", "x", label={"default": "x"}),
+        q("date", "start", label={"default": "start"}, constraint=". <= today()",
+          constraint_message={"default": "not in the future"}),
+        q("calculate", "today_d", calculate="today()"),
+        q("calculate", "days_since", calculate="today() - ${start}"),
+        q("repeat", "A", relevant="${gate} != 'open'", children=[
+            q("integer", "v", label={"default": "v"}, required=True),
+            q("calculate", "ac", calculate="${v} * 2"),
+            q("repeat", "B", relevant="${v} > 1", children=[
+                q("integer", "w", label={"default": "w"}, required=True),
+                q("calculate", "bc", calculate="${w} + ${v}"),
+                q("repeat", "C", children=[
+                    q("integer", "u", label={"default": "u"}, required=True, constraint=". < 100"),
+                    q("calculate", "cc", calculate="${u} * 3 + ${w}"),
+                    q("calculate", "cn", calculate="position()"),
+                ]),
+            ]),
+        ]),
+        q("calculate", "gate", calculate="if(${x} > 5, 'open', 'shut')"),
+        q("calculate", "total_u", calculate="sum(${u})"),
+        q("calculate", "n_w", calculate="count(${w})"),
+    ],
+}
+
+ROWS = {"A": [
+    {"v": 1, "B": [{"w": 5, "C": [{"u": 1}]}]},
+    {"v": 4, "B": [{"w": 2, "C": [{"u": 3}, {"u": 200}, {}]}, {"C": [{"u": 4}]}]},
+    {"B": [{"w": 1}]},
+]}
+
 CASES = [
     # ---- the real ASHA visit form
     ("amb valid visit", "amb", {
@@ -125,6 +161,28 @@ CASES = [
      {"r": [{"rv": 3, "rc": 99, "rr": [{"rrv": 1}]}, {"rv": 4}]}),
     ("synth empty", "synth", {}, {}),
     ("hidden repeat clears a calculate computed before it hid", "quirk", {"x": 8}, {"R": [{"v": 3}]}),
+    # ---- nested hidden repeats: A hidden by a late calculate, B by its own row, C inside both
+    ("deep: A opened by a late calculate is hidden, nested calculates unset", "deep", {"x": 8}, ROWS),
+    ("deep: A visible, B hidden in some rows, failures at three depths", "deep", {"x": 2}, ROWS),
+    ("deep: nothing answered", "deep", {}, {}),
+    ("deep: empty rows only", "deep", {"x": 1}, {"A": [{}, {"B": [{}]}]}),
+    ("deep: nested rows under a hidden row are kept raw and still counted", "deep", {"x": 2},
+     {"A": [{"v": 1, "B": [{"w": 9, "C": [{"u": 7}]}]}]}),
+    # ---- the clock: the same answers under different `now`, including across Kolkata midnight
+    ("clock: start on the day, now 09:00 IST", "deep", {"x": 1, "start": "2026-10-31"}, {}, "2026-10-31T09:00:00+05:30"),
+    ("clock: start tomorrow, now 09:00 IST", "deep", {"x": 1, "start": "2026-11-01"}, {}, "2026-10-31T09:00:00+05:30"),
+    ("clock: 20:00 UTC is already the next day in Kolkata", "deep", {"x": 1, "start": "2026-10-31"}, {}, "2026-10-30T20:00:00+00:00"),
+    ("clock: 18:00 UTC is still the day before in Kolkata", "deep", {"x": 1, "start": "2026-10-31"}, {}, "2026-10-30T18:00:00+00:00"),
+    ("clock: one second before Kolkata midnight", "deep", {"x": 1, "start": "2026-11-01"}, {}, "2026-10-31T23:59:59+05:30"),
+    ("clock: Kolkata midnight", "deep", {"x": 1, "start": "2026-11-01"}, {}, "2026-11-01T00:00:00+05:30"),
+    ("clock: a different offset, same instant", "deep", {"x": 1, "start": "2026-11-01"}, {}, "2026-10-31T18:30:00+00:00"),
+    ("clock: weeks later", "deep", {"x": 1, "start": "2026-10-01"}, {}, "2026-12-15T09:00:00+05:30"),
+    ("clock: amb dose date in the future on 1 Oct, valid on 20 Oct", "amb", {"household_children": 1},
+     {"children": [{"child_name": "A", "child_age_months": 20, "ifa_form": "syrup", "syrup_given": "yes",
+                    "ifa_doses": [{"dose_date": "2026-10-15"}]}]}, "2026-10-01T09:00:00+05:30"),
+    ("clock: amb dose date in the future on 1 Oct, valid on 20 Oct (later)", "amb", {"household_children": 1},
+     {"children": [{"child_name": "A", "child_age_months": 20, "ifa_form": "syrup", "syrup_given": "yes",
+                    "ifa_doses": [{"dose_date": "2026-10-15"}]}]}, "2026-10-20T09:00:00+05:30"),
     ("synth stale client calculates", "synth", {"x": 3, "a": 1000, "gc": 5, "gate": "open"}, {}),
 ]
 
@@ -140,21 +198,28 @@ def _plain(v):
     return v if isinstance(v, int | float | str | bool | type(None)) else str(v)
 
 
-def run_case(name, spec_name, data, repeats):
-    spec = {"amb": AMB, "synth": SYNTH, "quirk": QUIRK}[spec_name]
-    now = datetime.fromisoformat(NOW)
+def run_case(name, spec_name, data, repeats, at=NOW):
+    spec = {"amb": AMB, "synth": SYNTH, "quirk": QUIRK, "deep": DEEP}[spec_name]
+    now = datetime.fromisoformat(at)
     failures = validate_submission(spec, copy.deepcopy(data), copy.deepcopy(repeats), now)
     run = _Run(spec, copy.deepcopy(data), copy.deepcopy(repeats), now)
     run.settle()
     settled = _plain({"data": run.top.own, "repeats": run.top_rows})
     return {
-        "name": name, "spec": spec_name, "now": NOW, "data": data, "repeats": repeats,
+        "name": name, "spec": spec_name, "now": at, "data": data, "repeats": repeats,
         "failures": [{"question": f.question, "rule": f.rule, "message": f.message} for f in failures],
         "settled": settled,
     }
 
 
-out = {"synth": SYNTH, "quirk": QUIRK, "cases": [run_case(*c) for c in CASES]}
-(HERE / "parity_cases.json").write_text(
-    json.dumps(out, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-print(len(CASES), "cases written")
+def build() -> dict:
+    return {"synth": SYNTH, "quirk": QUIRK, "deep": DEEP, "cases": [run_case(*c) for c in CASES]}
+
+
+def dumps(out: dict) -> str:
+    return json.dumps(out, ensure_ascii=False, indent=1) + "\n"
+
+
+if __name__ == "__main__":
+    (HERE / "parity_cases.json").write_text(dumps(build()), encoding="utf-8")
+    print(len(CASES), "cases written")

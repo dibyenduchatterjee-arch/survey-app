@@ -224,6 +224,128 @@
    }
   ]
  },
+ "deep": {
+  "form_id": "deep",
+  "version": "1",
+  "title": {
+   "default": "deep"
+  },
+  "languages": [
+   "default"
+  ],
+  "default_language": "default",
+  "choices": {},
+  "nodes": [
+   {
+    "type": "integer",
+    "name": "x",
+    "label": {
+     "default": "x"
+    }
+   },
+   {
+    "type": "date",
+    "name": "start",
+    "label": {
+     "default": "start"
+    },
+    "constraint": ". <= today()",
+    "constraint_message": {
+     "default": "not in the future"
+    }
+   },
+   {
+    "type": "calculate",
+    "name": "today_d",
+    "calculate": "today()"
+   },
+   {
+    "type": "calculate",
+    "name": "days_since",
+    "calculate": "today() - ${start}"
+   },
+   {
+    "type": "repeat",
+    "name": "A",
+    "relevant": "${gate} != 'open'",
+    "children": [
+     {
+      "type": "integer",
+      "name": "v",
+      "label": {
+       "default": "v"
+      },
+      "required": true
+     },
+     {
+      "type": "calculate",
+      "name": "ac",
+      "calculate": "${v} * 2"
+     },
+     {
+      "type": "repeat",
+      "name": "B",
+      "relevant": "${v} > 1",
+      "children": [
+       {
+        "type": "integer",
+        "name": "w",
+        "label": {
+         "default": "w"
+        },
+        "required": true
+       },
+       {
+        "type": "calculate",
+        "name": "bc",
+        "calculate": "${w} + ${v}"
+       },
+       {
+        "type": "repeat",
+        "name": "C",
+        "children": [
+         {
+          "type": "integer",
+          "name": "u",
+          "label": {
+           "default": "u"
+          },
+          "required": true,
+          "constraint": ". < 100"
+         },
+         {
+          "type": "calculate",
+          "name": "cc",
+          "calculate": "${u} * 3 + ${w}"
+         },
+         {
+          "type": "calculate",
+          "name": "cn",
+          "calculate": "position()"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "calculate",
+    "name": "gate",
+    "calculate": "if(${x} > 5, 'open', 'shut')"
+   },
+   {
+    "type": "calculate",
+    "name": "total_u",
+    "calculate": "sum(${u})"
+   },
+   {
+    "type": "calculate",
+    "name": "n_w",
+    "calculate": "count(${w})"
+   }
+  ]
+ },
  "cases": [
   {
    "name": "amb valid visit",
@@ -873,6 +995,745 @@
      "R": [
       {
        "v": 3
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "deep: A opened by a late calculate is hidden, nested calculates unset",
+   "spec": "deep",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 8
+   },
+   "repeats": {
+    "A": [
+     {
+      "v": 1,
+      "B": [
+       {
+        "w": 5,
+        "C": [
+         {
+          "u": 1
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "v": 4,
+      "B": [
+       {
+        "w": 2,
+        "C": [
+         {
+          "u": 3
+         },
+         {
+          "u": 200
+         },
+         {}
+        ]
+       },
+       {
+        "C": [
+         {
+          "u": 4
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "B": [
+       {
+        "w": 1
+       }
+      ]
+     }
+    ]
+   },
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 8,
+     "today_d": "2026-10-31",
+     "days_since": "NaN",
+     "gate": "open",
+     "total_u": 208,
+     "n_w": 4
+    },
+    "repeats": {
+     "A": [
+      {
+       "v": 1,
+       "B": [
+        {
+         "w": 5,
+         "C": [
+          {
+           "u": 1
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "v": 4,
+       "B": [
+        {
+         "w": 2,
+         "C": [
+          {
+           "u": 3
+          },
+          {
+           "u": 200
+          },
+          {}
+         ]
+        },
+        {
+         "C": [
+          {
+           "u": 4
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "B": [
+        {
+         "w": 1
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "deep: A visible, B hidden in some rows, failures at three depths",
+   "spec": "deep",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 2
+   },
+   "repeats": {
+    "A": [
+     {
+      "v": 1,
+      "B": [
+       {
+        "w": 5,
+        "C": [
+         {
+          "u": 1
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "v": 4,
+      "B": [
+       {
+        "w": 2,
+        "C": [
+         {
+          "u": 3
+         },
+         {
+          "u": 200
+         },
+         {}
+        ]
+       },
+       {
+        "C": [
+         {
+          "u": 4
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "B": [
+       {
+        "w": 1
+       }
+      ]
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "A[2]/B[1]/C[2]/u",
+     "rule": "constraint",
+     "message": null
+    },
+    {
+     "question": "A[2]/B[1]/C[3]/u",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "A[2]/B[2]/w",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "A[3]/v",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 2,
+     "today_d": "2026-10-31",
+     "days_since": "NaN",
+     "gate": "shut",
+     "total_u": 208,
+     "n_w": 4
+    },
+    "repeats": {
+     "A": [
+      {
+       "v": 1,
+       "B": [
+        {
+         "w": 5,
+         "C": [
+          {
+           "u": 1
+          }
+         ]
+        }
+       ],
+       "ac": 2
+      },
+      {
+       "v": 4,
+       "B": [
+        {
+         "w": 2,
+         "C": [
+          {
+           "u": 3,
+           "cc": 11,
+           "cn": 1
+          },
+          {
+           "u": 200,
+           "cc": 602,
+           "cn": 2
+          },
+          {
+           "cc": "NaN",
+           "cn": 3
+          }
+         ],
+         "bc": 6
+        },
+        {
+         "C": [
+          {
+           "u": 4,
+           "cc": 14,
+           "cn": 1
+          }
+         ],
+         "bc": "NaN"
+        }
+       ],
+       "ac": 8
+      },
+      {
+       "B": [
+        {
+         "w": 1
+        }
+       ],
+       "ac": "NaN"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "deep: nothing answered",
+   "spec": "deep",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {},
+   "repeats": {},
+   "failures": [],
+   "settled": {
+    "data": {
+     "today_d": "2026-10-31",
+     "days_since": "NaN",
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "deep: empty rows only",
+   "spec": "deep",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 1
+   },
+   "repeats": {
+    "A": [
+     {},
+     {
+      "B": [
+       {}
+      ]
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "A[1]/v",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "A[2]/v",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 1,
+     "today_d": "2026-10-31",
+     "days_since": "NaN",
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 1
+    },
+    "repeats": {
+     "A": [
+      {
+       "ac": "NaN"
+      },
+      {
+       "B": [
+        {}
+       ],
+       "ac": "NaN"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "deep: nested rows under a hidden row are kept raw and still counted",
+   "spec": "deep",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 2
+   },
+   "repeats": {
+    "A": [
+     {
+      "v": 1,
+      "B": [
+       {
+        "w": 9,
+        "C": [
+         {
+          "u": 7
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 2,
+     "today_d": "2026-10-31",
+     "days_since": "NaN",
+     "gate": "shut",
+     "total_u": 7,
+     "n_w": 1
+    },
+    "repeats": {
+     "A": [
+      {
+       "v": 1,
+       "B": [
+        {
+         "w": 9,
+         "C": [
+          {
+           "u": 7
+          }
+         ]
+        }
+       ],
+       "ac": 2
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "clock: start on the day, now 09:00 IST",
+   "spec": "deep",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 1,
+    "start": "2026-10-31"
+   },
+   "repeats": {},
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-10-31",
+     "today_d": "2026-10-31",
+     "days_since": 0,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: start tomorrow, now 09:00 IST",
+   "spec": "deep",
+   "now": "2026-10-31T09:00:00+05:30",
+   "data": {
+    "x": 1,
+    "start": "2026-11-01"
+   },
+   "repeats": {},
+   "failures": [
+    {
+     "question": "start",
+     "rule": "constraint",
+     "message": "not in the future"
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-11-01",
+     "today_d": "2026-10-31",
+     "days_since": -1,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: 20:00 UTC is already the next day in Kolkata",
+   "spec": "deep",
+   "now": "2026-10-30T20:00:00+00:00",
+   "data": {
+    "x": 1,
+    "start": "2026-10-31"
+   },
+   "repeats": {},
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-10-31",
+     "today_d": "2026-10-31",
+     "days_since": 0,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: 18:00 UTC is still the day before in Kolkata",
+   "spec": "deep",
+   "now": "2026-10-30T18:00:00+00:00",
+   "data": {
+    "x": 1,
+    "start": "2026-10-31"
+   },
+   "repeats": {},
+   "failures": [
+    {
+     "question": "start",
+     "rule": "constraint",
+     "message": "not in the future"
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-10-31",
+     "today_d": "2026-10-30",
+     "days_since": -1,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: one second before Kolkata midnight",
+   "spec": "deep",
+   "now": "2026-10-31T23:59:59+05:30",
+   "data": {
+    "x": 1,
+    "start": "2026-11-01"
+   },
+   "repeats": {},
+   "failures": [
+    {
+     "question": "start",
+     "rule": "constraint",
+     "message": "not in the future"
+    }
+   ],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-11-01",
+     "today_d": "2026-10-31",
+     "days_since": -1,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: Kolkata midnight",
+   "spec": "deep",
+   "now": "2026-11-01T00:00:00+05:30",
+   "data": {
+    "x": 1,
+    "start": "2026-11-01"
+   },
+   "repeats": {},
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-11-01",
+     "today_d": "2026-11-01",
+     "days_since": 0,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: a different offset, same instant",
+   "spec": "deep",
+   "now": "2026-10-31T18:30:00+00:00",
+   "data": {
+    "x": 1,
+    "start": "2026-11-01"
+   },
+   "repeats": {},
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-11-01",
+     "today_d": "2026-11-01",
+     "days_since": 0,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: weeks later",
+   "spec": "deep",
+   "now": "2026-12-15T09:00:00+05:30",
+   "data": {
+    "x": 1,
+    "start": "2026-10-01"
+   },
+   "repeats": {},
+   "failures": [],
+   "settled": {
+    "data": {
+     "x": 1,
+     "start": "2026-10-01",
+     "today_d": "2026-12-15",
+     "days_since": 75,
+     "gate": "shut",
+     "total_u": 0,
+     "n_w": 0
+    },
+    "repeats": {
+     "A": []
+    }
+   }
+  },
+  {
+   "name": "clock: amb dose date in the future on 1 Oct, valid on 20 Oct",
+   "spec": "amb",
+   "now": "2026-10-01T09:00:00+05:30",
+   "data": {
+    "household_children": 1
+   },
+   "repeats": {
+    "children": [
+     {
+      "child_name": "A",
+      "child_age_months": 20,
+      "ifa_form": "syrup",
+      "syrup_given": "yes",
+      "ifa_doses": [
+       {
+        "dose_date": "2026-10-15"
+       }
+      ]
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "district",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "block",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "asha_name",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "children[1]/ifa_doses[1]/dose_date",
+     "rule": "constraint",
+     "message": "तारीख आज से आगे की नहीं हो सकती"
+    }
+   ],
+   "settled": {
+    "data": {
+     "household_children": 1,
+     "children_count": 1
+    },
+    "repeats": {
+     "children": [
+      {
+       "child_name": "A",
+       "child_age_months": 20,
+       "ifa_form": "syrup",
+       "syrup_given": "yes",
+       "ifa_doses": [
+        {
+         "dose_date": "2026-10-15"
+        }
+       ],
+       "child_age_years": 1
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "clock: amb dose date in the future on 1 Oct, valid on 20 Oct (later)",
+   "spec": "amb",
+   "now": "2026-10-20T09:00:00+05:30",
+   "data": {
+    "household_children": 1
+   },
+   "repeats": {
+    "children": [
+     {
+      "child_name": "A",
+      "child_age_months": 20,
+      "ifa_form": "syrup",
+      "syrup_given": "yes",
+      "ifa_doses": [
+       {
+        "dose_date": "2026-10-15"
+       }
+      ]
+     }
+    ]
+   },
+   "failures": [
+    {
+     "question": "district",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "block",
+     "rule": "required",
+     "message": null
+    },
+    {
+     "question": "asha_name",
+     "rule": "required",
+     "message": null
+    }
+   ],
+   "settled": {
+    "data": {
+     "household_children": 1,
+     "children_count": 1
+    },
+    "repeats": {
+     "children": [
+      {
+       "child_name": "A",
+       "child_age_months": 20,
+       "ifa_form": "syrup",
+       "syrup_given": "yes",
+       "ifa_doses": [
+        {
+         "dose_date": "2026-10-15"
+        }
+       ],
+       "child_age_years": 1
       }
      ]
     }
