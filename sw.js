@@ -9,7 +9,7 @@
 //     which is what the sync queue is for.
 //   * Data lives in IndexedDB, not here.
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `evac-shell-${VERSION}`;
 
 // Relative to the worker's own location, so the app works under any base path.
@@ -23,6 +23,7 @@ const SHELL = [
   'js/db.js',
   'js/auth.js',
   'js/projects.js',
+  'js/projectkey.js',
   'config.js',
   'js/sync.js',
   'js/expr.js',

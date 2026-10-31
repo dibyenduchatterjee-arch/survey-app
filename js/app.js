@@ -12,7 +12,7 @@
 //     server answers 200 as a replay, never a duplicate household.
 
 import * as db from './db.js';
-import { openProject, signOut, listProjects } from './projects.js';
+import { openProject, signOut, listProjects, isConfigured } from './projects.js';
 import { bootstrap, startSync, syncOnce, listRejected, retryRejected, splitFormId } from './sync.js';
 import { FormEngine } from './formengine.js';
 import { availableLanguages, translate } from './i18n.js';
@@ -55,7 +55,11 @@ const T = {
     code_refused: 'यह कोड सही नहीं है, या इस प्रोजेक्ट की पहुँच बंद है। अपने सुपरवाइज़र से पूछें।',
     code_network: 'इंटरनेट नहीं चल रहा, या सर्वर जवाब नहीं दे रहा। थोड़ी देर बाद फिर कोशिश करें।',
     code_wait: 'बहुत ज़्यादा कोशिशें हुईं। कुछ मिनट बाद फिर कोशिश करें।',
-    code_unset: 'ऐप अभी सेट नहीं हुआ है (config.js में Apps Script का पता नहीं है)।',
+    code_unset: 'यह ऐप अभी सेट नहीं हुआ है।',
+    code_outdated: 'सर्वर का संस्करण पुराना है। जो व्यक्ति इसे चलाता है, उससे नया संस्करण लगाने को कहें।',
+    setup_title: 'यह ऐप अभी सेट नहीं हुआ है',
+    setup_body: 'सर्वर का पता अभी ऐप में डाला नहीं गया है, इसलिए कुछ भी भेजा या खोला नहीं जा सकता। जिसने यह ऐप दिया है, उसे बताएँ। आपका भरा हुआ काम इस फ़ोन में सुरक्षित है।',
+    setup_tech: 'तकनीकी जानकारी: webapp/config.js में appsScriptUrl अभी भी PASTE-... वाला नमूना है। उसकी जगह Apps Script Web App का पता (जो /exec पर खत्म होता है) डालें।',
     code_cancel: 'वापस जाएँ',
     add_project: 'दूसरा प्रोजेक्ट जोड़ें',
     my_projects: 'आपके प्रोजेक्ट',
@@ -115,7 +119,11 @@ const T = {
     code_refused: 'This code is not right, or access to this project has been switched off. Ask your supervisor.',
     code_network: 'No internet, or the server did not answer. Try again in a little while.',
     code_wait: 'Too many tries. Try again in a few minutes.',
-    code_unset: 'The app is not set up yet (the Apps Script address is missing in config.js).',
+    code_unset: 'This app has not been set up yet.',
+    code_outdated: 'The survey server is an old version. Ask the person who runs it to deploy the new version.',
+    setup_title: 'This app has not been set up yet',
+    setup_body: 'The address of the survey server has not been put into the app, so nothing can be opened or sent. Tell the person who gave you this app. Anything you have already filled in is safe on this phone.',
+    setup_tech: 'For the person setting it up: in webapp/config.js, appsScriptUrl is still the PASTE-... placeholder. Replace it with your Apps Script Web App address (it ends in /exec).',
     code_cancel: 'Back',
     add_project: 'Add another project',
     my_projects: 'Your projects',
@@ -292,6 +300,14 @@ function screen(name, title, ...kids) {
   refreshStatus();
 }
 
+function showNotSetUp() {
+  useChromeToggle(showNotSetUp);
+  screen('setup', t('title'), h('section', 'card', { id: 'not-set-up' },
+    h('div', 'notice bad', { role: 'alert', text: t('setup_title') }),
+    h('p', '', { text: t('setup_body') }),
+    h('p', 'muted', { text: t('setup_tech') })));
+}
+
 // The first screen, and the "add another project" screen. A wrong code stores nothing.
 function showCode(message, { canCancel = false } = {}) {
   useChromeToggle(() => showCode(message, { canCancel }));
@@ -317,6 +333,7 @@ function showCode(message, { canCancel = false } = {}) {
       err.textContent = c === 'refused' ? t('code_refused')
         : c === 'too_many_attempts' ? t('code_wait')
         : c === 'not_configured' ? t('code_unset')
+        : c === 'server_outdated' ? t('code_outdated')
         : t('code_network');
       go.disabled = false;
       go.textContent = t('code_go');
@@ -361,8 +378,13 @@ function compareVersions(a, b) {
 
 const specTitle = (spec) => translate(spec.title, state.lang, spec.default_language) || spec._form_id || splitFormId(spec.form_id).form;
 
+// A project's NAME for display. The key is an opaque id and is never shown; a project this phone
+// no longer holds has no name to show.
+const projectName = (session, key) => ((session.projects || []).find((p) => p.key === key) || {}).name || '';
+const withProject = (label, name) => (name ? `${label} (${name})` : label);
+
 function lostText(session, keys) {
-  const names = (keys || []).map((k) => (session.projects.find((p) => p.key === k) || { name: k }).name);
+  const names = (keys || []).map((k) => projectName(session, k) || '?');
   return t('access_lost', { p: names.join(', ') });
 }
 
@@ -458,7 +480,7 @@ async function showHome(boot, note) {
     for (const d of drafts) {
       const when = d.updated_at ? new Date(d.updated_at).toLocaleString(state.lang === 'en' ? 'en-IN' : 'hi-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '';
       const sp = splitFormId(d.form_id);
-      const label = `${sp.form} (${sp.project}) · ${when}`;
+      const label = `${withProject(sp.form, projectName(session, sp.project))} · ${when}`;
       let armed = false;
       const del = h('button', 'btn btn-quiet', { type: 'button', text: t('discard') });
       del.addEventListener('click', async () => {
@@ -484,7 +506,7 @@ async function showHome(boot, note) {
     const list = h('ul', 'list');
     for (const r of rejected) {
       list.append(h('li', '', {},
-        h('p', '', { text: `${splitFormId(r.form_id).form} (${splitFormId(r.form_id).project}): ${r.message || r.code || r.status}` }),
+        h('p', '', { text: `${withProject(splitFormId(r.form_id).form, projectName(session, splitFormId(r.form_id).project))}: ${r.message || r.code || r.status}` }),
         h('button', 'btn', { type: 'button', text: t('retry'), onclick: async () => { await retryRejected(r.uuid); showHome(boot); } })));
     }
     parts.push(h('section', 'card', {}, h('div', 'notice bad', { text: t('rejected') }), list));
@@ -648,6 +670,9 @@ async function main() {
   window.addEventListener('online', refreshStatus);
   window.addEventListener('offline', refreshStatus);
   setInterval(refreshStatus, 5000);
+  // Before anything else: if config.js still holds the placeholder, say so in plain words. Nothing
+  // else can work, and a silent network error nobody can diagnose is worse than this screen.
+  if (!(await isConfigured())) { showNotSetUp(); return; }
   try {
     await db.openDB();
   } catch (e) {
