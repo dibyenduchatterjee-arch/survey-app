@@ -74,3 +74,36 @@ literals) is as in the main subset. In plain `parse` a bare name is still reject
 bare name can never silently pass as a form field in a `relevant` or `constraint`.
 The JS twin needs a matching `parseChoiceFilter`. The compiler emits and validates the
 same string; there is no separate probe form.
+
+The JS twin evaluates a filter with `evaluateChoiceFilter(expression, context, props)`,
+once per candidate choice. A column missing from `props` reads as the empty string. A
+prop is text, so it follows the ordinary `=` rule: two strings compare as strings
+(`"01"` is not `"1"`), and a number or date on the other side makes it numeric. The
+Python evaluator has no Prop evaluation yet, so these rules are pinned by the JS tests
+only; when the server grows one, move them into a shared case format.
+
+## Where the two languages differ, and how the corpus pins it (added in Task 17)
+
+Each of these has cases; the JavaScript side imitates Python, never the other way round.
+
+- **Number to text** is Python's `repr()`: `1e+16`, `1e-05`, `0.0001`. JavaScript's
+  `String()` differs from 1e16 up and below 1e-4. Pinned quirk: a whole number from 1e15
+  up to (not including) 1e16 prints with a trailing `.0` (`1000000000000000.0`), because
+  `to_string` only strips it below 1e15. The docstring says otherwise; the corpus follows
+  the code. Fix `expr.py` and the case together.
+- **regex()** is a Python pattern, re-emitted for a browser by `translateRegex()`. Cases
+  pin: `\s` is ASCII only (no U+00A0, no U+2028), `.` stops at `\n` only, `$` also matches
+  before a final `\n`, `\A` and `\Z` anchor, `{,n}` is a quantifier while `{`, `}`, `]`,
+  `{}` and `{1, 2}` are literals, and an astral character is one code point.
+- **string-length** counts code points, so an emoji is 1.
+- **-0** is returned as `0`.
+- **`${ }`** may contain `\f` and `\v` around the name (Python's `\s`), but they are not
+  separators anywhere else.
+- **Limits**: 200 parts and nesting depth 50. 100 operands joined by `+` is the most that
+  parses (201 parts is refused); 49 nested parentheses is the deepest.
+- **Field names such as `constructor` or `__proto__`** read as unanswered, as in Python.
+
+Not in the corpus because the Python suite would fail on them (JavaScript refuses all of
+these at parse time; Python accepts them): possessive quantifiers `a*+`, backreferences
+such as `(a)\1`, and `\N{name}`. A repeat count of 4294967295 or more crashes Python with
+an `OverflowError` instead of raising `UnsupportedExpression`.

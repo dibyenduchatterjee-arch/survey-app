@@ -1894,5 +1894,1236 @@
   "name": "unsupported_true_is_not_a_bare_name",
   "expr": "true",
   "unsupported": true
+ },
+ {
+  "name": "to_string_1e16_is_exponent_form",
+  "expr": "concat(10000000000000000)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "1e+16",
+  "note": "Python repr, not JavaScript String(): the two diverge for |x| >= 1e16 and < 1e-4."
+ },
+ {
+  "name": "to_string_negative_1e16_is_exponent_form",
+  "expr": "concat(-10000000000000000)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "-1e+16",
+  "note": "Python repr, not JavaScript String(): the two diverge for |x| >= 1e16 and < 1e-4."
+ },
+ {
+  "name": "to_string_1e_minus_5_is_exponent_form",
+  "expr": "concat(0.00001)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "1e-05",
+  "note": "Python repr, not JavaScript String(): the two diverge for |x| >= 1e16 and < 1e-4."
+ },
+ {
+  "name": "to_string_1e_minus_4_stays_plain",
+  "expr": "concat(0.0001)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "0.0001",
+  "note": "The smallest magnitude that prints without an exponent."
+ },
+ {
+  "name": "to_string_small_fraction_exponent_form",
+  "expr": "concat(0.000012345)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "1.2345e-05"
+ },
+ {
+  "name": "to_string_largest_plain_integer",
+  "expr": "concat(999999999999999)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "999999999999999",
+  "note": "Whole numbers below 1e15 print as plain integers."
+ },
+ {
+  "name": "to_string_1e15_keeps_point_zero",
+  "expr": "concat(1000000000000000)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "1000000000000000.0",
+  "note": "PINS A PYTHON QUIRK: whole numbers from 1e15 up to 1e16 fall through to repr() and print with '.0', contrary to the docstring's 'no trailing .0'. JavaScript imitates it. If expr.py is fixed, change this case and the JS together."
+ },
+ {
+  "name": "to_string_16_digit_integer_keeps_point_zero",
+  "expr": "concat(1234567890123456)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "1234567890123456.0",
+  "note": "See to_string_1e15_keeps_point_zero."
+ },
+ {
+  "name": "to_string_large_whole_number_exponent_form",
+  "expr": "concat(123456789012345678)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "1.2345678901234568e+17"
+ },
+ {
+  "name": "to_string_repeating_fraction",
+  "expr": "concat(1 div 3)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "0.3333333333333333"
+ },
+ {
+  "name": "to_string_overflow_is_infinity",
+  "expr": "concat(10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "Infinity",
+  "note": "A literal past the double range is Infinity in both languages; it prints as 'Infinity'."
+ },
+ {
+  "name": "to_string_negative_overflow_is_negative_infinity",
+  "expr": "concat(-10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "-Infinity"
+ },
+ {
+  "name": "regex_space_class_excludes_no_break_space",
+  "expr": "regex(., '\\s')",
+  "values": {},
+  "current": " ",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "JavaScript's \\s is Unicode; the server's re.ASCII \\s is [ \\t\\n\\r\\f\\v]."
+ },
+ {
+  "name": "regex_space_class_includes_form_feed",
+  "expr": "regex(., '\\s')",
+  "values": {},
+  "current": "\f",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_space_class_includes_vertical_tab",
+  "expr": "regex(., '\\s')",
+  "values": {},
+  "current": "\u000b",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_not_space_class_includes_no_break_space",
+  "expr": "regex(., '\\S')",
+  "values": {},
+  "current": " ",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_set_with_space_excludes_no_break_space",
+  "expr": "regex(., '[\\s]')",
+  "values": {},
+  "current": " ",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_set_with_not_space_includes_no_break_space",
+  "expr": "regex(., '[\\S]')",
+  "values": {},
+  "current": " ",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_set_with_not_space_excludes_tab",
+  "expr": "regex(., '[\\S]')",
+  "values": {},
+  "current": "\t",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_space_class_excludes_line_separator",
+  "expr": "regex(., '\\s')",
+  "values": {},
+  "current": " ",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "U+2028 is whitespace to JavaScript, not to Python ASCII."
+ },
+ {
+  "name": "regex_word_class_is_ascii_only",
+  "expr": "regex(., '\\w+')",
+  "values": {},
+  "current": "é",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_dot_matches_carriage_return",
+  "expr": "regex(., '.')",
+  "values": {},
+  "current": "\r",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "JavaScript's '.' refuses \\r, U+2028 and U+2029; Python's refuses only \\n."
+ },
+ {
+  "name": "regex_dot_matches_line_separator",
+  "expr": "regex(., '.')",
+  "values": {},
+  "current": " ",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_dot_refuses_newline",
+  "expr": "regex(., '.')",
+  "values": {},
+  "current": "\n",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_dot_refuses_newline_inside_text",
+  "expr": "regex(., 'a.b')",
+  "values": {},
+  "current": "a\nb",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_dollar_before_final_newline_does_not_extend_the_match",
+  "expr": "regex(., 'a$')",
+  "values": {},
+  "current": "a\n",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false,
+  "note": "fullmatch needs the whole string, so 'a$' still cannot match 'a\\n'."
+ },
+ {
+  "name": "regex_dollar_matches_before_final_newline",
+  "expr": "regex(., 'a$\\n?')",
+  "values": {},
+  "current": "a\n",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "Python's $ matches before a trailing newline; JavaScript's does not."
+ },
+ {
+  "name": "regex_dollar_at_the_end",
+  "expr": "regex(., 'a$')",
+  "values": {},
+  "current": "a",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_dot_is_one_code_point",
+  "expr": "regex(., '.')",
+  "values": {},
+  "current": "😀",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "Astral characters are one code point in Python; JavaScript without the u flag sees two UTF-16 units."
+ },
+ {
+  "name": "regex_two_dots_do_not_match_one_astral_character",
+  "expr": "regex(., '..')",
+  "values": {},
+  "current": "😀",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_negated_set_matches_one_astral_character",
+  "expr": "regex(., '[^a]')",
+  "values": {},
+  "current": "😀",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_astral_in_text",
+  "expr": "regex(., 'x.y')",
+  "values": {},
+  "current": "x😀y",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_start_and_end_of_string_anchors",
+  "expr": "regex(., '\\Aa\\Z')",
+  "values": {},
+  "current": "a",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "\\A and \\Z are anchors in Python; plain JavaScript reads them as the letters A and Z."
+ },
+ {
+  "name": "regex_start_anchor_is_not_the_letter_a",
+  "expr": "regex(., '\\Aa')",
+  "values": {},
+  "current": "Aa",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_comma_first_quantifier",
+  "expr": "regex(., 'a{,2}')",
+  "values": {},
+  "current": "aa",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true,
+  "note": "{,n} means {0,n} in Python; JavaScript reads it as literal text."
+ },
+ {
+  "name": "regex_comma_first_quantifier_upper_bound",
+  "expr": "regex(., 'a{,2}')",
+  "values": {},
+  "current": "aaa",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_comma_first_quantifier_is_not_literal",
+  "expr": "regex(., 'a{,2}')",
+  "values": {},
+  "current": "a{,2}",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_lone_brace_is_literal",
+  "expr": "regex(., 'a{')",
+  "values": {},
+  "current": "a{",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_brace_pair_is_literal",
+  "expr": "regex(., 'a{}')",
+  "values": {},
+  "current": "a{}",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_brace_with_space_is_literal",
+  "expr": "regex(., 'a{1, 2}')",
+  "values": {},
+  "current": "a{1, 2}",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_lone_close_bracket_and_brace_are_literal",
+  "expr": "regex(., ']}')",
+  "values": {},
+  "current": "]}",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_set_may_start_with_close_bracket",
+  "expr": "regex(., '[]a]+')",
+  "values": {},
+  "current": "a]a",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_octal_escape",
+  "expr": "regex(., '\\101')",
+  "values": {},
+  "current": "A",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_hex_escape",
+  "expr": "regex(., '\\x41')",
+  "values": {},
+  "current": "A",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_alternation_inside_group",
+  "expr": "regex(., '(?:pink|blue)-[0-9]')",
+  "values": {},
+  "current": "blue-7",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_lookahead",
+  "expr": "regex(., '(?=[6-9])[0-9]{10}')",
+  "values": {},
+  "current": "9876543210",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_negative_lookahead",
+  "expr": "regex(., '(?![6-9])[0-9]{10}')",
+  "values": {},
+  "current": "9876543210",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_lazy_quantifier_still_full_match",
+  "expr": "regex(., 'a+?')",
+  "values": {},
+  "current": "aaa",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "regex_empty_pattern_matches_only_empty",
+  "expr": "regex(., '')",
+  "values": {},
+  "current": "x",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "regex_empty_pattern_matches_empty",
+  "expr": "regex(., '')",
+  "values": {},
+  "current": "",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": true
+ },
+ {
+  "name": "unsupported_regex_inline_flag",
+  "expr": "regex(${a}, '(?i)a')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_atomic_group",
+  "expr": "regex(${a}, '(?>a)')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_js_named_group",
+  "expr": "regex(${a}, '(?<n>a)')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_comment_group",
+  "expr": "regex(${a}, '(?#c)a')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_bad_escape",
+  "expr": "regex(${a}, '\\q')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_backreference_without_group",
+  "expr": "regex(${a}, '\\1')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_repeat_bounds_reversed",
+  "expr": "regex(${a}, 'a{2,1}')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_bad_range_with_class",
+  "expr": "regex(${a}, '[\\d-z]')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_range_out_of_order",
+  "expr": "regex(${a}, '[z-a]')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_unterminated_set",
+  "expr": "regex(${a}, '[a')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_unbalanced_open",
+  "expr": "regex(${a}, '(a')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_unbalanced_close",
+  "expr": "regex(${a}, 'a)')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_nothing_to_repeat",
+  "expr": "regex(${a}, '*a')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_multiple_repeat",
+  "expr": "regex(${a}, 'a**')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_quantified_anchor",
+  "expr": "regex(${a}, '^*')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_quantified_word_boundary",
+  "expr": "regex(${a}, '\\b+')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_incomplete_hex_escape",
+  "expr": "regex(${a}, '\\x4')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_trailing_backslash",
+  "expr": "regex(${a}, 'a\\')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_octal_out_of_range",
+  "expr": "regex(${a}, '\\400')",
+  "unsupported": true,
+  "note": "Same rejection on both sides, at parse time."
+ },
+ {
+  "name": "unsupported_regex_escaped_paren_then_question_mark",
+  "expr": "regex(${a}, '\\(?[0-9]+\\)?')",
+  "unsupported": true,
+  "note": "SURPRISING BUT PINNED: the scan for '(?' flags does not see the backslash, so an optional escaped opening parenthesis is refused. Write '[(]?' instead."
+ },
+ {
+  "name": "int_of_negative_fraction_is_zero",
+  "expr": "int(-0.5)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "int_of_negative_fraction_prints_zero",
+  "expr": "concat(int(-0.5))",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "0"
+ },
+ {
+  "name": "int_just_below_one_is_zero",
+  "expr": "int(0.9999999999999999)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "int_of_negative_string_fraction",
+  "expr": "int('-0.9')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "int_of_division_by_zero_is_nan",
+  "expr": "int(1 div 0)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "int_of_boolean",
+  "expr": "int(true())",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1
+ },
+ {
+  "name": "int_keeps_infinity",
+  "expr": "concat(int(10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000))",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "Infinity"
+ },
+ {
+  "name": "string_length_astral_is_one",
+  "expr": "string-length(${n})",
+  "values": {
+   "n": "😀"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1,
+  "note": "Code points, not UTF-16 units."
+ },
+ {
+  "name": "string_length_astral_between_letters",
+  "expr": "string-length(${n})",
+  "values": {
+   "n": "a😀b"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3
+ },
+ {
+  "name": "string_length_of_current_astral",
+  "expr": "string-length(.)",
+  "values": {},
+  "current": "😀😀",
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 2
+ },
+ {
+  "name": "string_length_counts_devanagari_conjunct_code_points",
+  "expr": "string-length(${n})",
+  "values": {
+   "n": "क्षित"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 5
+ },
+ {
+  "name": "string_length_of_number",
+  "expr": "string-length(${n})",
+  "values": {
+   "n": 123
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3
+ },
+ {
+  "name": "string_length_of_nan",
+  "expr": "string-length(${a} + 1)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 3,
+  "note": "NaN prints as 'NaN'."
+ },
+ {
+  "name": "negative_zero_from_mod",
+  "expr": "-0 mod 5",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "negative_zero_from_parentheses",
+  "expr": "-(0)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "negative_zero_from_int",
+  "expr": "-int(0.3)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "negative_zero_from_if",
+  "expr": "if(1 = 1, -0, 1)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "negative_zero_from_coalesce",
+  "expr": "coalesce(-0, 1)",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "negative_zero_in_sum",
+  "expr": "sum(${w})",
+  "values": {
+   "w": [
+    -0.0,
+    -0.0
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0,
+  "note": "Python's sum starts from 0.0, so -0.0 + -0.0 is 0; JavaScript's loop must agree."
+ },
+ {
+  "name": "zero_mod_negative_is_zero",
+  "expr": "0 mod -3",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "ref_allows_form_feed_inside_braces",
+  "expr": "${\fa}",
+  "values": {
+   "a": 7
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 7,
+  "note": "Python's reference pattern uses \\s (so \\f and \\v count) while its tokenizer's separators do not; both are reproduced."
+ },
+ {
+  "name": "ref_allows_vertical_tab_inside_braces",
+  "expr": "${\u000ba\u000b}",
+  "values": {
+   "a": 7
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 7
+ },
+ {
+  "name": "ref_allows_spaces_tabs_and_newlines_inside_braces",
+  "expr": "${ \t\n\r a \t}",
+  "values": {
+   "a": 7
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 7
+ },
+ {
+  "name": "unsupported_form_feed_between_tokens",
+  "expr": "1\f+ 1",
+  "unsupported": true,
+  "note": "Form feed is not a token separator, only inside ${ }."
+ },
+ {
+  "name": "unsupported_vertical_tab_between_tokens",
+  "expr": "1 +\u000b1",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_no_break_space_inside_braces",
+  "expr": "${ a}",
+  "unsupported": true
+ },
+ {
+  "name": "unsupported_space_between_dollar_and_brace",
+  "expr": "$ {a}",
+  "unsupported": true
+ },
+ {
+  "name": "limit_100_operands_is_accepted",
+  "expr": "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 100,
+  "note": "The node limit is 200 parts: n operands joined by + use 2n-1 of them."
+ },
+ {
+  "name": "unsupported_101_operands_exceed_the_node_limit",
+  "expr": "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+  "unsupported": true,
+  "note": "201 parts, one over MAX_NODES = 200."
+ },
+ {
+  "name": "limit_exactly_200_parts_is_accepted",
+  "expr": "-1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 98,
+  "note": "One unary minus adds a part: 100 operands + 99 operators + 1 = 200."
+ },
+ {
+  "name": "unsupported_201_parts",
+  "expr": "-1 + -1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+  "unsupported": true,
+  "note": "200 parts plus one more unary minus."
+ },
+ {
+  "name": "limit_49_nested_parentheses_is_accepted",
+  "expr": "(((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 1,
+  "note": "MAX_DEPTH is 50 and the outermost expression is level 1, so 49 parentheses is the deepest that parses."
+ },
+ {
+  "name": "unsupported_50_nested_parentheses",
+  "expr": "((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))",
+  "unsupported": true
+ },
+ {
+  "name": "limit_49_chained_unary_minus_is_accepted",
+  "expr": "-------------------------------------------------1",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": -1
+ },
+ {
+  "name": "unsupported_50_chained_unary_minus",
+  "expr": "--------------------------------------------------1",
+  "unsupported": true
+ },
+ {
+  "name": "limit_49_nested_calls_is_accepted",
+  "expr": "not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(1)))))))))))))))))))))))))))))))))))))))))))))))))",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": false
+ },
+ {
+  "name": "unsupported_50_nested_calls",
+  "expr": "not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(not(1))))))))))))))))))))))))))))))))))))))))))))))))))",
+  "unsupported": true
+ },
+ {
+  "name": "ref_named_constructor_is_unanswered",
+  "expr": "${constructor}",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "note": "A JavaScript object has these members already; an unanswered field must still read as empty."
+ },
+ {
+  "name": "ref_named_proto_is_unanswered",
+  "expr": "${__proto__}",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "note": "A JavaScript object has these members already; an unanswered field must still read as empty."
+ },
+ {
+  "name": "ref_named_toString_is_unanswered",
+  "expr": "${toString}",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "note": "A JavaScript object has these members already; an unanswered field must still read as empty."
+ },
+ {
+  "name": "ref_named_hasOwnProperty_is_unanswered",
+  "expr": "${hasOwnProperty}",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "note": "A JavaScript object has these members already; an unanswered field must still read as empty."
+ },
+ {
+  "name": "ref_named_valueOf_is_unanswered",
+  "expr": "${valueOf}",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "note": "A JavaScript object has these members already; an unanswered field must still read as empty."
+ },
+ {
+  "name": "count_of_object_member_name_is_zero",
+  "expr": "count(${constructor})",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 0
+ },
+ {
+  "name": "answered_field_named_constructor",
+  "expr": "${constructor}",
+  "values": {
+   "constructor": "x"
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "x"
+ },
+ {
+  "name": "date_year_zero_is_nan",
+  "expr": "number('0000-01-01')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "date_year_one_is_a_number",
+  "expr": "number('0001-01-01')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": -719162
+ },
+ {
+  "name": "date_year_9999_is_a_number",
+  "expr": "number('9999-12-31')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 2932896
+ },
+ {
+  "name": "date_leap_day_in_leap_year",
+  "expr": "number('2024-02-29')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 19782
+ },
+ {
+  "name": "date_leap_day_in_common_year_is_nan",
+  "expr": "number('2026-02-29')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "date_leap_day_in_century_common_year_is_nan",
+  "expr": "number('1900-02-29')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "date_leap_day_in_400_year",
+  "expr": "number('2000-02-29')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 11016
+ },
+ {
+  "name": "date_month_13_is_nan",
+  "expr": "number('2026-13-01')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_far_future_is_exact",
+  "expr": "number('9999-12-31T23:59:59.999999-23:59')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 2932897.9993055556,
+  "note": "Past the year 2255 the microsecond count exceeds 2**53; Python divides exactly, so JavaScript must too."
+ },
+ {
+  "name": "datetime_far_past_is_exact",
+  "expr": "number('0001-01-01T00:00+05:30')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": -719162.2291666666
+ },
+ {
+  "name": "datetime_fraction_beyond_microseconds_is_truncated",
+  "expr": "number('2026-03-15T09:00:00.9999999Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 20527.375011574062,
+  "note": "Digits past the sixth are dropped, not rounded."
+ },
+ {
+  "name": "datetime_with_z_suffix",
+  "expr": "number('2026-03-15T09:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 20527.375
+ },
+ {
+  "name": "datetime_offset_is_applied",
+  "expr": "number('2026-03-15T14:30+05:30')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 20527.375
+ },
+ {
+  "name": "datetime_second_60_is_nan",
+  "expr": "number('2026-03-15T09:00:60Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_hour_25_is_nan",
+  "expr": "number('2026-03-15T25:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_invalid_day_is_nan",
+  "expr": "number('2026-02-30T09:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_offset_of_24_hours_is_nan",
+  "expr": "number('2026-03-15T09:00+24:00')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_without_seconds_and_without_offset_is_nan",
+  "expr": "number('2026-03-15T09:00')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_lowercase_t_is_nan",
+  "expr": "number('2026-03-15t09:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "datetime_space_separator_is_nan",
+  "expr": "number('2026-03-15 09:00Z')",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "NaN"
+ },
+ {
+  "name": "today_in_kiritimati_is_a_day_ahead",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T12:00:00+00:00",
+  "expect": "2026-03-16",
+  "timezone": "Pacific/Kiritimati",
+  "note": "UTC+14."
+ },
+ {
+  "name": "today_in_etc_gmt_plus_12_is_a_day_behind",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-16T11:00:00+00:00",
+  "expect": "2026-03-15",
+  "timezone": "Etc/GMT+12",
+  "note": "UTC-12 (the sign is inverted in Etc/ names)."
+ },
+ {
+  "name": "today_across_new_year_in_kolkata",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2026-12-31T19:00:00+00:00",
+  "expect": "2027-01-01"
+ },
+ {
+  "name": "today_on_leap_day",
+  "expr": "today()",
+  "values": {},
+  "current": null,
+  "now": "2028-02-29T00:00:00+00:00",
+  "expect": "2028-02-29",
+  "timezone": "UTC"
+ },
+ {
+  "name": "now_keeps_microseconds",
+  "expr": "now()",
+  "values": {},
+  "current": null,
+  "now": "2026-03-15T09:30:00.25+00:00",
+  "expect": "2026-03-15T09:30:00.250000+00:00"
+ },
+ {
+  "name": "now_before_year_1000_is_padded",
+  "expr": "now()",
+  "values": {},
+  "current": null,
+  "now": "0999-01-01T00:00:00+00:00",
+  "expect": "0999-01-01T00:00:00+00:00",
+  "timezone": "UTC"
+ },
+ {
+  "name": "count_counts_empty_rows_too",
+  "expr": "count(${w})",
+  "values": {
+   "w": [
+    "",
+    ""
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 2,
+  "note": "count() sees every row, empty or not; sum() skips the empty ones."
+ },
+ {
+  "name": "indexed_repeat_fractional_index_is_empty",
+  "expr": "indexed-repeat(${age}, ${children}, 1.5)",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "indexed_repeat_negative_index_is_empty",
+  "expr": "indexed-repeat(${age}, ${children}, -1)",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "indexed_repeat_string_index",
+  "expr": "indexed-repeat(${age}, ${children}, '2')",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 9
+ },
+ {
+  "name": "indexed_repeat_of_a_scalar_field",
+  "expr": "indexed-repeat(${age}, ${children}, 1)",
+  "values": {
+   "age": 7,
+   "children": [
+    "a"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": 7
+ },
+ {
+  "name": "indexed_repeat_row_that_is_null_is_empty",
+  "expr": "indexed-repeat(${age}, ${children}, 2)",
+  "values": {
+   "age": [
+    4,
+    null,
+    12
+   ],
+   "children": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": ""
+ },
+ {
+  "name": "ref_with_negative_repeat_index_is_empty",
+  "expr": "${age}",
+  "values": {
+   "age": [
+    4,
+    9,
+    12
+   ]
+  },
+  "current": null,
+  "now": "2026-03-15T09:30:00+00:00",
+  "expect": "",
+  "repeat_index": -1
  }
 ]
