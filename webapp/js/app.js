@@ -81,6 +81,14 @@ const T = {
     errors_left: '{n} जवाब ठीक करने बाकी हैं',
     version: 'संस्करण',
     fail: 'कुछ गड़बड़ हुई: {m}',
+    refresh: 'फ़ॉर्म अपडेट करें (Refresh forms)',
+    refreshing: 'फ़ॉर्म अपडेट हो रहे हैं… इंटरनेट चालू रखें',
+    refresh_offline: 'इंटरनेट नहीं है। इंटरनेट चालू करके फिर कोशिश करें।',
+    refresh_failed: 'फ़ॉर्म अपडेट नहीं हो पाए। इंटरनेट देखें और फिर कोशिश करें।',
+    refresh_partial: 'कुछ चीज़ें अपडेट नहीं हो पाईं ({n} दिक्कतें)। नए फ़ॉर्म मिले: {f}। फिर से दबाकर कोशिश करें।',
+    refresh_ok: 'अपडेट हो गया: नए फ़ॉर्म {f}, डेटासेट {d}। अधूरे फ़ॉर्म वैसे ही रहेंगे।',
+    refresh_ok_data: 'फ़ॉर्म पहले से नए हैं। डेटासेट अपडेट हुए: {d}।',
+    refresh_uptodate: 'सब कुछ पहले से अपडेट है।',
   },
   en: {
     title: 'Evidence Action Survey',
@@ -119,6 +127,14 @@ const T = {
     errors_left: '{n} answers still need fixing',
     version: 'Version',
     fail: 'Something went wrong: {m}',
+    refresh: 'Refresh forms (फ़ॉर्म अपडेट करें)',
+    refreshing: 'Refreshing forms… keep the internet on',
+    refresh_offline: 'No internet. Connect to the internet and try again.',
+    refresh_failed: 'Could not refresh the forms. Check your internet and try again.',
+    refresh_partial: 'Some things did not refresh ({n} problems). New forms received: {f}. Tap again to try again.',
+    refresh_ok: 'Updated: {f} new forms, {d} datasets. Unfinished forms stay as they were.',
+    refresh_ok_data: 'Forms are already up to date. Datasets refreshed: {d}.',
+    refresh_uptodate: 'Everything is already up to date.',
   },
 };
 
@@ -128,6 +144,49 @@ function t(key, vars = {}) {
   let s = (T[state.lang] || T.hi)[key] ?? T.en[key] ?? key;
   for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
   return s;
+}
+
+// ---------------------------------------------------------------- refresh forms
+//
+// One tap re-runs bootstrap(). It writes new form versions ALONGSIDE the old ones and never reads
+// or writes drafts, the queue or the rejected store, so an open draft keeps the version it started
+// on and unsent work is untouched. This code adds no writes of its own.
+
+const tIn = (lang, key, vars = {}) => {
+  let s = (T[lang] || T.hi)[key] ?? T.en[key] ?? key;
+  for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
+  return s;
+};
+
+export const refreshLabel = (lang) => tIn(lang, 'refresh');
+
+// -> { status: 'offline' | 'failed' | 'partial' | 'ok', newForms, datasets, problems, boot }
+export async function refreshForms({ fetchImpl, online = () => navigator.onLine !== false } = {}) {
+  const none = { newForms: 0, datasets: 0, problems: 0, boot: null };
+  if (!online()) return { status: 'offline', ...none };
+  let boot;
+  try { boot = await bootstrap(fetchImpl); } catch { return { status: 'failed', ...none }; }
+  const problems = boot.errors.length;
+  return {
+    status: problems ? 'partial' : 'ok',
+    newForms: boot.forms.filter((f) => f.downloaded).length,
+    datasets: boot.datasets.length,
+    problems,
+    boot,
+  };
+}
+
+export function refreshMessage(r, lang) {
+  const vars = { f: r.newForms, d: r.datasets, n: r.problems };
+  if (r.status === 'ok') {
+    if (r.newForms) return tIn(lang, 'refresh_ok', vars);
+    return tIn(lang, r.datasets ? 'refresh_ok_data' : 'refresh_uptodate', vars);
+  }
+  return tIn(lang, 'refresh_' + r.status, vars);
+}
+
+export function refreshButton({ lang, onrefresh }) {
+  return h('button', 'btn', { type: 'button', id: 'refresh-forms', text: refreshLabel(lang), onclick: onrefresh });
 }
 
 const LANG_NAMES = { hi: 'हिंदी', en: 'English' };
@@ -253,8 +312,8 @@ function compareVersions(a, b) {
 
 const specTitle = (spec) => translate(spec.title, state.lang, spec.default_language) || spec.form_id;
 
-async function showHome(boot) {
-  useChromeToggle(() => showHome(boot));
+async function showHome(boot, note) {
+  useChromeToggle(() => showHome(boot, note));
   const session = (state.session = await db.getSession());
   if (!session || session.needs_login) { showLogin(t('session_over')); return; }
   const uid = session.user && session.user.id;
@@ -285,6 +344,24 @@ async function showHome(boot) {
     h('p', 'big-number', { text: String(pending) }),
     h('p', pending ? '' : 'muted', { text: pending ? t('pending', { n: pending }) : t('all_sent') }),
     pending ? sendBtn : null));
+
+  // Refresh forms: one tap fetches the assigned forms and datasets again.
+  const status = h('p', note ? 'notice ' + note.kind : 'muted', { role: 'status', 'aria-live': 'polite', text: note ? note.text : '' });
+  status.hidden = !note;
+  const refreshBtn = refreshButton({
+    lang: state.lang,
+    onrefresh: async () => {
+      refreshBtn.disabled = true;
+      status.hidden = false;
+      status.className = 'muted';
+      status.textContent = t('refreshing');
+      let r;
+      try { r = await refreshForms(); } catch { r = { status: 'failed', newForms: 0, datasets: 0, problems: 0, boot: null }; }
+      if (r.boot) rememberCap(r.boot);
+      await showHome(r.boot || boot, { kind: r.status === 'ok' ? 'good' : r.status === 'partial' ? '' : 'bad', text: refreshMessage(r, state.lang) });
+    },
+  });
+  parts.push(h('section', 'card', {}, refreshBtn, status));
 
   // Forms
   const formList = h('ul', 'list');
@@ -506,4 +583,5 @@ async function main() {
   await showHome();
 }
 
-main();
+// Not started when imported by the browser tests, which have no #app to draw into.
+if (document.getElementById('app')) main();

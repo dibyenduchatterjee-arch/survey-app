@@ -338,3 +338,5 @@ canvas.pad {
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
 }
+
+#refresh-forms + [role="status"] { margin-top: 10px; white-space: pre-line; }
