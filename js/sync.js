@@ -117,7 +117,9 @@ function classify(res, body, uuid) {
   const s = res.status;
   if (s === 200 || s === 201) {
     // A captive portal or proxy can answer 200 with a page. Only OUR receipt counts.
-    return body && body.uuid === uuid ? (s === 201 ? 'created' : 'replay') : 'retry';
+    // The server canonicalises uuids to lower case, so compare that way.
+    return body && typeof body.uuid === 'string' && body.uuid.toLowerCase() === String(uuid).toLowerCase()
+      ? (s === 201 ? 'created' : 'replay') : 'retry';
   }
   if (s === 401) return 'auth';
   if (s === 202) return 'retry';                       // attachments still outstanding

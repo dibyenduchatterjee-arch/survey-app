@@ -504,6 +504,70 @@ test("a call that lost a race to a refresh retries with the new token instead of
   assert.equal(f.count('POST /api/auth/refresh'), 1, 'a second refresh would replay a spent token');
 });
 
+// A second "tab": same IndexedDB, but its own module state (its own flights map).
+const otherTab = store => ({ ...store });
+
+test("two tabs refreshing at once present the refresh token only once", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  let spent = false;
+  const f = scriptedFetch({
+    'GET /api/forms': ({ headers }) => (headers.get('authorization') === 'Bearer A2' ? json(200, []) : json(401, {})),
+    'POST /api/auth/refresh': async ({ init }) => {
+      await new Promise(r => setTimeout(r, 10));
+      if (JSON.parse(init.body).refresh_token !== 'R1' || spent) return json(401, { detail: 'reuse: chain revoked' });
+      spent = true;
+      return json(200, { access_token: 'A2', refresh_token: 'R2' });
+    },
+  });
+  const tabA = auth.makeAuthFetch(f, { store });
+  const tabB = auth.makeAuthFetch(f, { store: otherTab(store) });
+  const [a, b] = await Promise.all([tabA('/api/forms'), tabB('/api/forms')]);
+  assert.deepEqual([a.status, b.status], [200, 200]);
+  assert.equal(f.count('POST /api/auth/refresh'), 1);
+  const s = await store.getSession();
+  assert.equal(s.refresh_token, 'R2');
+  assert.ok(!s.needs_login);
+});
+
+test("a stale refusal never overwrites tokens another tab stored meanwhile", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const f = scriptedFetch({
+    'GET /api/forms': ({ headers }) => (headers.get('authorization') === 'Bearer A2' ? json(200, []) : json(401, {})),
+    // While this tab's refresh is in flight, the other tab stores R2/A2; the server then refuses R1.
+    'POST /api/auth/refresh': async () => {
+      await store.putSession({ access_token: 'A2', refresh_token: 'R2', user: { id: 7 } });
+      return json(401, { detail: 'Invalid refresh token' });
+    },
+  });
+  const res = await auth.makeAuthFetch(f, { store })('/api/forms');
+  assert.equal(res.status, 200, 'should carry on with the other tab\'s new token');
+  const s = await store.getSession();
+  assert.equal(s.refresh_token, 'R2');
+  assert.equal(s.access_token, 'A2');
+  assert.ok(!s.needs_login, 'must not flag a session whose token the server never refused');
+});
+
+test("needs_login is set only when the stored token is the one the server refused", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const f = scriptedFetch({ 'GET /api/forms': json(401, {}), 'POST /api/auth/refresh': json(401, {}) });
+  await auth.makeAuthFetch(f, { store })('/api/forms');
+  assert.equal((await store.getSession()).needs_login, true);
+});
+
+test("an upper-case client uuid still matches its (lower-cased) receipt and is dequeued", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const up = '3F2A9C10-AAAA-4BBB-8CCC-0123456789AB';
+  await store.enqueue(sub(up), {});
+  const f = scriptedFetch({ 'POST /api/submissions': json(201, receipt(up.toLowerCase())) });
+  const r = await sync.syncOnce(f, { store });
+  assert.equal(r.uploaded, 1);
+  assert.equal(r.remaining, 0);
+});
+
 test("when the refresh token is refused the session is flagged and the queue is untouched", async () => {
   const store = memStore();
   await loggedIn(store);
