@@ -362,3 +362,80 @@ def test_a_single_form_download_name_carries_the_range(local, db, world):
     job_id, _ = export(local, world["sup"], form_id="a1", date_from="2026-10-01", date_to="2026-10-31")
     cd = local.get(f"/api/exports/{job_id}/download", headers=world["sup"]).headers["content-disposition"]
     assert "a1_2026-10-01_to_2026-10-31_" in cd and cd.endswith('.csv"')
+
+
+# ---- India days (Task 38) ----------------------------------------------------------------
+# A supervisor picks Indian dates. An early-morning household visit on 1 November, India time, is
+# still 31 October in UTC; it must land in a "from 1 November" export and show 1 November in the file.
+
+
+def ist(day: str, time: str) -> datetime:
+    return datetime.fromisoformat(f"{day}T{time}+05:30")
+
+
+def rows_of(csv_bytes: bytes) -> list[dict]:
+    return list(csv.DictReader(io.StringIO(csv_bytes.decode("utf-8-sig"), newline="")))
+
+
+def download(client, headers, **body) -> bytes:
+    job_id, _ = export(client, headers, **body)
+    r = client.get(f"/api/exports/{job_id}/download", headers=headers)
+    assert r.status_code == 200
+    return r.content
+
+
+def test_a_4am_india_visit_is_included_when_the_range_starts_that_india_day(local, db, world):
+    add_sub(db, world, "a1", uid(1), ist("2026-11-01", "04:00:00"))  # 22:30 UTC on 31 October
+    add_sub(db, world, "a1", uid(2), ist("2026-10-31", "23:59:59"))  # the Indian day before
+    content = download(local, world["sup"], form_id="a1", date_from="2026-11-01", date_to="2026-11-30")
+    assert uuids_in(content) == [uid(1)]
+
+
+def test_the_last_india_minutes_of_a_day_belong_to_that_day_and_not_the_next(local, db, world):
+    add_sub(db, world, "a1", uid(1), ist("2026-11-01", "23:50:00"))  # 18:20 UTC on 1 November
+    add_sub(db, world, "a1", uid(2), ist("2026-11-02", "00:10:00"))  # still 1 November in UTC
+    on_the_day = download(local, world["sup"], form_id="a1", date_from="2026-11-01", date_to="2026-11-01")
+    next_day = download(local, world["sup"], form_id="a1", date_from="2026-11-02", date_to="2026-11-02")
+    assert uuids_in(on_the_day) == [uid(1)]
+    assert uuids_in(next_day) == [uid(2)]
+
+
+def test_the_india_day_edges_are_exact(local, db, world):
+    add_sub(db, world, "a1", uid(1), ist("2026-11-01", "00:00:00"))  # first instant of the day
+    add_sub(db, world, "a1", uid(2), ist("2026-10-31", "23:59:59.999999"))  # last instant before it
+    content = download(local, world["sup"], form_id="a1", date_from="2026-11-01", date_to="2026-11-01")
+    assert uuids_in(content) == [uid(1)]
+
+
+def test_the_csv_date_column_agrees_with_the_days_the_filter_used(local, db, world):
+    add_sub(db, world, "a1", uid(1), ist("2026-11-01", "04:00:00"))
+    add_sub(db, world, "a1", uid(2), ist("2026-11-01", "23:50:00"))
+    add_sub(db, world, "a1", uid(3), ist("2026-11-02", "00:10:00"))
+    content = download(local, world["sup"], form_id="a1", date_from="2026-11-01", date_to="2026-11-02")
+    rows = {r["uuid"]: r for r in rows_of(content)}
+    assert [rows[uid(n)]["received_date_ist"] for n in (1, 2, 3)] == ["2026-11-01", "2026-11-01", "2026-11-02"]
+    # Every row's India date lies inside the range the supervisor asked for: nothing from 31 October.
+    assert all("2026-11-01" <= r["received_date_ist"] <= "2026-11-02" for r in rows.values())
+    # The UTC column is still there, labelled, and shows the UTC clock the row was stored on.
+    assert rows[uid(1)]["received_at_utc"].startswith("2026-10-31T22:30:00")
+    assert rows[uid(1)]["received_at_ist"].startswith("2026-11-01T04:00:00") and "+05:30" in rows[uid(1)]["received_at_ist"]
+
+
+def test_the_zone_is_the_form_timezone_setting_not_a_hardcoded_one(local, db, world, monkeypatch):
+    monkeypatch.setattr(get_settings(), "form_timezone", "UTC")
+    add_sub(db, world, "a1", uid(1), at("2026-11-01", "04:00:00"))
+    add_sub(db, world, "a1", uid(2), at("2026-10-31", "22:30:00"))
+    content = download(local, world["sup"], form_id="a1", date_from="2026-11-01", date_to="2026-11-01")
+    assert uuids_in(content) == [uid(1)]
+
+
+def test_the_india_day_rule_also_holds_when_drive_holds_the_file_and_for_a_project(wired, db, world, drive):  # noqa: F811
+    add_sub(db, world, "a1", uid(1), ist("2026-11-01", "04:00:00"))
+    add_sub(db, world, "a1", uid(2), ist("2026-10-31", "23:00:00"))
+    job_id, job = export(wired, world["sup"], form_id="a1", date_from="2026-11-01", date_to="2026-11-30")
+    assert job["row_count"] == 1 and uuids_in(drive.created[0][1]) == [uid(1)]
+    job_id, job = export(wired, world["sup"], project_id=world["projects"]["A"].id,
+                         date_from="2026-11-01", date_to="2026-11-30")
+    assert job["row_count"] == 1
+    z = zipfile.ZipFile(io.BytesIO(wired.get(f"/api/exports/{job_id}/download", headers=world["sup"]).content))
+    assert uuids_in(main_csvs(z, "a1")["a1"]) == [uid(1)]

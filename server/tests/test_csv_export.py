@@ -110,8 +110,9 @@ def test_main_file_is_first_and_columns_follow_the_form_after_metadata(spec, mak
     files = build_csvs(spec, [make(U1)])
     assert next(iter(files)) == MAIN
     head = parse(files[MAIN])[0]
-    assert head[:5] == ["uuid", "submitted_by", "received_at", "status", "failures"]
-    assert head[5:] == [
+    assert head[:7] == ["uuid", "submitted_by", "received_at_utc", "received_at_ist", "received_date_ist",
+                        "status", "failures"]
+    assert head[7:] == [
         "district", "block", "asha_name",
         "visit_location_lat", "visit_location_lon", "visit_location_accuracy",
         "household_photo", "household_children", "children_count",
@@ -140,7 +141,7 @@ def test_a_missing_geopoint_leaves_the_three_cells_blank(spec, make):
 def test_metadata_cells(spec, make):
     row = dicts(build_csvs(spec, [make(U1, {"household_children": 2})])[MAIN])[0]
     assert row["uuid"] == U1 and row["submitted_by"] == "asha1" and row["status"] == "received"
-    assert row["received_at"].startswith("20") and row["household_children"] == "2"
+    assert row["received_at_utc"].startswith("20") and row["household_children"] == "2"
     assert row["failures"] == ""
 
 

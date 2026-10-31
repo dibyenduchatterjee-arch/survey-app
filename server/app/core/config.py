@@ -1,4 +1,6 @@
 import json
+import os
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -13,6 +15,19 @@ from sqlalchemy.engine import make_url
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def default_env_file(environ: Mapping[str, str]) -> Path | None:
+    """Which .env file Settings reads: the repository root's, unless SURVEY_ENV_FILE says otherwise.
+
+    SURVEY_ENV_FILE names another file, or is set empty to read none. The test suite sets it empty
+    (tests/conftest.py) so a developer's real .env can never change a test result, in this process
+    or in a fresh interpreter a test starts.
+    """
+    named = environ.get("SURVEY_ENV_FILE")
+    if named is None:
+        return PROJECT_ROOT / ".env"
+    return Path(named) if named else None
+
+
 def _absolute(path: Path) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
@@ -25,7 +40,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / ".env",
+        env_file=default_env_file(os.environ),
         extra="ignore", hide_input_in_errors=True,
         # A blank `NAME=` line in .env (as in .env.example) means "use the default", not "empty".
         env_ignore_empty=True,

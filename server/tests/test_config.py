@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app.core.config import PROJECT_ROOT, Settings
+from app.core.config import PROJECT_ROOT, Settings, default_env_file
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
 SECRETS = {"jwt_secret": "j" * 40, "media_key": "m" * 40}
@@ -46,7 +46,19 @@ def test_absolute_memory_and_server_databases_are_left_alone(tmp_path):
 
 
 def test_the_env_file_is_read_from_the_project_root_not_the_working_directory():
-    assert Settings.model_config["env_file"] == PROJECT_ROOT / ".env"
+    # The suite itself runs with the file switched off (see below), so ask for the production rule.
+    assert default_env_file({}) == PROJECT_ROOT / ".env"
+
+
+def test_the_env_file_can_be_pointed_elsewhere_or_switched_off_by_name():
+    assert default_env_file({"SURVEY_ENV_FILE": ""}) is None
+    assert default_env_file({"SURVEY_ENV_FILE": "C:/elsewhere/prod.env"}) == Path("C:/elsewhere/prod.env")
+
+
+def test_the_suite_never_reads_the_repo_root_env_file():
+    """Hermetic: a developer's real .env (README tells everyone to make one) must not change a result."""
+    assert Settings.model_config["env_file"] is None
+    assert os.environ["SURVEY_ENV_FILE"] == ""  # so a fresh interpreter started by a test is switched off too
 
 
 def test_blank_lines_in_the_env_file_mean_use_the_default(monkeypatch):

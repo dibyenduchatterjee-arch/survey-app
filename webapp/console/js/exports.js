@@ -50,7 +50,7 @@ function summary(job, formId) {
   const item = (label, value) => h('li', {}, h('strong', { text: label + ': ' }), value);
   return h('ul', { class: 'export-summary' },
     job.project_name ? item('Project', `${job.project_name} (all forms)`) : item('Form', job.form_id || formId),
-    item('Dates', job.date_from || job.date_to ? `${rangeText(job.date_from, job.date_to)} (UTC days)` : 'all dates'),
+    item('Dates', job.date_from || job.date_to ? `${rangeText(job.date_from, job.date_to)} (Indian dates)` : 'all dates'),
     count ? item('Submissions', count) : null);
 }
 
@@ -188,7 +188,7 @@ export async function mountExports(root, ctx) {
     field('Project', project, 'export-project'),
     field('Form', form, 'export-form', 'Optional. Leave it on "All forms" to export every form in the project, one set of files per form.'),
     field('From date', from, 'export-from'),
-    field('To date', to, 'export-to', 'Both dates are included. Days are UTC, the same clock as the received_at column in the file. Empty means everything.'),
+    field('To date', to, 'export-to', 'Both dates are included. These are Indian dates (India time), the same days as the received_date_ist column in the file. Empty means everything.'),
     formNote,
     exportControl(request, { api, pollMs: ctx.pollMs, save: ctx.save })));
   await loadForms();

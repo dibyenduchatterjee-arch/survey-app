@@ -13,8 +13,14 @@ FILES      `build_csvs()` returns {filename: bytes}, the main file first:
            read, so a repeat nobody answered still produces its header-only file, and a
            nested repeat is never flattened into its parent.
 
-COLUMNS    Main:   uuid, submitted_by, received_at, status, failures, then the form's questions
+COLUMNS    Main:   uuid, submitted_by, received_at_utc, received_at_ist, received_date_ist, status,
+                   failures, then the form's questions
                    in form order (groups are transparent; repeats and notes are not columns).
+                   The three received columns are one instant on two clocks: UTC (as stored), and
+                   India time as a timestamp and as a plain YYYY-MM-DD day. The export's date
+                   filter bounds India days, so `received_date_ist` is the column to check a
+                   range against. "India" is the `form_timezone` setting (Asia/Kolkata); for
+                   another zone the `_ist` suffix becomes that zone's name, never a wrong label.
                    `submitted_by` is the username (the numeric id if the user row is gone). A geopoint `q` becomes q_lat, q_lon,
                    q_accuracy. A media question's cell is the file's name in the media zip.
            Child:  parent_uuid, [<ancestor>_row_index for each enclosing repeat, outermost
@@ -50,9 +56,11 @@ relationship), one query per 500 submissions. No web framework is imported here.
 import csv
 import io
 import json
+import re
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import object_session
@@ -63,7 +71,19 @@ from app.export.media import media_by_submission, media_name
 
 BOM = b"\xef\xbb\xbf"
 ERRORS_FILE = "export_errors.txt"
-_META = ["uuid", "submitted_by", "received_at", "status", "failures"]
+DEFAULT_TIMEZONE = "Asia/Kolkata"  # callers pass the form_timezone setting; this is only a fallback
+
+
+def _meta(tz: str) -> list[str]:
+    label = "ist" if tz == "Asia/Kolkata" else re.sub(r"[^a-z0-9]+", "_", tz.lower()).strip("_")
+    return ["uuid", "submitted_by", "received_at_utc", f"received_at_{label}", f"received_date_{label}", "status", "failures"]
+
+
+def _received(value: datetime, tz: str) -> list[str]:
+    """[UTC timestamp, local timestamp, local day] for one received_at (naive means UTC)."""
+    utc = (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC)
+    local = utc.astimezone(ZoneInfo(tz))
+    return [utc.isoformat(timespec="seconds"), local.isoformat(timespec="seconds"), local.date().isoformat()]
 _DANGEROUS = ("=", "+", "-", "@", "\t", "\r")
 _NOT_COLUMNS = {"note", "repeat"}
 _CHUNK = 500
@@ -232,8 +252,12 @@ def _encode(header: list[str], rows: list[list[str]]) -> bytes:
     return BOM + buf.getvalue().encode("utf-8")
 
 
-def build_csvs(spec: dict, submissions: Sequence[Submission]) -> dict[str, bytes]:
-    """{filename: bytes}, the main file first, then one file per repeat in form order."""
+def build_csvs(
+    spec: dict, submissions: Sequence[Submission], timezone: str = DEFAULT_TIMEZONE
+) -> dict[str, bytes]:
+    """{filename: bytes}, the main file first, then one file per repeat in form order.
+
+    `timezone` is the IANA zone of the local received columns (the form_timezone setting)."""
     form_id = spec["form_id"]
     main_q = _questions(spec["nodes"])
     stored = _repeat_rows(submissions)
@@ -245,10 +269,10 @@ def build_csvs(spec: dict, submissions: Sequence[Submission]) -> dict[str, bytes
     for s in submissions:
         names = {m.question_name: media_name(s.uuid, m) for m in media[s.id]}
         main_rows.append(
-            [s.uuid, _text(users.get(s.submitted_by, str(s.submitted_by))), _text(s.received_at), _text(s.status), _failures(s)]
+            [s.uuid, _text(users.get(s.submitted_by, str(s.submitted_by))), *_received(s.received_at, timezone), _text(s.status), _failures(s)]
             + _cells(main_q, s.data_json or {}, names, s.uuid, errors)
         )
-    files = {f"{form_id}.csv": _encode(_META + _columns(main_q), main_rows)}
+    files = {f"{form_id}.csv": _encode(_meta(timezone) + _columns(main_q), main_rows)}
 
     for path, node in _repeats(spec["nodes"]):
         questions = _questions(node.get("children", []))

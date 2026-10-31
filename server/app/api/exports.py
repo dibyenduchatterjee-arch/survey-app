@@ -8,8 +8,11 @@ GET  /api/exports/{job_id}/download  -> the main CSV (one form) or a zip of ever
 
 FILTERS. `form_id` (one form) and `project_id` (every form in the project) are alternatives; both,
 or neither, is a 422. `date_from` / `date_to` are ISO days (YYYY-MM-DD), both inclusive, and filter
-on `Submission.received_at`, the server's own clock, never the device's. A day is a UTC day, the
-same clock as the `received_at` column in the CSV, so the file can be checked against the range.
+on `Submission.received_at`, the server's own clock, never the device's. A day is an INDIA day (the
+`form_timezone` setting, Asia/Kolkata): the person asking means Indian dates, and an ASHA's 04:00
+visit on 1 November is 22:30 UTC on 31 October. The CSV carries that same day in its
+`received_date_ist` column (and `received_at_ist`, plus `received_at_utc`), so the file can be
+checked against the range.
 Who may export what is decided only by `app.core.access` (`staff_can_see_form` /
 `staff_can_see_project`); a refusal is the same 404 as a form or project that does not exist.
 A range that matches nothing is not an error: the job is done with row_count 0, the CSV has its
@@ -51,6 +54,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
@@ -226,12 +230,19 @@ def _error_text(e: BaseException) -> str:
     return redact(text)[:2000]
 
 
-def _bounds(date_from: date | None, date_to: date | None) -> tuple[datetime | None, datetime | None]:
-    """[start, end) in UTC for inclusive calendar days: end is midnight after date_to."""
-    start = datetime.combine(date_from, time.min, tzinfo=UTC) if date_from else None
+def _bounds(
+    date_from: date | None, date_to: date | None, tz: str
+) -> tuple[datetime | None, datetime | None]:
+    """[start, end) as UTC instants for inclusive calendar days in zone `tz`.
+
+    Start is local midnight of date_from, end is local midnight after date_to; both are then
+    converted to UTC, because received_at is stored in UTC.
+    """
+    zone = ZoneInfo(tz)
+    start = datetime.combine(date_from, time.min, tzinfo=zone).astimezone(UTC) if date_from else None
     end = None
     if date_to and date_to < date.max:
-        end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=UTC)
+        end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=zone).astimezone(UTC)
     return start, end
 
 
@@ -252,7 +263,7 @@ def _load_form_data(
         .where(FormVersion.form_id == form.id)
         .order_by(Submission.id)
     )
-    start, end = _bounds(date_from, date_to)
+    start, end = _bounds(date_from, date_to, get_settings().form_timezone)
     if start is not None:
         query = query.where(Submission.received_at >= start)
     if end is not None:
@@ -286,7 +297,7 @@ def _load_export_data(db: Session, job: ExportJob) -> Collected:
 
 def _form_files(form: Form, version: FormVersion, subs: list[Submission], stamp: str) -> dict[str, bytes]:
     """`build_csvs` output with each file stamped and named for its form; the main file is first."""
-    built = build_csvs(version.json_spec, subs)
+    built = build_csvs(version.json_spec, subs, get_settings().form_timezone)
     spec_id = next(iter(built)).removesuffix(".csv")  # the id inside the spec, which names the files
     named = {}
     for n, d in built.items():
@@ -355,7 +366,7 @@ def run_export(
                     uploader.upload(folder_id, f"{owner}_media_{stamp}.zip", media_zip, "application/zip")
             else:
                 for _, version, subs in collected:
-                    build_csvs(version.json_spec, subs)  # fail now, not at download, if it cannot be built
+                    build_csvs(version.json_spec, subs, get_settings().form_timezone)  # fail now, not at download, if it cannot be built
             job.row_count = sum(len(subs) for _, _, subs in collected)
             job.status = "done"
             job.error = None
@@ -488,7 +499,7 @@ def download_export(
     else:
         try:
             _, version, subs = _load_export_data(db, job)[0]
-            data = next(iter(build_csvs(version.json_spec, subs).values()))
+            data = next(iter(build_csvs(version.json_spec, subs, get_settings().form_timezone).values()))
         except Exception as e:  # noqa: BLE001 - say why, never a bare 500
             raise HTTPException(status_code=500, detail=_error_text(e)) from None
     safe = _safe_name(form_key, "form")  # a header value, never raw text

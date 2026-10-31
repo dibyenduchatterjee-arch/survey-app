@@ -9,6 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Test-only secrets, set unconditionally so a real secret in the developer's
 # shell can never leak into a test run; set before the app is imported so Settings validates.
+# Hermetic: never read the repo-root .env. README tells every developer to create one, and its real
+# values would turn the "missing secret is refused" tests into passes-or-fails by machine. Settings
+# reads this at import, and a fresh interpreter started by a test inherits it.
+os.environ["SURVEY_ENV_FILE"] = ""
 os.environ["JWT_SECRET"] = "test-jwt-secret-not-for-production-use-0123456789-abcdefghijklmnop"
 os.environ["MEDIA_KEY"] = "test-media-key-not-for-production"
 
