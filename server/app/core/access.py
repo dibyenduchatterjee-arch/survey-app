@@ -11,7 +11,7 @@ admin sees everything, a supervisor only the projects they are a member of.
 from sqlalchemy import ColumnElement, exists, false, or_, select, true
 from sqlalchemy.orm import Session
 
-from app.db.models import Assignment, Form, ProjectMember, User
+from app.db.models import Assignment, Dataset, Form, ProjectMember, User
 
 
 def granted_to(user_id: int) -> ColumnElement[bool]:
@@ -64,3 +64,26 @@ def staff_can_see_project(db: Session, user: User, project_id: int) -> bool:
         )
         is not None
     )
+
+
+def dataset_filter(user: User) -> ColumnElement[bool]:
+    """SQL condition on `Dataset`: this person may read the dataset. THE dataset rule.
+
+    A dataset belongs to one project (its rows are names and phone numbers of frontline
+    workers). Admin reads all. A supervisor reads the datasets of projects they are a member of.
+    An enumerator reads those of projects they are a member of, and of the project of any form
+    they hold a direct `Assignment` on - their phone needs the lists their own forms look up.
+    Writes need `staff_can_see_project` on the dataset's project, so the read and write rules
+    are built on the same membership.
+    """
+    if user.role == "admin":
+        return true()
+    member = exists().where(ProjectMember.project_id == Dataset.project_id, ProjectMember.user_id == user.id)
+    if user.role == "supervisor":
+        return member
+    if user.role == "enumerator":
+        via_form = exists().where(
+            Form.project_id == Dataset.project_id, Assignment.form_id == Form.id, Assignment.user_id == user.id
+        )
+        return or_(member, via_form)
+    return false()

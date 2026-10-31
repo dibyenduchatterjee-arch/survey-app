@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.core import audit
 from app.core.access import (
-    granted_to, has_form_grant, staff_can_see_form, staff_can_see_project, staff_form_filter,
+    dataset_filter, granted_to, has_form_grant, staff_can_see_form, staff_can_see_project, staff_form_filter,
 )
 from app.core.config import Settings, get_settings
 from app.core.rbac import current_user, require_role
@@ -69,11 +69,13 @@ class FormSummary(BaseModel):
 class DatasetSummary(BaseModel):
     name: str
     version: int
+    project_id: int
 
 
 class DatasetOut(BaseModel):
     name: str
     version: int
+    project_id: int
     rows: list[dict[str, str]]
 
 
@@ -103,7 +105,7 @@ def _title_of(spec: dict, fallback: str) -> str:
     return (titles[0] if titles else fallback)[:255]
 
 
-def _project_for_new_form(db: Session, user: User, project_id: int | None) -> int:
+def _project_for_new_form(db: Session, user: User, project_id: int | None, what: str = "form") -> int:
     """The project a brand-new form goes into. Never guessed.
 
     Named explicitly, it must be one the caller may see (else the same 404 as a missing project).
@@ -122,9 +124,9 @@ def _project_for_new_form(db: Session, user: User, project_id: int | None) -> in
     if user.role == "supervisor" and len(choices) == 1:
         return choices[0]["id"]
     if not choices:
-        message = "You are not a member of any project; ask an admin to add you to one before uploading a form."
+        message = f"You are not a member of any project; ask an admin to add you to one before uploading a {what}."
     else:
-        message = "Say which project this form belongs to (project_id)."
+        message = f"Say which project this {what} belongs to (project_id)."
     raise HTTPException(
         status_code=422, detail={"error": "project_required", "message": message, "projects": choices}
     )
@@ -330,6 +332,7 @@ def upload_dataset(
     request: Request,
     name: str = Path(pattern=_DATASET_NAME),
     file: UploadFile = File(...),
+    project_id: int | None = FormField(default=None),
     user: User = Depends(_manager),
     db: Session = Depends(get_session),
 ) -> DatasetOut:
@@ -338,21 +341,27 @@ def upload_dataset(
         rows = _parse_csv(data)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
+    # Names are unique within a project, so a name another project uses is not a conflict and
+    # not a clue: the dataset lands in a project this caller may write to, or it is a 404.
+    project = _project_for_new_form(db, user, project_id, "dataset")
     try:
-        ds = db.scalar(select(Dataset).where(Dataset.name == name))
+        ds = db.scalar(select(Dataset).where(Dataset.name == name, Dataset.project_id == project))
         if ds is None:
-            ds = Dataset(name=name, csv_blob=data, version=1)
+            ds = Dataset(name=name, project_id=project, csv_blob=data, version=1)
             db.add(ds)
         else:
             ds.csv_blob = data
             ds.version += 1
         db.flush()
-        audit.record(db, user.id, "dataset.upload", "dataset", name, request, {"version": ds.version, "rows": len(rows)})
+        audit.record(
+            db, user.id, "dataset.upload", "dataset", name, request,
+            {"version": ds.version, "rows": len(rows), "project_id": project},
+        )
         db.commit()
     except Exception:
         db.rollback()
         raise
-    return DatasetOut(name=name, version=ds.version, rows=rows)
+    return DatasetOut(name=name, version=ds.version, project_id=project, rows=rows)
 
 
 class ClientConfig(BaseModel):
@@ -370,21 +379,39 @@ def client_config(
 
 @router.get("/datasets", response_model=list[DatasetSummary])
 def list_datasets(
-    user: User = Depends(current_user),  # same as GET /datasets/{name}: any signed-in user
+    user: User = Depends(current_user),
     db: Session = Depends(get_session),
 ) -> list[DatasetSummary]:
-    """Names and versions only; the rows are fetched per name."""
-    rows = db.execute(select(Dataset.name, Dataset.version).order_by(Dataset.name)).all()
-    return [DatasetSummary(name=n, version=v) for n, v in rows]
+    """Names and versions of the datasets this person may read; the rows are fetched per name."""
+    rows = db.execute(
+        select(Dataset.name, Dataset.version, Dataset.project_id)
+        .where(dataset_filter(user))
+        .order_by(Dataset.name, Dataset.project_id)
+    ).all()
+    return [DatasetSummary(name=n, version=v, project_id=p) for n, v, p in rows]
 
 
 @router.get("/datasets/{name}", response_model=DatasetOut)
 def get_dataset(
     name: str = Path(pattern=_DATASET_NAME),
+    project_id: int | None = None,
     user: User = Depends(current_user),
     db: Session = Depends(get_session),
 ) -> DatasetOut:
-    ds = db.scalar(select(Dataset).where(Dataset.name == name))
-    if ds is None:
+    """One dataset by name, among those this person may read; any other is a plain 404.
+
+    Two readable projects can each hold a dataset of the same name (an admin sees all of them);
+    then `project_id` says which, and without it the answer is 409 rather than a guess.
+    """
+    query = select(Dataset).where(Dataset.name == name, dataset_filter(user))
+    if project_id is not None:
+        query = query.where(Dataset.project_id == project_id)
+    found = db.scalars(query.order_by(Dataset.project_id).limit(2)).all()
+    if not found:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    return DatasetOut(name=ds.name, version=ds.version, rows=_parse_csv(ds.csv_blob))
+    if len(found) > 1:
+        raise HTTPException(
+            status_code=409, detail="More than one project has a dataset with this name; add ?project_id="
+        )
+    ds = found[0]
+    return DatasetOut(name=ds.name, version=ds.version, project_id=ds.project_id, rows=_parse_csv(ds.csv_blob))

@@ -179,8 +179,14 @@ class Dataset(Base):
 
     __tablename__ = "datasets"
 
+    # Rows are names and phone numbers of frontline workers, so a dataset belongs to ONE project
+    # and is visible only to that project's people (`access.dataset_filter`). A name is unique
+    # within a project, not across them, so nobody can learn that another project holds one.
+    __table_args__ = (Index("uq_dataset_project_name", "project_id", "name", unique=True),)
+
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(150), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(150))
     csv_blob: Mapped[bytes] = mapped_column(LargeBinary)
     version: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
@@ -309,8 +315,9 @@ class RefreshToken(Base):
 
 
 @event.listens_for(Form, "before_insert")
-def _default_project(mapper, connection, target: Form) -> None:
-    """A form created without a project goes to the default project (created on first need)."""
+@event.listens_for(Dataset, "before_insert")
+def _default_project(mapper, connection, target: Form | Dataset) -> None:
+    """A form or dataset created without a project goes to the default project (made on first need)."""
     if target.project_id is not None:
         return
     pid = connection.execute(select(Project.id).where(Project.name == DEFAULT_PROJECT_NAME)).scalar()

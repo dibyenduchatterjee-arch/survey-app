@@ -284,25 +284,29 @@ def test_dataset_csv_round_trips_devanagari(client, sup):
     assert got["name"] == "blocks" and got["version"] == 1
 
 
-def test_dataset_reupload_bumps_version_and_enumerator_can_read(client, as_, sup):
+def test_dataset_reupload_bumps_version_and_enumerator_can_read(client, db, as_, sup, join_project):
     _, h = sup
     for _i in range(2):
         client.post("/api/datasets/blocks", files={"file": ("b.csv", b"name\nA\n")}, headers=h)
-    _, eh = as_("enumerator")
+    e, eh = as_("enumerator")
+    join_project(db, e)  # datasets are readable by the project's people only
     got = client.get("/api/datasets/blocks", headers=eh)
     assert got.status_code == 200 and got.json()["version"] == 2
 
 
-def test_dataset_listing_is_names_and_versions_for_any_signed_in_user(client, as_, sup):
+def test_dataset_listing_is_names_and_versions_for_the_projects_people(client, db, as_, sup, join_project):
     _, h = sup
-    _, eh = as_("enumerator")
+    e, eh = as_("enumerator")
+    pid = join_project(db, e).id
     assert client.get("/api/datasets", headers=eh).json() == []
     client.post("/api/datasets/villages", files={"file": ("v.csv", b"name\nsecret-village\n")}, headers=h)
     for _i in range(2):
         client.post("/api/datasets/asha", files={"file": ("a.csv", b"name\nA\n")}, headers=h)
     r = client.get("/api/datasets", headers=eh)
     assert r.status_code == 200
-    assert r.json() == [{"name": "asha", "version": 2}, {"name": "villages", "version": 1}]
+    assert r.json() == [
+        {"name": "asha", "version": 2, "project_id": pid}, {"name": "villages", "version": 1, "project_id": pid}
+    ]
     assert "secret-village" not in r.text
     assert client.get("/api/datasets", headers=h).status_code == 200
     assert client.get("/api/datasets").status_code == 401
