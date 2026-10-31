@@ -5,7 +5,7 @@
 //   * A queued submission leaves the device in exactly two ways: the server
 //     confirmed it (200 or 201 with OUR uuid in the receipt), or the server
 //     definitively refused it and the full refusal, answers and photos were first
-//     written to the rejection record (REJECTED_STORE) where the app and a
+//     written to the rejection record (db.js `rejected` store) where the app and a
 //     supervisor can see it. Every other outcome, a 5xx, a timeout, a dropped
 //     connection, a captive portal, a 401, a failed write, leaves it queued.
 //   * Uploads are one at a time, oldest first, and one bad submission never
@@ -18,17 +18,15 @@
 import * as defaultStore from './db.js';
 import { makeAuthFetch } from './auth.js';
 
-// Where definitively-refused submissions are kept. db.js has no store for them and
-// db.js is not ours to change, so they live in the `preload` store under a name no
-// server dataset can have (dataset names never start with an underscore).
-export const REJECTED_STORE = '_rejected_submissions';
+// Definitively-refused submissions go to db.js's own `rejected` store, which no
+// dataset refresh ever writes to.
 
 export const BACKOFF_BASE_MS = 5_000;
 export const BACKOFF_CAP_MS = 300_000;
 export const SYNC_INTERVAL_MS = 60_000;
 const BATCH = 200;
 const MAX_CONSECUTIVE_SERVER_ERRORS = 3;
-const DATASET_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,149}$/;
+const DATASET_NAME = /^[A-Za-z0-9_-]{1,150}$/;
 const RETRYABLE_4XX = new Set([408, 425, 429]);
 
 const defaultFetch = () => globalThis.fetch.bind(globalThis);
@@ -82,51 +80,35 @@ function describeDetail(detail) {
 
 // ---- the rejection record --------------------------------------------------------
 
-// Read-modify-write on one array, so writers go through one queue.
-let recordChain = Promise.resolve();
-function withRecord(fn) {
-  const p = recordChain.then(fn, fn);
-  recordChain = p.catch(() => {});
-  return p;
-}
-
 export function listRejected({ store = defaultStore } = {}) {
-  return store.getDataset(REJECTED_STORE).then(rows => rows || []);
+  return store.listRejected();
 }
 
 function recordRejection(store, item, media, status, detail) {
-  return withRecord(async () => {
-    const { queued_at, ...submission } = item; // eslint-disable-line no-unused-vars
-    const { code, message } = describeDetail(detail);
-    const rows = (await store.getDataset(REJECTED_STORE)) || [];
-    const next = rows.filter(r => r.uuid !== item.uuid);
-    next.push({
-      uuid: item.uuid,
-      form_id: item.form_id,
-      version: item.version,
-      status,
-      code,
-      message,
-      rejected_at: new Date().toISOString(),
-      submission,
-      media: media.map(m => ({ question: m.question, blob: m.blob })),
-    });
-    await store.putDataset(REJECTED_STORE, next);   // resolves after the commit
+  const { queued_at, ...submission } = item; // eslint-disable-line no-unused-vars
+  const { code, message } = describeDetail(detail);
+  return store.putRejected({            // resolves after the commit
+    uuid: item.uuid,
+    form_id: item.form_id,
+    version: item.version,
+    status,
+    code,
+    message,
+    rejected_at: new Date().toISOString(),
+    submission,
+    media: media.map(m => ({ question: m.question, blob: m.blob })),
   });
 }
 
 // Puts a refused submission back on the queue, answers and photos included, for
 // when the cause has been fixed (an assignment added, a form version restored).
-export function retryRejected(uuid, { store = defaultStore } = {}) {
-  return withRecord(async () => {
-    const rows = (await store.getDataset(REJECTED_STORE)) || [];
-    const rec = rows.find(r => r.uuid === uuid);
-    if (!rec) throw new Error('No rejected submission with that id');
-    const blobs = {};
-    for (const m of rec.media || []) blobs[m.question] = m.blob;
-    await store.enqueue(rec.submission, blobs);                 // back on the queue first...
-    await store.putDataset(REJECTED_STORE, rows.filter(r => r.uuid !== uuid)); // ...then off the record
-  });
+export async function retryRejected(uuid, { store = defaultStore } = {}) {
+  const rec = await store.getRejected(uuid);
+  if (!rec) throw new Error('No rejected submission with that id');
+  const blobs = {};
+  for (const m of rec.media || []) blobs[m.question] = m.blob;
+  await store.enqueue(rec.submission, blobs);   // back on the queue first...
+  await store.deleteRejected(uuid);             // ...then off the record
 }
 
 // ---- uploading -------------------------------------------------------------------
@@ -236,27 +218,9 @@ export function syncOnce(fetchImpl = defaultFetch(), { store = defaultStore } = 
 
 // ---- bootstrap -------------------------------------------------------------------
 
-// Names of the datasets a spec uses: `pulldata('name', ...)` in any expression, a
-// `dataset` property on a node, or a top-level `datasets` / `preload` list.
-export function datasetNames(spec) {
-  const names = new Set();
-  const add = n => { if (typeof n === 'string' && DATASET_NAME.test(n)) names.add(n); };
-  for (const key of ['datasets', 'preload']) if (Array.isArray(spec && spec[key])) spec[key].forEach(add);
-  const re = /pulldata\(\s*(['"])([^'"]+)\1/g;
-  const walk = v => {
-    if (typeof v === 'string') { for (const m of v.matchAll(re)) add(m[2]); }
-    else if (Array.isArray(v)) v.forEach(walk);
-    else if (v && typeof v === 'object') {
-      for (const [k, x] of Object.entries(v)) { if (k === 'dataset') add(x); walk(x); }
-    }
-  };
-  walk(spec);
-  return names;
-}
-
 const enc = encodeURIComponent;
 
-// Downloads the caller's assigned forms and every dataset they use. Each form
+// Downloads the caller's assigned forms and every dataset they can see. Each form
 // version is stored under its own [form_id, version] key and nothing is ever
 // deleted or replaced, so a draft in progress finishes on the version it started
 // on. Drafts are not read or written here at all.
@@ -269,7 +233,6 @@ export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultSto
   const list = await listRes.json();
   if (!Array.isArray(list)) throw new Error('Form list was not a list');
 
-  const specs = [];
   for (const f of list) {
     if (!f || !f.current_version) continue; // nothing published yet
     const version = String(f.current_version);
@@ -287,15 +250,29 @@ export async function bootstrap(fetchImpl = defaultFetch(), { store = defaultSto
         downloaded = true;
       }
       out.forms.push({ form_id: f.form_id, version, downloaded });
-      specs.push(spec);
     } catch (e) {
       out.errors.push({ form_id: f.form_id, version, error: String((e && e.message) || e) });
     }
   }
 
-  const wanted = new Set();
-  for (const spec of specs) for (const n of datasetNames(spec)) if (!n.startsWith('_')) wanted.add(n);
-  for (const name of wanted) {
+  // Phase 1 has no pulldata-style external lookups (a Phase 2 item), so nothing in
+  // a spec says which datasets it needs. Take every dataset the caller can see.
+  let names = [];
+  try {
+    const res = await authed('/api/datasets');
+    if (res.status === 404 || res.status === 405) {
+      out.errors.push({ dataset: '*', error: 'server has no dataset listing (GET /api/datasets)' });
+    } else if (!res.ok) {
+      throw new Error(`dataset list failed (${res.status})`);
+    } else {
+      const body = await res.json();
+      if (!Array.isArray(body)) throw new Error('dataset list was not a list');
+      names = body.map(d => (typeof d === 'string' ? d : d && d.name)).filter(n => typeof n === 'string' && DATASET_NAME.test(n));
+    }
+  } catch (e) {
+    out.errors.push({ dataset: '*', error: String((e && e.message) || e) });
+  }
+  for (const name of names) {
     try {
       const res = await authed(`/api/datasets/${enc(name)}`);
       if (!res.ok) throw new Error(`dataset download failed (${res.status})`);

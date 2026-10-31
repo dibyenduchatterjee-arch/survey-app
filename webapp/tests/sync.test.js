@@ -15,6 +15,7 @@ import * as sync from "../js/sync.js";
 function memStore(opts = {}) {
   const forms = new Map();
   const datasets = new Map();
+  const rejected = new Map();
   const drafts = new Map();
   const media = new Map();
   let queue = [];
@@ -27,10 +28,14 @@ function memStore(opts = {}) {
     async putForm(spec) { forms.set(`${spec.form_id}|${spec.version}`, structuredClone(spec)); },
     async getForm(id, v) { return forms.get(`${id}|${v}`); },
     async listForms() { return [...forms.values()]; },
-    async putDataset(name, rows) {
-      if (opts.failDatasetPut === name) throw new Error('disk full');
-      datasets.set(name, rows);
+    async putDataset(name, rows) { datasets.set(name, rows); },
+    async putRejected(rec) {
+      if (opts.failRejectedPut) throw new Error('disk full');
+      rejected.set(rec.uuid, rec);
     },
+    async listRejected() { return [...rejected.values()]; },
+    async getRejected(uuid) { return rejected.get(uuid); },
+    async deleteRejected(uuid) { rejected.delete(uuid); },
     async getDataset(name) { return datasets.get(name); },
     async saveDraft(d) { drafts.set(d.id, { ...d }); },
     async getDraft(id) { return drafts.get(id); },
@@ -269,16 +274,16 @@ test("the rejection is written before the submission leaves the queue", async ()
   await loggedIn(store);
   await store.enqueue(sub('u1'), {});
   const order = [];
-  const origPut = store.putDataset.bind(store);
+  const origPut = store.putRejected.bind(store);
   const origDeq = store.dequeue.bind(store);
-  store.putDataset = async (n, r) => { order.push('record'); return origPut(n, r); };
+  store.putRejected = async r => { order.push('record'); return origPut(r); };
   store.dequeue = async u => { order.push('dequeue'); return origDeq(u); };
   await sync.syncOnce(scriptedFetch({ 'POST /api/submissions': refusal(403, 'not_assigned') }), { store });
   assert.deepEqual(order, ['record', 'dequeue']);
 });
 
 test("if the rejection cannot be recorded the submission stays queued", async () => {
-  const store = memStore({ failDatasetPut: sync.REJECTED_STORE });
+  const store = memStore({ failRejectedPut: true });
   await loggedIn(store);
   await store.enqueue(sub('u1'), { p: photo() });
   const f = scriptedFetch({ 'POST /api/submissions': refusal(404, 'form_version_unknown') });
@@ -610,8 +615,6 @@ test("backoff is capped and resets after a clean run", async () => {
 const SPEC_V1 = {
   form_id: 'amb_asha_visit', version: '2026103101', languages: ['hi'], default_language: 'hi',
   nodes: [
-    { type: 'text', name: 'asha_name', calculate: "pulldata('asha_list', 'name', 'id', ${asha})" },
-    { type: 'text', name: 'x', relevant: "pulldata('blocks','a','b',1)=1" },
   ],
   choices: {},
 };
@@ -627,6 +630,7 @@ function bootstrapRoutes(extra = {}) {
     ]),
     'GET /api/forms/amb_asha_visit/versions/2026103101/spec': json(200, SPEC_V1),
     'GET /api/forms/anganwadi/versions/2026103001/spec': json(200, SPEC_F2),
+    'GET /api/datasets': json(200, [{ name: 'asha_list', version: 1 }, { name: 'blocks', version: 1 }, { name: 'centres', version: 3 }]),
     'GET /api/datasets/asha_list': json(200, { name: 'asha_list', version: 1, rows: [{ id: '1', name: 'सीता' }] }),
     'GET /api/datasets/blocks': json(200, { name: 'blocks', version: 1, rows: [{ a: '1' }] }),
     'GET /api/datasets/centres': json(200, { name: 'centres', version: 3, rows: [{ c: 'x' }] }),
@@ -715,16 +719,38 @@ test("a spec whose identity disagrees with the form list is not stored", async (
   assert.equal(r.errors.length, 1);
 });
 
-test("bootstrap never overwrites the on-device rejection record", async () => {
+test("a bootstrap dataset refresh leaves rejected records untouched", async () => {
   const store = memStore();
   await loggedIn(store);
-  const evil = { ...SPEC_V1, nodes: [{ type: 'text', name: 'q', calculate: `pulldata('${sync.REJECTED_STORE}','a','b',1)` }] };
-  const f = scriptedFetch(bootstrapRoutes({
-    'GET /api/forms': json(200, [{ form_id: 'amb_asha_visit', title: 't', current_version: '2026103101' }]),
-    'GET /api/forms/amb_asha_visit/versions/2026103101/spec': json(200, evil),
-  }));
-  await sync.bootstrap(f, { store });
-  assert.equal(f.calls.filter(c => c.path.includes(sync.REJECTED_STORE)).length, 0);
+  await store.enqueue(sub('r1'), { p: photo('KEEP') });
+  await sync.syncOnce(scriptedFetch({ 'POST /api/submissions': refusal(403, 'not_assigned') }), { store });
+  const snap = async () => JSON.stringify((await sync.listRejected({ store })).map(r => ({ ...r, media: r.media.length })));
+  const before = await snap();
+  await sync.bootstrap(scriptedFetch(bootstrapRoutes()), { store });
+  await sync.bootstrap(scriptedFetch(bootstrapRoutes({ 'GET /api/datasets': json(200, []) })), { store });
+  assert.equal(await snap(), before);
+  assert.equal(await (await sync.listRejected({ store }))[0].media[0].blob.text(), 'KEEP');
+});
+
+test("bootstrap downloads every dataset the server lists, whatever the specs say", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const r = await sync.bootstrap(scriptedFetch(bootstrapRoutes({
+    'GET /api/datasets': json(200, [{ name: 'only_listed', version: 1 }]),
+    'GET /api/datasets/only_listed': json(200, { name: 'only_listed', version: 1, rows: [{ k: 'v' }] }),
+  })), { store });
+  assert.deepEqual(r.datasets, ['only_listed']);
+  assert.deepEqual(await store.getDataset('only_listed'), [{ k: 'v' }]);
+});
+
+test("a server with no dataset listing is reported, not fatal, and forms still download", async () => {
+  const store = memStore();
+  await loggedIn(store);
+  const routes = bootstrapRoutes();
+  delete routes['GET /api/datasets'];
+  const r = await sync.bootstrap(scriptedFetch(routes), { store });
+  assert.equal(r.forms.length, 2);
+  assert.ok(r.errors.some(e => e.dataset === '*'));
 });
 
 test("bootstrap throws when the form list cannot be fetched, leaving the device as it was", async () => {
